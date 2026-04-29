@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from pathlib import Path
 from PySide6.QtCore import QObject, Property, QTimer, Signal
 from PySide6.QtQml import QQmlApplicationEngine
@@ -47,6 +48,12 @@ class OSDWindow(QObject):
         super().__init__()
         self._state = _OSDState()
         self._engine = QQmlApplicationEngine()
+        # PySide6 bundles its own Qt6 with a separate QML import path; the
+        # system's KDE QML plugins (including org.kde.layershell) live under
+        # /usr/lib/qt6/qml. Adding that path lets us load them from PySide6.
+        for p in ("/usr/lib/qt6/qml", "/usr/lib64/qt6/qml"):
+            if os.path.isdir(p):
+                self._engine.addImportPath(p)
         self._engine.rootContext().setContextProperty("osdState", self._state)
         self._engine.load(str(_QML_PATH))
         if not self._engine.rootObjects():
