@@ -11,7 +11,7 @@ DEFAULTS: dict[str, dict[str, str]] = {
     },
     "whisper": {
         "model": "medium",
-        "language": "",
+        "language": "pl",
         "initial_prompt": "",
         "n_threads": "4",
     },

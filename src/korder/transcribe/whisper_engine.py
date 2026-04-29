@@ -29,9 +29,9 @@ class WhisperEngine:
                     "print_realtime": False,
                     "print_timestamps": False,
                     "n_threads": self.n_threads,
+                    "translate": False,
+                    "language": self.language or "auto",
                 }
-                if self.language:
-                    kwargs["language"] = self.language
                 if self.initial_prompt:
                     kwargs["initial_prompt"] = self.initial_prompt
                 self._model = Model(
