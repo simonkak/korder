@@ -1,13 +1,15 @@
 """LLM-based intent parser for inline voice actions.
 
-Splits a Whisper transcript into a list of (text, key, char) ops the same way
-inject._split_into_ops does, but using a small local LLM via ollama instead of
-regex. Handles Polish, English, and natural phrasing variations that regex
-can't generalize over.
+Architecture:
+- Gemma is asked to *identify* trigger phrases in the transcript (where they
+  start, what action they map to). Gemma does NOT reproduce text content.
+- We then find each phrase in the original input and segment around it
+  ourselves. Text op values come from the original input verbatim, so the
+  model can't corrupt user speech.
 
-Falls back to inject's regex parser if ollama is unreachable, the model returns
-malformed output, or anything else goes wrong — so enabling LLM mode never
-breaks the dictation path.
+Falls back to inject's regex parser if ollama is unreachable, the model
+returns malformed output, or any phrase isn't found in the input — so
+enabling LLM mode never breaks the dictation path.
 """
 from __future__ import annotations
 import json
@@ -27,85 +29,90 @@ _KEY_NAMES_TO_CODES = {
     "backspace": _KEY_BACKSPACE,
 }
 
-_PROMPT_TEMPLATE = """You are an inline action parser for a voice dictation tool. Given a transcript that mixes free dictation text with imperative key-press commands, return a JSON object with one field "ops" containing an array of operations.
+_PUNCT_TO_STRIP = " \t.!?,;:\n"
 
-Each operation is one of:
-- {"op": "text", "value": "..."}  — text to type literally
-- {"op": "key", "value": "enter|return|tab|escape|backspace"}  — press a special key
-- {"op": "char", "value": "\\n"}  — insert a newline within typed text
+_PROMPT_TEMPLATE = """You are an inline action detector for a voice dictation tool. Identify imperative key-press phrases in a transcript and return JSON describing them. You do NOT reproduce text content — just identify where the action phrases are.
+
+Return a JSON object with one field "actions" containing an array of detected actions:
+{
+  "actions": [
+    {"phrase": "<exact phrase as it appears in input>", "type": "key|char", "value": "enter|return|tab|escape|backspace|\\n"}
+  ]
+}
+
+The "phrase" field must be a contiguous substring that appears VERBATIM in the input (case-sensitive).
+The "type" is "key" for key-press actions, "char" for in-text characters like newline.
+
+Action triggers (English and Polish):
+- "press enter", "wciśnij enter", "naciśnij enter", "submit", "wyślij", "potem enter", "and enter" → type=key, value=enter
+- "press tab", "tabuluj" → type=key, value=tab
+- "press escape" → type=key, value=escape
+- "press backspace" → type=key, value=backspace
+- "new line", "nowa linia", "nowy wiersz" → type=char, value=\\n
 
 Rules:
-- Plain dictation with no key-press intent → ops contains one text op with the whole input.
-- Phrases like "press enter", "wciśnij enter", "naciśnij enter", "submit", "wyślij", "potem enter", "and submit", "and enter", "naciśnij entera" → key op for enter.
-- Phrases like "press tab" or "tabuluj" → key op for tab.
-- "new line" / "nowa linia" / "nowy wiersz" → char op with "\\n".
-- Strip surrounding punctuation around action triggers ("Press Enter." → just key op, no trailing dot).
-- Mixed text + commands produce multiple ops in order (text before, key, text after).
-- Language is auto-detected; same rules apply for English and Polish.
-- ALWAYS include the "ops" key with a non-empty array.
+- If no action triggers are present, return {"actions": []}.
+- Descriptive prose like "she pressed enter on the keyboard" is NOT an action — it's narrative text.
+- Return phrases in the order they appear. Multiple actions per input are fine.
+- The phrase must match the input EXACTLY (preserve case, accents, etc.) so we can find it.
 
 Examples:
 Input: "hello world"
-Output: {"ops": [{"op": "text", "value": "hello world"}]}
-
-Input: "please add this press enter and run it"
-Output: {"ops": [{"op": "text", "value": "please add this"}, {"op": "key", "value": "enter"}, {"op": "text", "value": "and run it"}]}
-
-Input: "Zwiększ rozmiar fontu wciśnij enter"
-Output: {"ops": [{"op": "text", "value": "Zwiększ rozmiar fontu"}, {"op": "key", "value": "enter"}]}
-
-Input: "naciśnij enter"
-Output: {"ops": [{"op": "key", "value": "enter"}]}
+Output: {"actions": []}
 
 Input: "Naciśnij Enter."
-Output: {"ops": [{"op": "key", "value": "enter"}]}
+Output: {"actions": [{"phrase": "Naciśnij Enter", "type": "key", "value": "enter"}]}
 
-Input: "press enter"
-Output: {"ops": [{"op": "key", "value": "enter"}]}
+Input: "Co tu się stało? Naciśnij Enter."
+Output: {"actions": [{"phrase": "Naciśnij Enter", "type": "key", "value": "enter"}]}
 
 Input: "press enter and run it"
-Output: {"ops": [{"op": "key", "value": "enter"}, {"op": "text", "value": "and run it"}]}
-
-Input: "she pressed enter on the keyboard"
-Output: {"ops": [{"op": "text", "value": "she pressed enter on the keyboard"}]}
+Output: {"actions": [{"phrase": "press enter", "type": "key", "value": "enter"}]}
 
 Input: "napisz coś potem wyślij"
-Output: {"ops": [{"op": "text", "value": "napisz coś"}, {"op": "key", "value": "enter"}]}
+Output: {"actions": [{"phrase": "potem wyślij", "type": "key", "value": "enter"}]}
 
-Now parse this transcript and return ONLY the JSON object, no other text.
+Input: "she pressed enter on the keyboard"
+Output: {"actions": []}
+
+Input: "Myślę, że to jest OK."
+Output: {"actions": []}
+
+Now analyze this transcript and return ONLY the JSON object, no other text.
 Input: %s
 Output:"""
 
 
 class IntentParser:
-    def __init__(self, model: str = "gemma4:e4b", timeout_s: float = 5.0):
+    def __init__(self, model: str = "gemma4:e2b", timeout_s: float = 5.0):
         # Gemma 4 ships in E2B (2.3B effective) / E4B (4.5B) / 26B-A4B / 31B
-        # variants per huggingface.co/blog/gemma4. E4B is the
-        # recommended-for-JSON-tasks size — fits comfortably in 7800 XT
-        # VRAM with room for whisper, and benchmarks show good structured
-        # output on instruction-tuned variants. Adjust llm_model in config
-        # to match the actual ollama tag if it differs.
+        # variants per huggingface.co/blog/gemma4. E4B is recommended for
+        # JSON tasks; E2B is faster but more prone to text mangling — which
+        # is why this parser only uses the LLM for *classification*, not
+        # for reproducing text. Adjust llm_model in config to match the
+        # actual ollama tag.
         self.model = model
         self.timeout_s = timeout_s
 
     def parse(self, transcript: str) -> list[tuple]:
-        """Returns ops in the same shape as inject._split_into_ops:
-        list of ("text", str), ("key", int_keycode), ("char", str)."""
+        """Returns ops in inject's format. Text ops always come from the
+        original transcript verbatim — LLM never touches text content."""
         if not transcript:
             return []
         try:
-            llm_ops = self._call_ollama(transcript)
+            actions = self._call_ollama(transcript)
         except Exception as e:
             print(f"[korder] intent LLM failed, falling back to regex: {e}", flush=True)
             return _split_into_ops(transcript)
 
-        print(f"[korder] LLM raw ops for {transcript!r}: {llm_ops!r}", flush=True)
-        normalized = _normalize_llm_ops(llm_ops)
-        if normalized is None:
-            print(f"[korder] intent LLM returned malformed output, falling back to regex", flush=True)
+        print(f"[korder] LLM actions for {transcript!r}: {actions!r}", flush=True)
+
+        ops = _segment_input_by_actions(transcript, actions)
+        if ops is None:
+            print(f"[korder] LLM action phrase not found in input, falling back to regex", flush=True)
             return _split_into_ops(transcript)
-        print(f"[korder] normalized ops: {normalized!r}", flush=True)
-        return normalized
+        print(f"[korder] segmented ops: {ops!r}", flush=True)
+        return ops
 
     def _call_ollama(self, transcript: str) -> list:
         prompt = _PROMPT_TEMPLATE % json.dumps(transcript)
@@ -123,55 +130,77 @@ class IntentParser:
         )
         with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
             body = json.loads(resp.read().decode("utf-8"))
-        # ollama wraps the model output in `response` (a string)
         raw = body.get("response", "").strip()
         parsed = json.loads(raw)
-        # Preferred shape: {"ops": [...]}
-        if isinstance(parsed, dict) and "ops" in parsed and isinstance(parsed["ops"], list):
-            return parsed["ops"]
-        # Fallback: bare array (some models emit this even when asked for object)
+        if isinstance(parsed, dict) and isinstance(parsed.get("actions"), list):
+            return parsed["actions"]
         if isinstance(parsed, list):
             return parsed
-        # Fallback: a single op dict (E2B-class models often collapse to this
-        # for short inputs, dropping the array wrapper). Treat as one-op list.
-        if isinstance(parsed, dict) and "op" in parsed and "value" in parsed:
+        if isinstance(parsed, dict) and "phrase" in parsed:
+            # Single action collapsed to a bare object
             return [parsed]
-        # Last-resort fallback: single-key wrapper around the array
-        if isinstance(parsed, dict) and len(parsed) == 1:
-            only = next(iter(parsed.values()))
-            if isinstance(only, list):
-                return only
         raise ValueError(f"unexpected LLM output shape: {type(parsed).__name__}: {parsed!r}")
 
 
-def _normalize_llm_ops(llm_ops: list) -> list[tuple] | None:
-    """Translate LLM output (list of {op, value} dicts) to inject's tuple format.
-    Returns None if anything is malformed."""
-    out: list[tuple] = []
-    if not isinstance(llm_ops, list):
+def _segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | None:
+    """Slice the original transcript at action phrase boundaries, returning
+    ops whose text values come straight from the input. Returns None if any
+    phrase can't be located in the input (signals fallback)."""
+    if not isinstance(actions, list):
         return None
-    for entry in llm_ops:
-        if not isinstance(entry, dict):
+
+    # Find each phrase's position in the transcript (case-insensitive,
+    # left-to-right, advancing past previous matches).
+    found: list[tuple[int, int, dict]] = []
+    cursor = 0
+    lower = transcript.lower()
+    for a in actions:
+        if not isinstance(a, dict):
             return None
-        op = entry.get("op")
-        val = entry.get("value")
-        if op == "text":
-            if not isinstance(val, str):
+        phrase = a.get("phrase")
+        if not isinstance(phrase, str) or not phrase:
+            continue
+        idx = lower.find(phrase.lower(), cursor)
+        if idx == -1:
+            # Try without leading word boundary cursor advance — phrase might
+            # appear anywhere; if still not found, the model hallucinated it.
+            idx = lower.find(phrase.lower())
+            if idx == -1 or idx < cursor:
                 return None
-            if val:
-                out.append(("text", val))
-        elif op == "char":
-            if not isinstance(val, str):
-                return None
-            if val:
-                out.append(("char", val))
-        elif op == "key":
-            if not isinstance(val, str):
-                return None
-            keycode = _KEY_NAMES_TO_CODES.get(val.lower())
-            if keycode is None:
-                return None
-            out.append(("key", keycode))
-        else:
+        found.append((idx, idx + len(phrase), a))
+        cursor = idx + len(phrase)
+
+    ops: list[tuple] = []
+    pos = 0
+    for start, end, a in found:
+        if start > pos:
+            seg = transcript[pos:start].strip(_PUNCT_TO_STRIP)
+            if seg:
+                ops.append(("text", seg))
+        op = _action_to_op(a)
+        if op is not None:
+            ops.append(op)
+        pos = end
+    if pos < len(transcript):
+        seg = transcript[pos:].strip(_PUNCT_TO_STRIP)
+        if seg:
+            ops.append(("text", seg))
+
+    return ops
+
+
+def _action_to_op(action: dict) -> tuple | None:
+    type_ = action.get("type")
+    value = action.get("value")
+    if not isinstance(value, str):
+        return None
+    if type_ == "key":
+        keycode = _KEY_NAMES_TO_CODES.get(value.lower())
+        if keycode is None:
             return None
-    return out
+        return ("key", keycode)
+    if type_ == "char":
+        if not value:
+            return None
+        return ("char", value)
+    return None
