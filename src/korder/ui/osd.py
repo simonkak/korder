@@ -1,58 +1,10 @@
 from __future__ import annotations
-import ctypes
 import os
 from pathlib import Path
-from PySide6.QtCore import QCoreApplication, QObject, Property, QRect, QTimer, Signal
-from PySide6.QtGui import QRegion
+from PySide6.QtCore import QObject, Property, QTimer, Signal
 from PySide6.QtQml import QQmlApplicationEngine
 
-# PySide6 bundles its own Qt6 with default plugin paths pointing only at
-# the bundle. Add the system Qt6 plugin path so KWindowSystem's KF6
-# platform plugins (KWindowSystemKWaylandPlugin / KWindowSystemX11Plugin)
-# can be discovered — without this they fail to load and KWindowEffects
-# can't find a backend, leaving blur silently disabled.
-for _p in ("/usr/lib/qt6/plugins", "/usr/lib64/qt6/plugins"):
-    if os.path.isdir(_p):
-        QCoreApplication.addLibraryPath(_p)
-
 _QML_PATH = Path(__file__).parent / "qml" / "osd.qml"
-
-
-# Wrap KWindowEffects::enableBlurBehind from libKF6WindowSystem so KWin
-# applies a gaussian blur behind the OSD's translucent regions. This is a
-# C++ function — there's no QML or Python binding for it, so we call the
-# mangled symbol via ctypes and pass shiboken-extracted pointers.
-def _load_blur_fn():
-    try:
-        lib = ctypes.CDLL("libKF6WindowSystem.so.6")
-        fn = getattr(lib, "_ZN14KWindowEffects16enableBlurBehindEP7QWindowbRK7QRegion")
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_void_p]
-        fn.restype = None
-        return fn
-    except (OSError, AttributeError):
-        return None
-
-
-_ENABLE_BLUR = _load_blur_fn()
-
-
-def _request_blur(window) -> bool:
-    if _ENABLE_BLUR is None:
-        return False
-    try:
-        import shiboken6
-    except ImportError:
-        return False
-    # Use explicit window-sized region. Some KWin versions treat an empty
-    # QRegion() as "no region selected" rather than "blur entire window."
-    w = max(int(window.width()), 1)
-    h = max(int(window.height()), 1)
-    region = QRegion(QRect(0, 0, w, h))
-    win_ptr = shiboken6.getCppPointer(window)[0]
-    region_ptr = shiboken6.getCppPointer(region)[0]
-    _ENABLE_BLUR(win_ptr, True, region_ptr)
-    print(f"[korder] requested blur for window={win_ptr:#x} region=({w}x{h})", flush=True)
-    return True
 
 
 class _OSDState(QObject):
@@ -89,8 +41,8 @@ class _OSDState(QObject):
 
 class OSDWindow(QObject):
     """Layer-shell OSD via QML. Surface stays mapped throughout app lifetime;
-    visibility toggles via inner-rectangle binding. Same API as the old
-    QWidget version so MainWindow doesn't need to change."""
+    visibility toggles via inner-rectangle binding. Same API as the original
+    QWidget OSD so MainWindow doesn't need to change."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -107,29 +59,14 @@ class OSDWindow(QObject):
         if not self._engine.rootObjects():
             raise RuntimeError(f"Failed to load OSD QML from {_QML_PATH}")
 
-        # Ask KWin to blur the screen content behind our window.
-        # Defer ~100ms so the Wayland surface is fully configured (layer-shell
-        # surfaces only become ready after the compositor responds to the
-        # role configure event).
-        QTimer.singleShot(100, self._apply_blur)
-
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self._fade_out)
 
     def map_offscreen(self) -> None:
         # Layer-shell handles non-focus-stealing semantics at the protocol
-        # level, so no startup mapping trick is needed. Kept for API parity
-        # with the previous QWidget OSD.
+        # level. Kept for API parity with the previous QWidget OSD.
         pass
-
-    def _apply_blur(self) -> None:
-        roots = self._engine.rootObjects()
-        if not roots:
-            return
-        ok = _request_blur(roots[0])
-        if not ok:
-            print("[korder] KWin blur unavailable (libKF6WindowSystem missing or shiboken6 absent)", flush=True)
 
     def show_text(self, text: str, *, transient_ms: int = 0) -> None:
         self._state.text = text or ""

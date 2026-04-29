@@ -26,7 +26,7 @@ Window {
         color: palette.window
         border.color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.15)
         border.width: 1
-        visible: osdState.visible
+        visible: osdState ? osdState.visible : false
         opacity: visible ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 120 } }
 
@@ -34,7 +34,7 @@ Window {
             anchors.fill: parent
             anchors.margins: 18
             color: palette.windowText
-            text: osdState.text
+            text: osdState ? osdState.text : ""
             font.pixelSize: 16
             font.weight: Font.Medium
             wrapMode: Text.WordWrap
