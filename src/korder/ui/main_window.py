@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from korder.audio.capture import MicRecorder
+from korder.audio.vad import SpeechDetector
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import YdotoolBackend, InjectError
 from korder.ui.osd import OSDWindow
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
         self._injector = injector
         self._osd = osd
         self._trailing_space = trailing_space
+        self._detector = SpeechDetector(sample_rate=recorder.sample_rate, aggressiveness=2)
         self._workers: set[_TranscribeWorker] = set()
         self._partial_in_flight = False
         self._committed_samples = 0
@@ -103,8 +105,7 @@ class MainWindow(QMainWindow):
     PAUSE_MS = 400
     MIN_COMMIT_MS = 500
     MAX_SEGMENT_MS = 8000
-    SILENCE_THRESHOLD = 0.015
-    SILENCE_WINDOW_MS = 50
+    MIN_SPEECH_FOR_PARTIAL_MS = 200
 
     def _start_recording(self) -> None:
         if self._recorder.is_recording:
@@ -127,7 +128,7 @@ class MainWindow(QMainWindow):
         full = self._recorder.stop()
         sr = self._recorder.sample_rate
         remaining = full[self._committed_samples:]
-        if remaining.size < int(0.2 * sr):
+        if remaining.size < int(0.2 * sr) or not self._detector.has_speech(remaining):
             self._status.setText("Idle.")
             self._osd.hide_after(300)
             return
@@ -144,7 +145,7 @@ class MainWindow(QMainWindow):
         if new.size < int(0.5 * sr):
             return
 
-        speech_end, silence_ms = self._find_trailing_silence(new, sr)
+        speech_end, silence_ms = self._detector.find_trailing_silence(new)
         speech_min = int((self.MIN_COMMIT_MS / 1000) * sr)
 
         commit_on_pause = silence_ms >= self.PAUSE_MS and speech_end >= speech_min
@@ -156,23 +157,10 @@ class MainWindow(QMainWindow):
             self._submit_transcribe(segment, kind="commit")
             return
 
-        if not self._partial_in_flight:
+        if not self._partial_in_flight and self._detector.has_speech(
+            new, min_speech_ms=self.MIN_SPEECH_FOR_PARTIAL_MS
+        ):
             self._submit_transcribe(np.ascontiguousarray(new), kind="partial")
-
-    def _find_trailing_silence(self, audio: np.ndarray, sr: int) -> tuple[int, int]:
-        """Find where speech ended in the buffer. Returns (speech_end_sample, silence_ms)."""
-        window = int((self.SILENCE_WINDOW_MS / 1000) * sr)
-        if audio.size < window:
-            return audio.size, 0
-        n_windows = audio.size // window
-        for i in range(n_windows - 1, -1, -1):
-            chunk = audio[i * window:(i + 1) * window]
-            rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
-            if rms >= self.SILENCE_THRESHOLD:
-                speech_end = (i + 1) * window
-                silence_samples = audio.size - speech_end
-                return speech_end, int(silence_samples * 1000 / sr)
-        return 0, int(audio.size * 1000 / sr)
 
     def _submit_transcribe(self, audio: np.ndarray, kind: str) -> None:
         worker = _TranscribeWorker(self._engine, audio)
