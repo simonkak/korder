@@ -12,11 +12,27 @@ class InjectError(RuntimeError):
 
 # Linux evdev keycodes.
 _KEY_LCTRL = 29
+_KEY_LSHIFT = 42
+_KEY_LALT = 56
+_KEY_LMETA = 125
 _KEY_V = 47
 _KEY_ENTER = 28
 _KEY_TAB = 15
 _KEY_ESCAPE = 1
 _KEY_BACKSPACE = 14
+_KEY_DELETE = 111
+_KEY_A = 30
+_KEY_Z = 44
+
+
+# Named shortcut → keycodes to press in order. Modifiers first, main key last;
+# release in reverse order so modifiers stay held while the main key fires.
+NAMED_SHORTCUTS: dict[str, list[int]] = {
+    "delete_word": [_KEY_LCTRL, _KEY_BACKSPACE],
+    "delete_word_forward": [_KEY_LCTRL, _KEY_DELETE],
+    "select_all": [_KEY_LCTRL, _KEY_A],
+    "undo": [_KEY_LCTRL, _KEY_Z],
+}
 
 
 # Inline action triggers: phrases in the transcript that get translated into
@@ -32,6 +48,14 @@ _TRIGGERS: dict[str, tuple[str, object]] = {
     "press backspace": ("key", _KEY_BACKSPACE),
     "new line": ("char", "\n"),
     "new paragraph": ("char", "\n\n"),
+    # Named shortcuts (Polish + English)
+    "usuń słowo": ("combo", NAMED_SHORTCUTS["delete_word"]),
+    "skasuj słowo": ("combo", NAMED_SHORTCUTS["delete_word"]),
+    "delete word": ("combo", NAMED_SHORTCUTS["delete_word"]),
+    "zaznacz wszystko": ("combo", NAMED_SHORTCUTS["select_all"]),
+    "select all": ("combo", NAMED_SHORTCUTS["select_all"]),
+    "cofnij": ("combo", NAMED_SHORTCUTS["undo"]),
+    "undo": ("combo", NAMED_SHORTCUTS["undo"]),
 }
 
 _TRIGGER_RE = re.compile(
@@ -42,7 +66,7 @@ _TRIGGER_RE = re.compile(
 
 def _split_into_ops(text: str) -> list[tuple]:
     """Split a transcript into a sequence of ('text', s) / ('key', code) /
-    ('char', s) ops. Returns an empty list for empty input."""
+    ('char', s) / ('combo', [codes]) ops. Returns an empty list for empty input."""
     if not text:
         return []
     # Strip whitespace and trailing punctuation Whisper adds around the
@@ -58,10 +82,7 @@ def _split_into_ops(text: str) -> list[tuple]:
             if seg:
                 ops.append(("text", seg))
         kind, val = _TRIGGERS[m.group(0).lower()]
-        if kind == "key":
-            ops.append(("key", val))
-        else:
-            ops.append(("char", val))
+        ops.append((kind, val))
         last_end = m.end()
     if last_end < len(text):
         seg = text[last_end:].lstrip(_PUNCT_AFTER) if ops else text[last_end:]
@@ -118,6 +139,8 @@ class YdotoolBackend:
                     self._direct_type(segment)
             elif kind == "key":
                 self._press_key(op[1])
+            elif kind == "combo":
+                self._press_combo(op[1])
             # Inter-op pause so paste-target apps fully receive the previous
             # operation's events before the next one fires (especially
             # important between paste and key press).
@@ -125,9 +148,19 @@ class YdotoolBackend:
                 time.sleep(0.04)
 
     def _press_key(self, keycode: int) -> None:
+        self._press_combo([keycode])
+
+    def _press_combo(self, keycodes: list[int]) -> None:
+        """Hold modifiers + main key, release in reverse so modifiers stay
+        held until the main key is released. e.g., [29, 14] = Ctrl+Backspace."""
+        if not keycodes:
+            return
+        # Press modifiers + main, then release in reverse order
+        args = [f"{kc}:1" for kc in keycodes]
+        args += [f"{kc}:0" for kc in reversed(keycodes)]
         try:
             subprocess.run(
-                ["ydotool", "key", f"{keycode}:1", f"{keycode}:0"],
+                ["ydotool", "key", *args],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -135,7 +168,7 @@ class YdotoolBackend:
             )
         except subprocess.CalledProcessError as e:
             raise InjectError(
-                f"ydotool key {keycode} failed: {(e.stderr or '').strip() or e}"
+                f"ydotool combo {keycodes} failed: {(e.stderr or '').strip() or e}"
             ) from e
 
     def _should_paste(self, text: str) -> bool:

@@ -16,7 +16,14 @@ import json
 import urllib.error
 import urllib.request
 
-from korder.inject import _KEY_BACKSPACE, _KEY_ENTER, _KEY_ESCAPE, _KEY_TAB, _split_into_ops
+from korder.inject import (
+    NAMED_SHORTCUTS,
+    _KEY_BACKSPACE,
+    _KEY_ENTER,
+    _KEY_ESCAPE,
+    _KEY_TAB,
+    _split_into_ops,
+)
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
 
@@ -36,12 +43,15 @@ _PROMPT_TEMPLATE = """You are an inline action detector for a voice dictation to
 Return a JSON object with one field "actions" containing an array of detected actions:
 {
   "actions": [
-    {"phrase": "<exact phrase as it appears in input>", "type": "key|char", "value": "enter|return|tab|escape|backspace|\\n"}
+    {"phrase": "<exact phrase as it appears in input>", "type": "key|char|shortcut", "value": "<value>"}
   ]
 }
 
 The "phrase" field must be a contiguous substring that appears VERBATIM in the input (case-sensitive).
-The "type" is "key" for key-press actions, "char" for in-text characters like newline.
+The "type" determines what gets executed:
+- "key": single key press; value is one of: enter, return, tab, escape, backspace
+- "char": insert character; value is a literal string like "\\n"
+- "shortcut": named keyboard shortcut; value is one of: delete_word, delete_word_forward, select_all, undo
 
 Action triggers (English and Polish):
 - "press enter", "wciśnij enter", "naciśnij enter", "submit", "wyślij", "potem enter", "and enter" → type=key, value=enter
@@ -49,6 +59,9 @@ Action triggers (English and Polish):
 - "press escape" → type=key, value=escape
 - "press backspace" → type=key, value=backspace
 - "new line", "nowa linia", "nowy wiersz" → type=char, value=\\n
+- "delete word", "usuń słowo", "skasuj słowo" → type=shortcut, value=delete_word
+- "select all", "zaznacz wszystko" → type=shortcut, value=select_all
+- "undo", "cofnij" → type=shortcut, value=undo
 
 Rules:
 - If no action triggers are present, return {"actions": []}.
@@ -65,6 +78,12 @@ Output: {"actions": [{"phrase": "Naciśnij Enter", "type": "key", "value": "ente
 
 Input: "Co tu się stało? Naciśnij Enter."
 Output: {"actions": [{"phrase": "Naciśnij Enter", "type": "key", "value": "enter"}]}
+
+Input: "Usuń słowo"
+Output: {"actions": [{"phrase": "Usuń słowo", "type": "shortcut", "value": "delete_word"}]}
+
+Input: "ten kod jest zły usuń słowo"
+Output: {"actions": [{"phrase": "usuń słowo", "type": "shortcut", "value": "delete_word"}]}
 
 Input: "press enter and run it"
 Output: {"actions": [{"phrase": "press enter", "type": "key", "value": "enter"}]}
@@ -199,6 +218,11 @@ def _action_to_op(action: dict) -> tuple | None:
         if keycode is None:
             return None
         return ("key", keycode)
+    if type_ == "shortcut":
+        keycodes = NAMED_SHORTCUTS.get(value.lower())
+        if keycodes is None:
+            return None
+        return ("combo", keycodes)
     if type_ == "char":
         if not value:
             return None
