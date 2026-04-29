@@ -27,7 +27,7 @@ _KEY_NAMES_TO_CODES = {
     "backspace": _KEY_BACKSPACE,
 }
 
-_PROMPT_TEMPLATE = """You are an inline action parser for a voice dictation tool. Given a transcript that mixes free dictation text with imperative key-press commands, return a JSON array of operations.
+_PROMPT_TEMPLATE = """You are an inline action parser for a voice dictation tool. Given a transcript that mixes free dictation text with imperative key-press commands, return a JSON object with one field "ops" containing an array of operations.
 
 Each operation is one of:
 - {"op": "text", "value": "..."}  — text to type literally
@@ -35,27 +35,44 @@ Each operation is one of:
 - {"op": "char", "value": "\\n"}  — insert a newline within typed text
 
 Rules:
-- Plain dictation with no key-press intent → one text op containing the whole input.
-- Phrases like "press enter", "wciśnij enter", "naciśnij enter", "submit", "wyślij", "potem enter", "and submit", "and enter" → key op for enter.
+- Plain dictation with no key-press intent → ops contains one text op with the whole input.
+- Phrases like "press enter", "wciśnij enter", "naciśnij enter", "submit", "wyślij", "potem enter", "and submit", "and enter", "naciśnij entera" → key op for enter.
 - Phrases like "press tab" or "tabuluj" → key op for tab.
 - "new line" / "nowa linia" / "nowy wiersz" → char op with "\\n".
 - Strip surrounding punctuation around action triggers ("Press Enter." → just key op, no trailing dot).
+- Mixed text + commands produce multiple ops in order (text before, key, text after).
 - Language is auto-detected; same rules apply for English and Polish.
+- ALWAYS include the "ops" key with a non-empty array.
 
 Examples:
 Input: "hello world"
-Output: [{"op": "text", "value": "hello world"}]
+Output: {"ops": [{"op": "text", "value": "hello world"}]}
 
 Input: "please add this press enter and run it"
-Output: [{"op": "text", "value": "please add this"}, {"op": "key", "value": "enter"}, {"op": "text", "value": "and run it"}]
+Output: {"ops": [{"op": "text", "value": "please add this"}, {"op": "key", "value": "enter"}, {"op": "text", "value": "and run it"}]}
 
 Input: "Zwiększ rozmiar fontu wciśnij enter"
-Output: [{"op": "text", "value": "Zwiększ rozmiar fontu"}, {"op": "key", "value": "enter"}]
+Output: {"ops": [{"op": "text", "value": "Zwiększ rozmiar fontu"}, {"op": "key", "value": "enter"}]}
+
+Input: "naciśnij enter"
+Output: {"ops": [{"op": "key", "value": "enter"}]}
+
+Input: "Naciśnij Enter."
+Output: {"ops": [{"op": "key", "value": "enter"}]}
+
+Input: "press enter"
+Output: {"ops": [{"op": "key", "value": "enter"}]}
+
+Input: "press enter and run it"
+Output: {"ops": [{"op": "key", "value": "enter"}, {"op": "text", "value": "and run it"}]}
 
 Input: "she pressed enter on the keyboard"
-Output: [{"op": "text", "value": "she pressed enter on the keyboard"}]
+Output: {"ops": [{"op": "text", "value": "she pressed enter on the keyboard"}]}
 
-Now parse this transcript and return ONLY the JSON array, no other text.
+Input: "napisz coś potem wyślij"
+Output: {"ops": [{"op": "text", "value": "napisz coś"}, {"op": "key", "value": "enter"}]}
+
+Now parse this transcript and return ONLY the JSON object, no other text.
 Input: %s
 Output:"""
 
@@ -82,10 +99,12 @@ class IntentParser:
             print(f"[korder] intent LLM failed, falling back to regex: {e}", flush=True)
             return _split_into_ops(transcript)
 
+        print(f"[korder] LLM raw ops for {transcript!r}: {llm_ops!r}", flush=True)
         normalized = _normalize_llm_ops(llm_ops)
         if normalized is None:
             print(f"[korder] intent LLM returned malformed output, falling back to regex", flush=True)
             return _split_into_ops(transcript)
+        print(f"[korder] normalized ops: {normalized!r}", flush=True)
         return normalized
 
     def _call_ollama(self, transcript: str) -> list:
@@ -106,18 +125,23 @@ class IntentParser:
             body = json.loads(resp.read().decode("utf-8"))
         # ollama wraps the model output in `response` (a string)
         raw = body.get("response", "").strip()
-        # The model is asked for a JSON array; format=json may wrap it in
-        # an object. Try both shapes.
         parsed = json.loads(raw)
+        # Preferred shape: {"ops": [...]}
+        if isinstance(parsed, dict) and "ops" in parsed and isinstance(parsed["ops"], list):
+            return parsed["ops"]
+        # Fallback: bare array (some models emit this even when asked for object)
         if isinstance(parsed, list):
             return parsed
-        if isinstance(parsed, dict) and "ops" in parsed:
-            return parsed["ops"]
+        # Fallback: a single op dict (E2B-class models often collapse to this
+        # for short inputs, dropping the array wrapper). Treat as one-op list.
+        if isinstance(parsed, dict) and "op" in parsed and "value" in parsed:
+            return [parsed]
+        # Last-resort fallback: single-key wrapper around the array
         if isinstance(parsed, dict) and len(parsed) == 1:
             only = next(iter(parsed.values()))
             if isinstance(only, list):
                 return only
-        raise ValueError(f"unexpected LLM output shape: {type(parsed).__name__}")
+        raise ValueError(f"unexpected LLM output shape: {type(parsed).__name__}: {parsed!r}")
 
 
 def _normalize_llm_ops(llm_ops: list) -> list[tuple] | None:
