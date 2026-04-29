@@ -19,7 +19,7 @@ class WhisperEngine:
         self.initial_prompt = initial_prompt or None
         self.n_threads = n_threads
         self._model: Model | None = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def _ensure_loaded(self) -> Model:
         with self._lock:
@@ -44,6 +44,7 @@ class WhisperEngine:
     def transcribe(self, audio: np.ndarray) -> str:
         if audio.size == 0:
             return ""
-        m = self._ensure_loaded()
-        segments = m.transcribe(audio)
+        with self._lock:
+            m = self._ensure_loaded()
+            segments = m.transcribe(audio)
         return " ".join(s.text.strip() for s in segments).strip()
