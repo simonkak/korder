@@ -201,7 +201,14 @@ def _segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | N
     pos = 0
     for start, end, a in found:
         if start > pos:
-            seg = transcript[pos:start].strip(_PUNCT_TO_STRIP)
+            seg = transcript[pos:start]
+            # Inner edges adjacent to action boundaries get stripped;
+            # outer edges (start of input, end of input) pass through
+            # untouched so trailing whitespace added by the caller for
+            # inter-commit separation is preserved.
+            if pos > 0:
+                seg = seg.lstrip(_PUNCT_TO_STRIP)
+            seg = seg.rstrip(_PUNCT_TO_STRIP)
             if seg:
                 ops.append(("text", seg))
         op = _action_to_op(a)
@@ -209,7 +216,10 @@ def _segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | N
             ops.append(op)
         pos = end
     if pos < len(transcript):
-        seg = transcript[pos:].strip(_PUNCT_TO_STRIP)
+        seg = transcript[pos:]
+        if pos > 0:
+            seg = seg.lstrip(_PUNCT_TO_STRIP)
+        # No rstrip — preserve outer trailing whitespace.
         if seg:
             ops.append(("text", seg))
 
