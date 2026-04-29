@@ -66,8 +66,9 @@ class MainWindow(QMainWindow):
         self._trailing_space = trailing_space
         self._workers: set[_TranscribeWorker] = set()
         self._partial_in_flight = False
+        self._committed_samples = 0
         self._partial_timer = QTimer(self)
-        self._partial_timer.setInterval(700)
+        self._partial_timer.setInterval(300)
         self._partial_timer.timeout.connect(self._on_partial_tick)
 
         central = QWidget()
@@ -114,6 +115,10 @@ class MainWindow(QMainWindow):
             self._start_recording()
         self._sync_button()
 
+    PAUSE_MS = 500
+    MIN_COMMIT_MS = 600
+    SILENCE_THRESHOLD = 0.005
+
     def _start_recording(self) -> None:
         if self._recorder.is_recording:
             return
@@ -122,38 +127,64 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.statusBar().showMessage(f"Mic error: {e}", 6000)
             return
-        self._status.setText("Recording... press again to transcribe.")
+        self._status.setText("Listening...")
         self._live.setText("")
         self._partial_in_flight = False
+        self._committed_samples = 0
         self._partial_timer.start()
 
     def _stop_recording(self) -> None:
         if not self._recorder.is_recording:
             return
         self._partial_timer.stop()
-        audio = self._recorder.stop()
+        full = self._recorder.stop()
         self._live.setText("")
-        if audio.size < int(0.2 * self._recorder.sample_rate):
-            self._status.setText("Too short, try again.")
+        sr = self._recorder.sample_rate
+        remaining = full[self._committed_samples:]
+        if remaining.size < int(0.2 * sr):
+            self._status.setText("Idle.")
             return
         self._status.setText("Transcribing...")
-        worker = _TranscribeWorker(self._engine, audio)
-        worker.finished_text.connect(self._on_text)
-        worker.failed.connect(self._on_fail)
-        worker.finished.connect(lambda w=worker: self._reap(w))
-        self._workers.add(worker)
-        worker.start()
+        self._submit_transcribe(remaining, kind="commit")
 
     def _on_partial_tick(self) -> None:
-        if self._partial_in_flight or not self._recorder.is_recording:
+        if not self._recorder.is_recording:
             return
-        audio = self._recorder.snapshot()
-        if audio.size < int(0.6 * self._recorder.sample_rate):
+        sr = self._recorder.sample_rate
+        full = self._recorder.snapshot()
+        new = full[self._committed_samples:]
+        if new.size < int(0.5 * sr):
             return
-        self._partial_in_flight = True
+
+        tail_window = int((self.PAUSE_MS / 1000) * sr)
+        speech_min = int((self.MIN_COMMIT_MS / 1000) * sr)
+        if new.size > tail_window:
+            tail = new[-tail_window:]
+            tail_rms = float(np.sqrt(np.mean(tail.astype(np.float32) ** 2)))
+            has_pause = tail_rms < self.SILENCE_THRESHOLD and (new.size - tail_window) >= speech_min
+        else:
+            has_pause = False
+
+        if has_pause:
+            speech_end = new.size - tail_window
+            segment = np.ascontiguousarray(new[:speech_end])
+            self._committed_samples += speech_end
+            self._live.setText("")
+            self._submit_transcribe(segment, kind="commit")
+            return
+
+        if not self._partial_in_flight:
+            self._submit_transcribe(np.ascontiguousarray(new), kind="partial")
+
+    def _submit_transcribe(self, audio: np.ndarray, kind: str) -> None:
         worker = _TranscribeWorker(self._engine, audio)
-        worker.finished_text.connect(self._on_partial_text)
-        worker.failed.connect(self._on_partial_fail)
+        if kind == "partial":
+            self._partial_in_flight = True
+            worker.finished_text.connect(self._on_partial_text)
+            worker.failed.connect(self._on_partial_fail)
+        else:
+            worker.finished_text.connect(self._on_commit_text)
+            worker.failed.connect(self._on_fail)
         worker.finished.connect(lambda w=worker: self._reap(w))
         self._workers.add(worker)
         worker.start()
@@ -185,13 +216,17 @@ class MainWindow(QMainWindow):
             w.wait(2000)
         super().closeEvent(event)
 
-    def _on_text(self, text: str) -> None:
+    def _on_commit_text(self, text: str) -> None:
         text = text.strip()
         if not text:
-            self._status.setText("(no speech detected)")
+            if not self._recorder.is_recording:
+                self._status.setText("Idle.")
             return
         self._transcript.appendPlainText(text)
-        self._status.setText("Idle.")
+        if self._recorder.is_recording:
+            self._status.setText("Listening...")
+        else:
+            self._status.setText("Idle.")
         if self._inject_chk.isChecked() and self._injector is not None:
             payload = text + (" " if self._trailing_space else "")
             try:
