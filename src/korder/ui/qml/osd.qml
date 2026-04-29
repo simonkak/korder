@@ -4,8 +4,8 @@ import org.kde.layershell as LayerShell
 
 Window {
     id: root
-    width: 720
-    height: 80
+    width: 520
+    height: 56
     color: "transparent"
     flags: Qt.FramelessWindowHint
     visible: true
@@ -32,12 +32,13 @@ Window {
 
         Text {
             anchors.fill: parent
-            anchors.margins: 18
+            anchors.margins: 14
             color: palette.windowText
             text: osdState ? osdState.text : ""
-            font.pixelSize: 16
+            font.pixelSize: 14
             font.weight: Font.Medium
             wrapMode: Text.WordWrap
+            elide: Text.ElideRight
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }
