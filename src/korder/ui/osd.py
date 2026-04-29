@@ -34,15 +34,28 @@ class OSDWindow(QWidget):
         self.setFixedWidth(720)
         self.setMinimumHeight(64)
 
+        self.setWindowOpacity(0.0)
+
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
-        self._hide_timer.timeout.connect(self.hide)
+        self._hide_timer.timeout.connect(self._fade_out)
+
+    def map_offscreen(self) -> None:
+        """Map the Wayland surface once at app start, kept invisible via opacity.
+        Subsequent show_text calls just flip opacity, avoiding the focus-stealing
+        re-map that would happen if we called show() per recording session."""
+        if not self.isVisible():
+            self._reposition()
+            self.show()
+            self.setWindowOpacity(0.0)
 
     def show_text(self, text: str, *, transient_ms: int = 0) -> None:
         self._label.setText(text or "")
         self._reposition()
         if not self.isVisible():
             self.show()
+        if self.windowOpacity() < 1.0:
+            self.setWindowOpacity(1.0)
         if transient_ms > 0:
             self._hide_timer.start(transient_ms)
         else:
@@ -53,7 +66,10 @@ class OSDWindow(QWidget):
 
     def hide_now(self) -> None:
         self._hide_timer.stop()
-        self.hide()
+        self._fade_out()
+
+    def _fade_out(self) -> None:
+        self.setWindowOpacity(0.0)
 
     def _reposition(self) -> None:
         screen = QGuiApplication.primaryScreen()

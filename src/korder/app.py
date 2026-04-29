@@ -89,6 +89,7 @@ def _run_app() -> int:
         injector = None
 
     osd = OSDWindow()
+    osd.map_offscreen()
 
     window = MainWindow(
         engine=engine,
