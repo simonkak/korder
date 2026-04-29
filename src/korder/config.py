@@ -21,8 +21,7 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "paste_mode": "auto",
     },
     "ui": {
-        "stay_on_top": "true",
-        "non_focusable": "true",
+        "show_history_on_start": "false",
     },
 }
 

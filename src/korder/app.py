@@ -5,15 +5,17 @@ import socket
 import sys
 import tempfile
 
-from PySide6.QtCore import QByteArray
+from PySide6.QtCore import QByteArray, Qt
+from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from korder import config
 from korder.audio.capture import MicRecorder
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import InjectError, make_backend
 from korder.ui.main_window import MainWindow
+from korder.ui.osd import OSDWindow
 
 SOCKET_NAME = f"korder-{os.getuid()}"
 SOCKET_PATH = os.path.join(tempfile.gettempdir(), SOCKET_NAME)
@@ -67,6 +69,7 @@ def _run_app() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Korder")
     app.setOrganizationDomain("local.korder")
+    app.setQuitOnLastWindowClosed(False)
 
     recorder = MicRecorder(
         sample_rate=int(cfg["audio"]["sample_rate"]),
@@ -85,20 +88,82 @@ def _run_app() -> int:
         print(f"[korder] injection disabled: {e}", file=sys.stderr)
         injector = None
 
+    osd = OSDWindow()
+
     window = MainWindow(
         engine=engine,
         recorder=recorder,
         injector=injector,
-        stay_on_top=_bool(cfg["ui"]["stay_on_top"]),
-        non_focusable=_bool(cfg["ui"]["non_focusable"]),
+        osd=osd,
         trailing_space=_bool(cfg["inject"]["trailing_space"]),
     )
 
-    server = _start_ipc_server(window)
-    app.aboutToQuit.connect(server.close)
+    tray = _make_tray(window)
+    tray.show()
 
-    window.show()
+    server = _start_ipc_server(window)
+
+    def _on_quit() -> None:
+        server.close()
+        window.shutdown()
+        osd.hide_now()
+        tray.hide()
+
+    app.aboutToQuit.connect(_on_quit)
+
     return app.exec()
+
+
+def _make_tray(window: MainWindow) -> QSystemTrayIcon:
+    tray = QSystemTrayIcon(_tray_icon())
+    tray.setToolTip("Korder — voice transcription")
+
+    menu = QMenu()
+
+    act_toggle = QAction("Toggle recording", menu)
+    act_toggle.triggered.connect(window.toggle_recording)
+    menu.addAction(act_toggle)
+
+    act_history = QAction("Show transcript history", menu)
+    act_history.triggered.connect(lambda: (window.show(), window.raise_(), window.activateWindow()))
+    menu.addAction(act_history)
+
+    menu.addSeparator()
+
+    act_quit = QAction("Quit", menu)
+    act_quit.triggered.connect(QApplication.instance().quit)
+    menu.addAction(act_quit)
+
+    tray.setContextMenu(menu)
+
+    def _on_activated(reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            window.toggle_recording()
+
+    tray.activated.connect(_on_activated)
+    return tray
+
+
+def _tray_icon() -> QIcon:
+    icon = QIcon.fromTheme("audio-input-microphone")
+    if not icon.isNull():
+        return icon
+    icon = QIcon.fromTheme("microphone")
+    if not icon.isNull():
+        return icon
+    pix = QPixmap(64, 64)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setBrush(QColor(220, 220, 220))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawRoundedRect(20, 8, 24, 36, 12, 12)
+    p.setBrush(QColor(180, 180, 180))
+    p.drawRoundedRect(14, 28, 36, 6, 3, 3)
+    p.drawRoundedRect(30, 36, 4, 14, 2, 2)
+    p.drawRoundedRect(20, 50, 24, 4, 2, 2)
+    p.end()
+    return QIcon(pix)
 
 
 def _start_ipc_server(window: MainWindow) -> QLocalServer:

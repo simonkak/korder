@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from korder.audio.capture import MicRecorder
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import YdotoolBackend, InjectError
+from korder.ui.osd import OSDWindow
 
 
 class _TranscribeWorker(QThread):
@@ -43,26 +44,17 @@ class MainWindow(QMainWindow):
         engine: WhisperEngine,
         recorder: MicRecorder,
         injector: YdotoolBackend | None,
-        stay_on_top: bool = True,
-        non_focusable: bool = True,
+        osd: OSDWindow,
         trailing_space: bool = True,
     ):
         super().__init__()
-        self.setWindowTitle("Korder")
-        self.resize(560, 260)
-
-        flags = Qt.WindowType.Tool
-        if stay_on_top:
-            flags |= Qt.WindowType.WindowStaysOnTopHint
-        if non_focusable:
-            flags |= Qt.WindowType.WindowDoesNotAcceptFocus
-        self.setWindowFlags(flags)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, True)
+        self.setWindowTitle("Korder — transcript history")
+        self.resize(560, 360)
 
         self._engine = engine
         self._recorder = recorder
         self._injector = injector
+        self._osd = osd
         self._trailing_space = trailing_space
         self._workers: set[_TranscribeWorker] = set()
         self._partial_in_flight = False
@@ -74,20 +66,13 @@ class MainWindow(QMainWindow):
         central = QWidget()
         layout = QVBoxLayout(central)
 
-        self._status = QLabel("Idle. Click the button (or press your hotkey) to dictate.")
+        self._status = QLabel("Idle. Use the tray icon or hotkey to dictate.")
         layout.addWidget(self._status)
 
         self._transcript = QPlainTextEdit()
         self._transcript.setPlaceholderText("Transcripts will accumulate here...")
+        self._transcript.setReadOnly(True)
         layout.addWidget(self._transcript)
-
-        self._live = QLabel("")
-        self._live.setWordWrap(True)
-        self._live.setStyleSheet(
-            "color: palette(mid); font-style: italic; padding: 4px;"
-        )
-        self._live.setMinimumHeight(28)
-        layout.addWidget(self._live)
 
         bar = QHBoxLayout()
         self._ptt = QPushButton("Start dictating")
@@ -130,7 +115,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Mic error: {e}", 6000)
             return
         self._status.setText("Listening...")
-        self._live.setText("")
+        self._osd.show_text("Listening…")
         self._partial_in_flight = False
         self._committed_samples = 0
         self._partial_timer.start()
@@ -140,13 +125,14 @@ class MainWindow(QMainWindow):
             return
         self._partial_timer.stop()
         full = self._recorder.stop()
-        self._live.setText("")
         sr = self._recorder.sample_rate
         remaining = full[self._committed_samples:]
         if remaining.size < int(0.2 * sr):
             self._status.setText("Idle.")
+            self._osd.hide_after(300)
             return
         self._status.setText("Transcribing...")
+        self._osd.show_text("Transcribing…")
         self._submit_transcribe(remaining, kind="commit")
 
     def _on_partial_tick(self) -> None:
@@ -167,7 +153,6 @@ class MainWindow(QMainWindow):
         if commit_on_pause or commit_on_max:
             segment = np.ascontiguousarray(new[:speech_end])
             self._committed_samples += speech_end
-            self._live.setText("")
             self._submit_transcribe(segment, kind="commit")
             return
 
@@ -208,7 +193,7 @@ class MainWindow(QMainWindow):
             return
         text = text.strip()
         if text:
-            self._live.setText(text)
+            self._osd.show_text(text)
 
     def _on_partial_fail(self, _msg: str) -> None:
         self._partial_in_flight = False
@@ -225,21 +210,30 @@ class MainWindow(QMainWindow):
         worker.deleteLater()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        # Tray-first design: closing the history window just hides it.
+        # Quit happens via the tray menu, which fires QApplication.quit().
+        event.ignore()
+        self.hide()
+
+    def shutdown(self) -> None:
+        """Called from app shutdown to flush in-flight transcribe workers."""
         for w in list(self._workers):
             w.wait(2000)
-        super().closeEvent(event)
 
     def _on_commit_text(self, text: str) -> None:
         text = text.strip()
         if not text:
             if not self._recorder.is_recording:
                 self._status.setText("Idle.")
+                self._osd.hide_after(300)
             return
         self._transcript.appendPlainText(text)
         if self._recorder.is_recording:
             self._status.setText("Listening...")
+            self._osd.show_text(text, transient_ms=1200)
         else:
             self._status.setText("Idle.")
+            self._osd.show_text(text, transient_ms=1500)
         if self._inject_chk.isChecked() and self._injector is not None:
             payload = text + (" " if self._trailing_space else "")
             try:
