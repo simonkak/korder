@@ -18,6 +18,7 @@ DEFAULTS: dict[str, dict[str, str]] = {
     "inject": {
         "tool": "ydotool",
         "trailing_space": "true",
+        "paste_mode": "auto",
     },
     "ui": {
         "stay_on_top": "true",

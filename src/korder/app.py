@@ -80,7 +80,7 @@ def _run_app() -> int:
     )
 
     try:
-        injector = make_backend()
+        injector = make_backend(paste_mode=cfg["inject"]["paste_mode"])
     except InjectError as e:
         print(f"[korder] injection disabled: {e}", file=sys.stderr)
         injector = None
