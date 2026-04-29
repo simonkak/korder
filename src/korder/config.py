@@ -24,7 +24,7 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # phrases) or "llm" (slower, smarter — uses local Gemma via ollama,
         # handles natural variations and arbitrary phrasings).
         "action_parser": "regex",
-        "llm_model": "gemma4",
+        "llm_model": "gemma4:e4b",
     },
     "ui": {
         "show_history_on_start": "false",

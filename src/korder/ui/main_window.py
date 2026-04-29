@@ -39,6 +39,27 @@ class _TranscribeWorker(QThread):
             self.failed.emit(str(e))
 
 
+class _InjectWorker(QThread):
+    """Runs injector.type() off the UI thread so the LLM call (300-500ms with
+    Gemma) doesn't freeze the OSD's thinking indicator."""
+
+    done = Signal(str)  # carries the original text for post-inject UI update
+    failed = Signal(str)
+
+    def __init__(self, injector: YdotoolBackend, payload: str, original: str):
+        super().__init__()
+        self._injector = injector
+        self._payload = payload
+        self._original = original
+
+    def run(self) -> None:
+        try:
+            self._injector.type(self._payload)
+            self.done.emit(self._original)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -60,6 +81,7 @@ class MainWindow(QMainWindow):
         self._trailing_space = trailing_space
         self._detector = SpeechDetector(sample_rate=recorder.sample_rate, aggressiveness=3)
         self._workers: set[_TranscribeWorker] = set()
+        self._inject_workers: set[_InjectWorker] = set()
         self._partial_in_flight = False
         self._committed_samples = 0
         self._last_partial_norm = ""
@@ -242,8 +264,10 @@ class MainWindow(QMainWindow):
         self.hide()
 
     def shutdown(self) -> None:
-        """Called from app shutdown to flush in-flight transcribe workers."""
+        """Called from app shutdown to flush in-flight workers."""
         for w in list(self._workers):
+            w.wait(2000)
+        for w in list(self._inject_workers):
             w.wait(2000)
 
     def _on_commit_text(self, text: str) -> None:
@@ -254,18 +278,47 @@ class MainWindow(QMainWindow):
                 self._osd.hide_after(300)
             return
         self._transcript.appendPlainText(text)
+        injecting = self._inject_chk.isChecked() and self._injector is not None
+
+        if injecting:
+            # Show thinking marker while inject (and possible LLM parse) runs
+            # in a worker. For regex parser the marker is gone in <100ms;
+            # for LLM parser it persists ~300-500ms — clear visual signal.
+            marker = "💭 " if self._injector.is_slow_parser else ""
+            self._osd.show_text(f"{marker}{text}")
+            payload = text + (" " if self._trailing_space else "")
+            worker = _InjectWorker(self._injector, payload, text)
+            worker.done.connect(self._on_inject_done)
+            worker.failed.connect(self._on_inject_failed)
+            worker.finished.connect(lambda w=worker: self._reap_inject(w))
+            self._inject_workers.add(worker)
+            worker.start()
+        else:
+            if self._recorder.is_recording:
+                self._status.setText("Listening...")
+                self._osd.show_text(text)
+            else:
+                self._status.setText("Idle.")
+                self._osd.show_text(text, transient_ms=1500)
+
         if self._recorder.is_recording:
             self._status.setText("Listening...")
-            self._osd.show_text(text)
         else:
             self._status.setText("Idle.")
-            self._osd.show_text(text, transient_ms=1500)
-        if self._inject_chk.isChecked() and self._injector is not None:
-            payload = text + (" " if self._trailing_space else "")
-            try:
-                self._injector.type(payload)
-            except InjectError as e:
-                self.statusBar().showMessage(f"Inject failed: {e}", 8000)
+
+    def _on_inject_done(self, original_text: str) -> None:
+        # Post-inject: replace the marker'd text with the plain text.
+        if self._recorder.is_recording:
+            self._osd.show_text(original_text)
+        else:
+            self._osd.show_text(original_text, transient_ms=1500)
+
+    def _on_inject_failed(self, msg: str) -> None:
+        self.statusBar().showMessage(f"Inject failed: {msg}", 8000)
+
+    def _reap_inject(self, worker: _InjectWorker) -> None:
+        self._inject_workers.discard(worker)
+        worker.deleteLater()
 
     def _on_fail(self, msg: str) -> None:
         self._status.setText(f"Transcription failed: {msg}")

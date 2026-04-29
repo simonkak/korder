@@ -2,6 +2,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import threading
 import time
 
 
@@ -89,10 +90,21 @@ class YdotoolBackend:
         # If supplied, op_parser(text) -> ops list takes precedence over the
         # built-in regex parser. Lets app.py inject the LLM-backed parser.
         self._op_parser = op_parser or _split_into_ops
+        # Serializes type() calls across worker threads so concurrent
+        # commits don't race on wl-copy clipboard state.
+        self._lock = threading.Lock()
+        # True when op_parser is non-default — i.e., a slow LLM-backed
+        # parser. UI uses this to decide whether to show a "thinking"
+        # indicator during injection.
+        self.is_slow_parser = op_parser is not None
 
     def type(self, text: str) -> None:
         if not text:
             return
+        with self._lock:
+            self._type_locked(text)
+
+    def _type_locked(self, text: str) -> None:
         ops = self._op_parser(text)
         if not ops:
             return

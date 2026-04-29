@@ -61,7 +61,13 @@ Output:"""
 
 
 class IntentParser:
-    def __init__(self, model: str = "gemma4", timeout_s: float = 5.0):
+    def __init__(self, model: str = "gemma4:e4b", timeout_s: float = 5.0):
+        # Gemma 4 ships in E2B (2.3B effective) / E4B (4.5B) / 26B-A4B / 31B
+        # variants per huggingface.co/blog/gemma4. E4B is the
+        # recommended-for-JSON-tasks size — fits comfortably in 7800 XT
+        # VRAM with room for whisper, and benchmarks show good structured
+        # output on instruction-tuned variants. Adjust llm_model in config
+        # to match the actual ollama tag if it differs.
         self.model = model
         self.timeout_s = timeout_s
 
