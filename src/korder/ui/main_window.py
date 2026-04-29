@@ -57,12 +57,12 @@ class MainWindow(QMainWindow):
         self._injector = injector
         self._osd = osd
         self._trailing_space = trailing_space
-        self._detector = SpeechDetector(sample_rate=recorder.sample_rate, aggressiveness=2)
+        self._detector = SpeechDetector(sample_rate=recorder.sample_rate, aggressiveness=3)
         self._workers: set[_TranscribeWorker] = set()
         self._partial_in_flight = False
         self._committed_samples = 0
         self._partial_timer = QTimer(self)
-        self._partial_timer.setInterval(150)
+        self._partial_timer.setInterval(100)
         self._partial_timer.timeout.connect(self._on_partial_tick)
 
         central = QWidget()
@@ -102,10 +102,10 @@ class MainWindow(QMainWindow):
             self._start_recording()
         self._sync_button()
 
-    PAUSE_MS = 220
-    MIN_COMMIT_MS = 300
+    PAUSE_MS = 150
+    MIN_COMMIT_MS = 200
     MAX_SEGMENT_MS = 8000
-    MIN_SPEECH_FOR_PARTIAL_MS = 150
+    MIN_SPEECH_FOR_PARTIAL_MS = 90
 
     def _start_recording(self) -> None:
         if self._recorder.is_recording:
