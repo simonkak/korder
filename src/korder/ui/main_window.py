@@ -115,9 +115,11 @@ class MainWindow(QMainWindow):
             self._start_recording()
         self._sync_button()
 
-    PAUSE_MS = 500
-    MIN_COMMIT_MS = 600
-    SILENCE_THRESHOLD = 0.005
+    PAUSE_MS = 400
+    MIN_COMMIT_MS = 500
+    MAX_SEGMENT_MS = 8000
+    SILENCE_THRESHOLD = 0.015
+    SILENCE_WINDOW_MS = 50
 
     def _start_recording(self) -> None:
         if self._recorder.is_recording:
@@ -156,17 +158,13 @@ class MainWindow(QMainWindow):
         if new.size < int(0.5 * sr):
             return
 
-        tail_window = int((self.PAUSE_MS / 1000) * sr)
+        speech_end, silence_ms = self._find_trailing_silence(new, sr)
         speech_min = int((self.MIN_COMMIT_MS / 1000) * sr)
-        if new.size > tail_window:
-            tail = new[-tail_window:]
-            tail_rms = float(np.sqrt(np.mean(tail.astype(np.float32) ** 2)))
-            has_pause = tail_rms < self.SILENCE_THRESHOLD and (new.size - tail_window) >= speech_min
-        else:
-            has_pause = False
 
-        if has_pause:
-            speech_end = new.size - tail_window
+        commit_on_pause = silence_ms >= self.PAUSE_MS and speech_end >= speech_min
+        commit_on_max = new.size >= int((self.MAX_SEGMENT_MS / 1000) * sr) and speech_end >= speech_min
+
+        if commit_on_pause or commit_on_max:
             segment = np.ascontiguousarray(new[:speech_end])
             self._committed_samples += speech_end
             self._live.setText("")
@@ -175,6 +173,21 @@ class MainWindow(QMainWindow):
 
         if not self._partial_in_flight:
             self._submit_transcribe(np.ascontiguousarray(new), kind="partial")
+
+    def _find_trailing_silence(self, audio: np.ndarray, sr: int) -> tuple[int, int]:
+        """Find where speech ended in the buffer. Returns (speech_end_sample, silence_ms)."""
+        window = int((self.SILENCE_WINDOW_MS / 1000) * sr)
+        if audio.size < window:
+            return audio.size, 0
+        n_windows = audio.size // window
+        for i in range(n_windows - 1, -1, -1):
+            chunk = audio[i * window:(i + 1) * window]
+            rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+            if rms >= self.SILENCE_THRESHOLD:
+                speech_end = (i + 1) * window
+                silence_samples = audio.size - speech_end
+                return speech_end, int(silence_samples * 1000 / sr)
+        return 0, int(audio.size * 1000 / sr)
 
     def _submit_transcribe(self, audio: np.ndarray, kind: str) -> None:
         worker = _TranscribeWorker(self._engine, audio)
