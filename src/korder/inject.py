@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 import shutil
 import subprocess
 import time
@@ -8,9 +9,64 @@ class InjectError(RuntimeError):
     pass
 
 
-# Linux evdev keycodes used for the Ctrl+V paste shortcut.
+# Linux evdev keycodes.
 _KEY_LCTRL = 29
 _KEY_V = 47
+_KEY_ENTER = 28
+_KEY_TAB = 15
+_KEY_ESCAPE = 1
+_KEY_BACKSPACE = 14
+
+
+# Inline action triggers: phrases in the transcript that get translated into
+# special-key presses or character emissions instead of being typed verbatim.
+# Keys require an explicit "press" prefix so prose like "she pressed enter"
+# stays literal text. Char emissions like "new line" are unambiguous enough
+# without a prefix.
+_TRIGGERS: dict[str, tuple[str, object]] = {
+    "press enter": ("key", _KEY_ENTER),
+    "press return": ("key", _KEY_ENTER),
+    "press tab": ("key", _KEY_TAB),
+    "press escape": ("key", _KEY_ESCAPE),
+    "press backspace": ("key", _KEY_BACKSPACE),
+    "new line": ("char", "\n"),
+    "new paragraph": ("char", "\n\n"),
+}
+
+_TRIGGER_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in sorted(_TRIGGERS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _split_into_ops(text: str) -> list[tuple]:
+    """Split a transcript into a sequence of ('text', s) / ('key', code) /
+    ('char', s) ops. Returns an empty list for empty input."""
+    if not text:
+        return []
+    # Strip whitespace and trailing punctuation Whisper adds around the
+    # trigger phrase (a trailing period after "Press Enter." for example).
+    # Leading commas after a trigger likewise dropped.
+    _PUNCT_AFTER = " \t.!?,;:"
+    _PUNCT_BEFORE = " \t.!?;:"
+    ops: list[tuple] = []
+    last_end = 0
+    for m in _TRIGGER_RE.finditer(text):
+        if m.start() > last_end:
+            seg = text[last_end:m.start()].rstrip(_PUNCT_BEFORE)
+            if seg:
+                ops.append(("text", seg))
+        kind, val = _TRIGGERS[m.group(0).lower()]
+        if kind == "key":
+            ops.append(("key", val))
+        else:
+            ops.append(("char", val))
+        last_end = m.end()
+    if last_end < len(text):
+        seg = text[last_end:].lstrip(_PUNCT_AFTER) if ops else text[last_end:]
+        if seg:
+            ops.append(("text", seg))
+    return ops
 
 
 class YdotoolBackend:
@@ -34,10 +90,38 @@ class YdotoolBackend:
     def type(self, text: str) -> None:
         if not text:
             return
-        if self._should_paste(text):
-            self._paste(text)
-        else:
-            self._direct_type(text)
+        ops = _split_into_ops(text)
+        if not ops:
+            return
+        for i, op in enumerate(ops):
+            kind = op[0]
+            if kind == "text" or kind == "char":
+                segment: str = op[1]
+                if self._should_paste(segment):
+                    self._paste(segment)
+                else:
+                    self._direct_type(segment)
+            elif kind == "key":
+                self._press_key(op[1])
+            # Inter-op pause so paste-target apps fully receive the previous
+            # operation's events before the next one fires (especially
+            # important between paste and key press).
+            if i < len(ops) - 1:
+                time.sleep(0.04)
+
+    def _press_key(self, keycode: int) -> None:
+        try:
+            subprocess.run(
+                ["ydotool", "key", f"{keycode}:1", f"{keycode}:0"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except subprocess.CalledProcessError as e:
+            raise InjectError(
+                f"ydotool key {keycode} failed: {(e.stderr or '').strip() or e}"
+            ) from e
 
     def _should_paste(self, text: str) -> bool:
         if not self._has_wl_copy:
