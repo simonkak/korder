@@ -36,6 +36,13 @@ class MicRecorder:
             return np.zeros(0, dtype=np.float32)
         return np.concatenate(self._chunks)
 
+    def snapshot(self) -> np.ndarray:
+        """Return a copy of the audio captured so far without stopping the stream."""
+        chunks = list(self._chunks)
+        if not chunks:
+            return np.zeros(0, dtype=np.float32)
+        return np.concatenate(chunks)
+
     @property
     def is_recording(self) -> bool:
         return self._stream is not None

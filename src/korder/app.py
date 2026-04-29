@@ -74,8 +74,9 @@ def _run_app() -> int:
     )
     engine = WhisperEngine(
         model=cfg["whisper"]["model"],
-        compute_type=cfg["whisper"]["compute_type"],
         language=cfg["whisper"]["language"] or None,
+        initial_prompt=cfg["whisper"]["initial_prompt"] or None,
+        n_threads=int(cfg["whisper"]["n_threads"]),
     )
 
     try:

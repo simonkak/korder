@@ -10,9 +10,10 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "device": "",
     },
     "whisper": {
-        "model": "base",
-        "compute_type": "int8",
+        "model": "medium",
         "language": "",
+        "initial_prompt": "Transkrypcja po polsku z pełnymi znakami diakrytycznymi: ą ę ć ł ń ó ś ź ż. Polish transcription with proper diacritics.",
+        "n_threads": "4",
     },
     "inject": {
         "tool": "ydotool",

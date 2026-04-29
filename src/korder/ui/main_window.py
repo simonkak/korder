@@ -1,6 +1,6 @@
 from __future__ import annotations
 import numpy as np
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -65,21 +65,33 @@ class MainWindow(QMainWindow):
         self._injector = injector
         self._trailing_space = trailing_space
         self._workers: set[_TranscribeWorker] = set()
+        self._partial_in_flight = False
+        self._partial_timer = QTimer(self)
+        self._partial_timer.setInterval(700)
+        self._partial_timer.timeout.connect(self._on_partial_tick)
 
         central = QWidget()
         layout = QVBoxLayout(central)
 
-        self._status = QLabel("Idle. Hold the button to dictate.")
+        self._status = QLabel("Idle. Click the button (or press your hotkey) to dictate.")
         layout.addWidget(self._status)
 
         self._transcript = QPlainTextEdit()
         self._transcript.setPlaceholderText("Transcripts will accumulate here...")
         layout.addWidget(self._transcript)
 
+        self._live = QLabel("")
+        self._live.setWordWrap(True)
+        self._live.setStyleSheet(
+            "color: palette(mid); font-style: italic; padding: 4px;"
+        )
+        self._live.setMinimumHeight(28)
+        layout.addWidget(self._live)
+
         bar = QHBoxLayout()
-        self._ptt = QPushButton("Hold to talk")
-        self._ptt.pressed.connect(self._on_press)
-        self._ptt.released.connect(self._on_release)
+        self._ptt = QPushButton("Start dictating")
+        self._ptt.setCheckable(True)
+        self._ptt.clicked.connect(lambda _checked: self.toggle_recording())
         bar.addWidget(self._ptt)
 
         self._inject_chk = QCheckBox("Inject into focused app")
@@ -95,7 +107,14 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
 
-    def _on_press(self) -> None:
+    def toggle_recording(self) -> None:
+        if self._recorder.is_recording:
+            self._stop_recording()
+        else:
+            self._start_recording()
+        self._sync_button()
+
+    def _start_recording(self) -> None:
         if self._recorder.is_recording:
             return
         try:
@@ -103,18 +122,17 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.statusBar().showMessage(f"Mic error: {e}", 6000)
             return
-        self._status.setText("Recording... release to transcribe.")
+        self._status.setText("Recording... press again to transcribe.")
+        self._live.setText("")
+        self._partial_in_flight = False
+        self._partial_timer.start()
 
-    def toggle_recording(self) -> None:
-        if self._recorder.is_recording:
-            self._on_release()
-        else:
-            self._on_press()
-
-    def _on_release(self) -> None:
+    def _stop_recording(self) -> None:
         if not self._recorder.is_recording:
             return
+        self._partial_timer.stop()
         audio = self._recorder.stop()
+        self._live.setText("")
         if audio.size < int(0.2 * self._recorder.sample_rate):
             self._status.setText("Too short, try again.")
             return
@@ -125,6 +143,38 @@ class MainWindow(QMainWindow):
         worker.finished.connect(lambda w=worker: self._reap(w))
         self._workers.add(worker)
         worker.start()
+
+    def _on_partial_tick(self) -> None:
+        if self._partial_in_flight or not self._recorder.is_recording:
+            return
+        audio = self._recorder.snapshot()
+        if audio.size < int(0.6 * self._recorder.sample_rate):
+            return
+        self._partial_in_flight = True
+        worker = _TranscribeWorker(self._engine, audio)
+        worker.finished_text.connect(self._on_partial_text)
+        worker.failed.connect(self._on_partial_fail)
+        worker.finished.connect(lambda w=worker: self._reap(w))
+        self._workers.add(worker)
+        worker.start()
+
+    def _on_partial_text(self, text: str) -> None:
+        self._partial_in_flight = False
+        if not self._recorder.is_recording:
+            return
+        text = text.strip()
+        if text:
+            self._live.setText(text)
+
+    def _on_partial_fail(self, _msg: str) -> None:
+        self._partial_in_flight = False
+
+    def _sync_button(self) -> None:
+        rec = self._recorder.is_recording
+        self._ptt.blockSignals(True)
+        self._ptt.setChecked(rec)
+        self._ptt.blockSignals(False)
+        self._ptt.setText("Stop" if rec else "Start dictating")
 
     def _reap(self, worker: _TranscribeWorker) -> None:
         self._workers.discard(worker)
