@@ -44,7 +44,7 @@ Window {
             width: Math.min(implicitWidth, root.maxW - root.hPad * 2)
             color: palette.windowText
             text: osdState ? osdState.text : ""
-            font.pixelSize: 13
+            font.pixelSize: 18
             font.weight: Font.Medium
             wrapMode: Text.WordWrap
             elide: Text.ElideRight
