@@ -105,6 +105,12 @@ class MainWindow(QMainWindow):
             return
         self._status.setText("Recording... release to transcribe.")
 
+    def toggle_recording(self) -> None:
+        if self._recorder.is_recording:
+            self._on_release()
+        else:
+            self._on_press()
+
     def _on_release(self) -> None:
         if not self._recorder.is_recording:
             return
