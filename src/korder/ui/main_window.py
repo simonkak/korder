@@ -62,7 +62,7 @@ class MainWindow(QMainWindow):
         self._partial_in_flight = False
         self._committed_samples = 0
         self._partial_timer = QTimer(self)
-        self._partial_timer.setInterval(300)
+        self._partial_timer.setInterval(150)
         self._partial_timer.timeout.connect(self._on_partial_tick)
 
         central = QWidget()
@@ -102,10 +102,10 @@ class MainWindow(QMainWindow):
             self._start_recording()
         self._sync_button()
 
-    PAUSE_MS = 400
-    MIN_COMMIT_MS = 500
+    PAUSE_MS = 220
+    MIN_COMMIT_MS = 300
     MAX_SEGMENT_MS = 8000
-    MIN_SPEECH_FOR_PARTIAL_MS = 200
+    MIN_SPEECH_FOR_PARTIAL_MS = 150
 
     def _start_recording(self) -> None:
         if self._recorder.is_recording:
@@ -142,7 +142,7 @@ class MainWindow(QMainWindow):
         sr = self._recorder.sample_rate
         full = self._recorder.snapshot()
         new = full[self._committed_samples:]
-        if new.size < int(0.5 * sr):
+        if new.size < int(0.3 * sr):
             return
 
         speech_end, silence_ms = self._detector.find_trailing_silence(new)
