@@ -2,9 +2,18 @@ from __future__ import annotations
 import ctypes
 import os
 from pathlib import Path
-from PySide6.QtCore import QObject, Property, QRect, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QObject, Property, QRect, QTimer, Signal
 from PySide6.QtGui import QRegion
 from PySide6.QtQml import QQmlApplicationEngine
+
+# PySide6 bundles its own Qt6 with default plugin paths pointing only at
+# the bundle. Add the system Qt6 plugin path so KWindowSystem's KF6
+# platform plugins (KWindowSystemKWaylandPlugin / KWindowSystemX11Plugin)
+# can be discovered — without this they fail to load and KWindowEffects
+# can't find a backend, leaving blur silently disabled.
+for _p in ("/usr/lib/qt6/plugins", "/usr/lib64/qt6/plugins"):
+    if os.path.isdir(_p):
+        QCoreApplication.addLibraryPath(_p)
 
 _QML_PATH = Path(__file__).parent / "qml" / "osd.qml"
 
