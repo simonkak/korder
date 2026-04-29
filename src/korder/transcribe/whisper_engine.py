@@ -44,7 +44,16 @@ class WhisperEngine:
     def transcribe(self, audio: np.ndarray) -> str:
         if audio.size == 0:
             return ""
+        if not _has_speech_energy(audio):
+            return ""
         with self._lock:
             m = self._ensure_loaded()
             segments = m.transcribe(audio)
         return " ".join(s.text.strip() for s in segments).strip()
+
+
+def _has_speech_energy(audio: np.ndarray, threshold: float = 0.005) -> bool:
+    if audio.size == 0:
+        return False
+    rms = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
+    return rms >= threshold

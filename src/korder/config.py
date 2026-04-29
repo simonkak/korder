@@ -12,7 +12,7 @@ DEFAULTS: dict[str, dict[str, str]] = {
     "whisper": {
         "model": "medium",
         "language": "",
-        "initial_prompt": "Transkrypcja po polsku z pełnymi znakami diakrytycznymi: ą ę ć ł ń ó ś ź ż. Polish transcription with proper diacritics.",
+        "initial_prompt": "",
         "n_threads": "4",
     },
     "inject": {
