@@ -218,7 +218,7 @@ class MainWindow(QMainWindow):
         self._transcript.appendPlainText(text)
         if self._recorder.is_recording:
             self._status.setText("Listening...")
-            self._osd.show_text(text, transient_ms=1200)
+            self._osd.show_text(text)
         else:
             self._status.setText("Idle.")
             self._osd.show_text(text, transient_ms=1500)

@@ -10,15 +10,15 @@ class OSDWindow(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
+            Qt.WindowType.SplashScreen
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
             | Qt.WindowType.WindowDoesNotAcceptFocus
-            | Qt.WindowType.BypassWindowManagerHint
+            | Qt.WindowType.FramelessWindowHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 14, 24, 14)
@@ -62,7 +62,7 @@ class OSDWindow(QWidget):
         geo = screen.availableGeometry()
         self.adjustSize()
         x = geo.x() + (geo.width() - self.width()) // 2
-        y = geo.y() + geo.height() - self.height() - 80
+        y = geo.y() + (geo.height() * 2 // 3) - (self.height() // 2)
         self.move(x, y)
 
     def paintEvent(self, _event: QPaintEvent) -> None:
