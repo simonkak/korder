@@ -1,10 +1,44 @@
 from __future__ import annotations
+import ctypes
 import os
 from pathlib import Path
 from PySide6.QtCore import QObject, Property, QTimer, Signal
+from PySide6.QtGui import QRegion
 from PySide6.QtQml import QQmlApplicationEngine
 
 _QML_PATH = Path(__file__).parent / "qml" / "osd.qml"
+
+
+# Wrap KWindowEffects::enableBlurBehind from libKF6WindowSystem so KWin
+# applies a gaussian blur behind the OSD's translucent regions. This is a
+# C++ function — there's no QML or Python binding for it, so we call the
+# mangled symbol via ctypes and pass shiboken-extracted pointers.
+def _load_blur_fn():
+    try:
+        lib = ctypes.CDLL("libKF6WindowSystem.so.6")
+        fn = getattr(lib, "_ZN14KWindowEffects16enableBlurBehindEP7QWindowbRK7QRegion")
+        fn.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_void_p]
+        fn.restype = None
+        return fn
+    except (OSError, AttributeError):
+        return None
+
+
+_ENABLE_BLUR = _load_blur_fn()
+
+
+def _request_blur(window) -> bool:
+    if _ENABLE_BLUR is None:
+        return False
+    try:
+        import shiboken6
+    except ImportError:
+        return False
+    region = QRegion()  # empty region = blur the entire window
+    win_ptr = shiboken6.getCppPointer(window)[0]
+    region_ptr = shiboken6.getCppPointer(region)[0]
+    _ENABLE_BLUR(win_ptr, True, region_ptr)
+    return True
 
 
 class _OSDState(QObject):
@@ -59,6 +93,10 @@ class OSDWindow(QObject):
         if not self._engine.rootObjects():
             raise RuntimeError(f"Failed to load OSD QML from {_QML_PATH}")
 
+        # Ask KWin to blur the screen content behind our window.
+        # Defer to next event-loop tick so the Wayland surface is created.
+        QTimer.singleShot(0, self._apply_blur)
+
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self._fade_out)
@@ -68,6 +106,14 @@ class OSDWindow(QObject):
         # level, so no startup mapping trick is needed. Kept for API parity
         # with the previous QWidget OSD.
         pass
+
+    def _apply_blur(self) -> None:
+        roots = self._engine.rootObjects()
+        if not roots:
+            return
+        ok = _request_blur(roots[0])
+        if not ok:
+            print("[korder] KWin blur unavailable (libKF6WindowSystem missing or shiboken6 absent)", flush=True)
 
     def show_text(self, text: str, *, transient_ms: int = 0) -> None:
         self._state.text = text or ""
