@@ -1,77 +1,70 @@
 from __future__ import annotations
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPaintEvent
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from pathlib import Path
+from PySide6.QtCore import QObject, Property, QTimer, Signal
+from PySide6.QtQml import QQmlApplicationEngine
+
+_QML_PATH = Path(__file__).parent / "qml" / "osd.qml"
 
 
-class _Card(QWidget):
-    """Rounded translucent card. Painted only when visible."""
+class _OSDState(QObject):
+    """Plain-data QObject exposed to the QML scene as `osdState`."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-
-    def paintEvent(self, _event: QPaintEvent) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setBrush(QColor(20, 22, 30, 230))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(self.rect(), 14, 14)
-
-
-class OSDWindow(QWidget):
-    """Frameless click-through OSD that stays mapped throughout app lifetime;
-    visible content toggles by show/hide on the inner card, not the window."""
+    textChanged = Signal()
+    visibleChanged = Signal()
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowFlags(
-            Qt.WindowType.Tool
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._text = ""
+        self._visible = False
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+    def _get_text(self) -> str:
+        return self._text
 
-        self._card = _Card()
-        card_layout = QVBoxLayout(self._card)
-        card_layout.setContentsMargins(24, 14, 24, 14)
+    def _set_text(self, value: str) -> None:
+        if self._text != value:
+            self._text = value
+            self.textChanged.emit()
 
-        self._label = QLabel("")
-        self._label.setWordWrap(True)
-        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._label.setStyleSheet(
-            "color: white; font-size: 16pt; font-weight: 500; background: transparent;"
-        )
-        card_layout.addWidget(self._label)
-        outer.addWidget(self._card)
+    text = Property(str, _get_text, _set_text, notify=textChanged)
 
-        self.setFixedWidth(720)
-        self.setMinimumHeight(64)
-        self._card.hide()
+    def _get_visible(self) -> bool:
+        return self._visible
+
+    def _set_visible(self, value: bool) -> None:
+        if self._visible != value:
+            self._visible = value
+            self.visibleChanged.emit()
+
+    visible = Property(bool, _get_visible, _set_visible, notify=visibleChanged)
+
+
+class OSDWindow(QObject):
+    """Layer-shell OSD via QML. Surface stays mapped throughout app lifetime;
+    visibility toggles via inner-rectangle binding. Same API as the old
+    QWidget version so MainWindow doesn't need to change."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._state = _OSDState()
+        self._engine = QQmlApplicationEngine()
+        self._engine.rootContext().setContextProperty("osdState", self._state)
+        self._engine.load(str(_QML_PATH))
+        if not self._engine.rootObjects():
+            raise RuntimeError(f"Failed to load OSD QML from {_QML_PATH}")
 
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
-        self._hide_timer.timeout.connect(self._card.hide)
+        self._hide_timer.timeout.connect(self._fade_out)
 
     def map_offscreen(self) -> None:
-        """Map the Wayland surface once at app start. The card stays hidden until
-        the first show_text(). Subsequent show/hide of the card don't re-map."""
-        if not self.isVisible():
-            self._reposition()
-            self.show()
+        # Layer-shell handles non-focus-stealing semantics at the protocol
+        # level, so no startup mapping trick is needed. Kept for API parity
+        # with the previous QWidget OSD.
+        pass
 
     def show_text(self, text: str, *, transient_ms: int = 0) -> None:
-        self._label.setText(text or "")
-        self._reposition()
-        if not self._card.isVisible():
-            self._card.show()
+        self._state.text = text or ""
+        self._state.visible = True
         if transient_ms > 0:
             self._hide_timer.start(transient_ms)
         else:
@@ -82,14 +75,7 @@ class OSDWindow(QWidget):
 
     def hide_now(self) -> None:
         self._hide_timer.stop()
-        self._card.hide()
+        self._fade_out()
 
-    def _reposition(self) -> None:
-        screen = QGuiApplication.primaryScreen()
-        if screen is None:
-            return
-        geo = screen.availableGeometry()
-        self.adjustSize()
-        x = geo.x() + (geo.width() - self.width()) // 2
-        y = geo.y() + (geo.height() * 2 // 3) - (self.height() // 2)
-        self.move(x, y)
+    def _fade_out(self) -> None:
+        self._state.visible = False
