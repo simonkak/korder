@@ -57,7 +57,7 @@ Action triggers (English and Polish):
 - "press enter", "wciśnij enter", "naciśnij enter", "submit", "wyślij", "potem enter", "and enter" → type=key, value=enter
 - "press tab", "tabuluj" → type=key, value=tab
 - "press escape" → type=key, value=escape
-- "press backspace" → type=key, value=backspace
+- "press backspace", "skasuj" → type=key, value=backspace
 - "new line", "nowa linia", "nowy wiersz" → type=char, value=\\n
 - "delete word", "usuń słowo", "skasuj słowo" → type=shortcut, value=delete_word
 - "select all", "zaznacz wszystko" → type=shortcut, value=select_all
@@ -89,6 +89,9 @@ Output: {"actions": [{"phrase": "usuń słowo", "type": "shortcut", "value": "de
 
 Input: "Zaznacz linię"
 Output: {"actions": [{"phrase": "Zaznacz linię", "type": "shortcut", "value": "select_to_line_start"}]}
+
+Input: "Skasuj"
+Output: {"actions": [{"phrase": "Skasuj", "type": "key", "value": "backspace"}]}
 
 Input: "press enter and run it"
 Output: {"actions": [{"phrase": "press enter", "type": "key", "value": "enter"}]}

@@ -50,6 +50,7 @@ _TRIGGERS: dict[str, tuple[str, object]] = {
     "press tab": ("key", _KEY_TAB),
     "press escape": ("key", _KEY_ESCAPE),
     "press backspace": ("key", _KEY_BACKSPACE),
+    "skasuj": ("key", _KEY_BACKSPACE),
     "new line": ("char", "\n"),
     "new paragraph": ("char", "\n\n"),
     # Named shortcuts (Polish + English)
