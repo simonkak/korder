@@ -34,7 +34,6 @@ class WhisperEngine:
                     "n_threads": self.n_threads,
                     "translate": False,
                     "language": self.language or "auto",
-                    "suppress_non_speech_tokens": True,
                     "suppress_blank": True,
                 }
                 if self.initial_prompt:
