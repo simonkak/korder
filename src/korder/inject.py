@@ -71,11 +71,14 @@ class YdotoolBackend:
                 input=text,
                 text=True,
                 check=True,
-                capture_output=True,
-                timeout=10,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
             )
         except subprocess.CalledProcessError as e:
-            raise InjectError(f"wl-copy failed: {(e.stderr or '').strip() or e}") from e
+            raise InjectError(f"wl-copy failed: {e.returncode}") from e
+        except subprocess.TimeoutExpired as e:
+            raise InjectError(f"wl-copy timed out: {e}") from e
         time.sleep(0.04)
         try:
             subprocess.run(
