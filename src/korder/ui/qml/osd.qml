@@ -23,11 +23,8 @@ Window {
         id: bg
         anchors.fill: parent
         radius: 10
-        // Follow system palette; small alpha so KWin's blur (when granted)
-        // shows through. Without blur it still reads as a solid translucent
-        // panel matching the active theme's window color.
-        color: Qt.rgba(palette.window.r, palette.window.g, palette.window.b, 0.82)
-        border.color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.10)
+        color: palette.window
+        border.color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.15)
         border.width: 1
         visible: osdState.visible
         opacity: visible ? 1.0 : 0.0
