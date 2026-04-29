@@ -11,8 +11,17 @@ Window {
     // Cap below screen width so we don't slam against the edges; long
     // sentences grow horizontally rather than wrap to multiple lines.
     readonly property int maxW: Math.max(minW, Screen.width - 120)
-    width: Math.max(minW, Math.min(maxW, textItem.width + hPad * 2))
-    height: Math.max(44, textItem.implicitHeight + vPad * 2)
+    // TextMetrics gives the natural unwrapped width — Text.implicitWidth
+    // reports the wrapped width once width is constrained, which is a
+    // circular binding trap.
+    width: Math.max(minW, Math.min(maxW, textMetrics.width + hPad * 2))
+    height: Math.max(44, textItem.contentHeight + vPad * 2)
+
+    TextMetrics {
+        id: textMetrics
+        text: osdState ? osdState.text : ""
+        font: textItem.font
+    }
     color: "transparent"
     flags: Qt.FramelessWindowHint
     visible: true
@@ -40,8 +49,10 @@ Window {
         Text {
             id: textItem
             anchors.centerIn: parent
-            // If natural width fits within max, use it; otherwise cap and wrap.
-            width: Math.min(implicitWidth, root.maxW - root.hPad * 2)
+            // Cap the text element to maxW minus padding; if natural width is
+            // smaller, the actual width follows TextMetrics. Wrapping only
+            // engages above the cap.
+            width: Math.min(textMetrics.width, root.maxW - root.hPad * 2)
             color: palette.windowText
             text: osdState ? osdState.text : ""
             font.pixelSize: 13
