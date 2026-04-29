@@ -2,7 +2,7 @@ from __future__ import annotations
 import ctypes
 import os
 from pathlib import Path
-from PySide6.QtCore import QObject, Property, QTimer, Signal
+from PySide6.QtCore import QObject, Property, QRect, QTimer, Signal
 from PySide6.QtGui import QRegion
 from PySide6.QtQml import QQmlApplicationEngine
 
@@ -34,10 +34,15 @@ def _request_blur(window) -> bool:
         import shiboken6
     except ImportError:
         return False
-    region = QRegion()  # empty region = blur the entire window
+    # Use explicit window-sized region. Some KWin versions treat an empty
+    # QRegion() as "no region selected" rather than "blur entire window."
+    w = max(int(window.width()), 1)
+    h = max(int(window.height()), 1)
+    region = QRegion(QRect(0, 0, w, h))
     win_ptr = shiboken6.getCppPointer(window)[0]
     region_ptr = shiboken6.getCppPointer(region)[0]
     _ENABLE_BLUR(win_ptr, True, region_ptr)
+    print(f"[korder] requested blur for window={win_ptr:#x} region=({w}x{h})", flush=True)
     return True
 
 
@@ -94,8 +99,10 @@ class OSDWindow(QObject):
             raise RuntimeError(f"Failed to load OSD QML from {_QML_PATH}")
 
         # Ask KWin to blur the screen content behind our window.
-        # Defer to next event-loop tick so the Wayland surface is created.
-        QTimer.singleShot(0, self._apply_blur)
+        # Defer ~100ms so the Wayland surface is fully configured (layer-shell
+        # surfaces only become ready after the compositor responds to the
+        # role configure event).
+        QTimer.singleShot(100, self._apply_blur)
 
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
