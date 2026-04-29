@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 import numpy as np
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QCloseEvent
@@ -61,6 +62,8 @@ class MainWindow(QMainWindow):
         self._workers: set[_TranscribeWorker] = set()
         self._partial_in_flight = False
         self._committed_samples = 0
+        self._last_partial_norm = ""
+        self._stability_count = 0
         self._partial_timer = QTimer(self)
         self._partial_timer.setInterval(100)
         self._partial_timer.timeout.connect(self._on_partial_tick)
@@ -106,6 +109,7 @@ class MainWindow(QMainWindow):
     MIN_COMMIT_MS = 500
     MAX_SEGMENT_MS = 12000
     MIN_SPEECH_FOR_PARTIAL_MS = 90
+    STABILITY_REPEATS = 2  # commit after this many identical-content partials in a row
 
     def _start_recording(self) -> None:
         if self._recorder.is_recording:
@@ -119,6 +123,8 @@ class MainWindow(QMainWindow):
         self._osd.show_text("Listening…")
         self._partial_in_flight = False
         self._committed_samples = 0
+        self._last_partial_norm = ""
+        self._stability_count = 0
         self._partial_timer.start()
 
     def _stop_recording(self) -> None:
@@ -154,6 +160,8 @@ class MainWindow(QMainWindow):
         if commit_on_pause or commit_on_max:
             segment = np.ascontiguousarray(new[:speech_end])
             self._committed_samples += speech_end
+            self._last_partial_norm = ""
+            self._stability_count = 0
             self._submit_transcribe(segment, kind="commit")
             return
 
@@ -180,8 +188,38 @@ class MainWindow(QMainWindow):
         if not self._recorder.is_recording:
             return
         text = text.strip()
-        if text:
-            self._osd.show_text(text)
+        if not text:
+            return
+        self._osd.show_text(text)
+
+        # Stability-based commit: if the model returns the same content twice
+        # in a row, the audio buffer's content has converged — user paused.
+        norm = _normalize_for_compare(text)
+        if norm and norm == self._last_partial_norm:
+            self._stability_count += 1
+            if self._stability_count >= self.STABILITY_REPEATS:
+                self._commit_via_stability()
+        else:
+            self._stability_count = 1
+            self._last_partial_norm = norm
+
+    def _commit_via_stability(self) -> None:
+        if not self._recorder.is_recording:
+            return
+        sr = self._recorder.sample_rate
+        full = self._recorder.snapshot()
+        new = full[self._committed_samples:]
+        speech_min = int((self.MIN_COMMIT_MS / 1000) * sr)
+        if new.size < speech_min:
+            return
+        speech_end, _ = self._detector.find_trailing_silence(new)
+        if speech_end < speech_min:
+            speech_end = new.size
+        segment = np.ascontiguousarray(new[:speech_end])
+        self._committed_samples += speech_end
+        self._last_partial_norm = ""
+        self._stability_count = 0
+        self._submit_transcribe(segment, kind="commit")
 
     def _on_partial_fail(self, _msg: str) -> None:
         self._partial_in_flight = False
@@ -231,3 +269,8 @@ class MainWindow(QMainWindow):
 
     def _on_fail(self, msg: str) -> None:
         self._status.setText(f"Transcription failed: {msg}")
+
+
+def _normalize_for_compare(text: str) -> str:
+    """Lowercase + strip non-word chars so 'Hello, world' == 'hello world.'"""
+    return re.sub(r"[^\w\s]", "", text.lower()).strip()
