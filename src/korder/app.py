@@ -83,8 +83,14 @@ def _run_app() -> int:
         n_threads=int(cfg["whisper"]["n_threads"]),
     )
 
+    op_parser = None
+    if cfg["inject"]["action_parser"].lower() == "llm":
+        from korder.intent import IntentParser
+        op_parser = IntentParser(model=cfg["inject"]["llm_model"]).parse
+        print(f"[korder] using LLM action parser ({cfg['inject']['llm_model']})", file=sys.stderr)
+
     try:
-        injector = make_backend(paste_mode=cfg["inject"]["paste_mode"])
+        injector = make_backend(paste_mode=cfg["inject"]["paste_mode"], op_parser=op_parser)
     except InjectError as e:
         print(f"[korder] injection disabled: {e}", file=sys.stderr)
         injector = None

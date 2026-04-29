@@ -78,7 +78,7 @@ class YdotoolBackend:
     PASTE_ALWAYS = "always"
     PASTE_NEVER = "never"
 
-    def __init__(self, paste_mode: str = "auto"):
+    def __init__(self, paste_mode: str = "auto", op_parser=None):
         if shutil.which("ydotool") is None:
             raise InjectError(
                 "ydotool not found in PATH. Install it (e.g. `sudo pacman -S ydotool`) "
@@ -86,11 +86,14 @@ class YdotoolBackend:
             )
         self.paste_mode = paste_mode
         self._has_wl_copy = shutil.which("wl-copy") is not None
+        # If supplied, op_parser(text) -> ops list takes precedence over the
+        # built-in regex parser. Lets app.py inject the LLM-backed parser.
+        self._op_parser = op_parser or _split_into_ops
 
     def type(self, text: str) -> None:
         if not text:
             return
-        ops = _split_into_ops(text)
+        ops = self._op_parser(text)
         if not ops:
             return
         for i, op in enumerate(ops):
@@ -185,5 +188,5 @@ class YdotoolBackend:
             ) from e
 
 
-def make_backend(paste_mode: str = "auto") -> YdotoolBackend:
-    return YdotoolBackend(paste_mode=paste_mode)
+def make_backend(paste_mode: str = "auto", op_parser=None) -> YdotoolBackend:
+    return YdotoolBackend(paste_mode=paste_mode, op_parser=op_parser)

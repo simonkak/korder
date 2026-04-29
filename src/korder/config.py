@@ -20,6 +20,11 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "tool": "ydotool",
         "trailing_space": "true",
         "paste_mode": "auto",
+        # Inline-action parser: "regex" (fast, English+Polish via hardcoded
+        # phrases) or "llm" (slower, smarter — uses local Gemma via ollama,
+        # handles natural variations and arbitrary phrasings).
+        "action_parser": "regex",
+        "llm_model": "gemma4",
     },
     "ui": {
         "show_history_on_start": "false",
