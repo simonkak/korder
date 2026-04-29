@@ -6,14 +6,18 @@ import sounddevice as sd
 class MicRecorder:
     """Push-to-talk recorder. start() begins capture, stop() returns mono float32 PCM."""
 
-    def __init__(self, sample_rate: int = 16000, device: str | None = None):
+    def __init__(self, sample_rate: int = 16000, device: str | None = None, gain: float = 1.0):
         self.sample_rate = sample_rate
         self.device = device or None
+        self.gain = float(gain)
         self._stream: sd.InputStream | None = None
         self._chunks: list[np.ndarray] = []
 
     def _callback(self, indata, frames, time_info, status):
-        self._chunks.append(indata[:, 0].copy())
+        chunk = indata[:, 0].copy()
+        if self.gain != 1.0:
+            chunk *= self.gain
+        self._chunks.append(chunk)
 
     def start(self) -> None:
         self._chunks = []

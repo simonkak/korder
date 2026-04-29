@@ -74,6 +74,7 @@ def _run_app() -> int:
     recorder = MicRecorder(
         sample_rate=int(cfg["audio"]["sample_rate"]),
         device=cfg["audio"]["device"] or None,
+        gain=float(cfg["audio"]["gain"]),
     )
     engine = WhisperEngine(
         model=cfg["whisper"]["model"],

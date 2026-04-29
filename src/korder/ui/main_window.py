@@ -102,7 +102,7 @@ class MainWindow(QMainWindow):
             self._start_recording()
         self._sync_button()
 
-    PAUSE_MS = 1500
+    PAUSE_MS = 1000
     MIN_COMMIT_MS = 500
     MAX_SEGMENT_MS = 12000
     MIN_SPEECH_FOR_PARTIAL_MS = 90
