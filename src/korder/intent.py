@@ -51,7 +51,7 @@ The "phrase" field must be a contiguous substring that appears VERBATIM in the i
 The "type" determines what gets executed:
 - "key": single key press; value is one of: enter, return, tab, escape, backspace
 - "char": insert character; value is a literal string like "\\n"
-- "shortcut": named keyboard shortcut; value is one of: delete_word, delete_word_forward, select_all, undo
+- "shortcut": named keyboard shortcut; value is one of: delete_word, delete_word_forward, select_all, undo, select_to_line_start, select_to_line_end
 
 Action triggers (English and Polish):
 - "press enter", "wciśnij enter", "naciśnij enter", "submit", "wyślij", "potem enter", "and enter" → type=key, value=enter
@@ -61,6 +61,8 @@ Action triggers (English and Polish):
 - "new line", "nowa linia", "nowy wiersz" → type=char, value=\\n
 - "delete word", "usuń słowo", "skasuj słowo" → type=shortcut, value=delete_word
 - "select all", "zaznacz wszystko" → type=shortcut, value=select_all
+- "select line", "zaznacz linię" → type=shortcut, value=select_to_line_start
+- "select to end", "zaznacz do końca" → type=shortcut, value=select_to_line_end
 - "undo", "cofnij" → type=shortcut, value=undo
 
 Rules:
@@ -84,6 +86,9 @@ Output: {"actions": [{"phrase": "Usuń słowo", "type": "shortcut", "value": "de
 
 Input: "ten kod jest zły usuń słowo"
 Output: {"actions": [{"phrase": "usuń słowo", "type": "shortcut", "value": "delete_word"}]}
+
+Input: "Zaznacz linię"
+Output: {"actions": [{"phrase": "Zaznacz linię", "type": "shortcut", "value": "select_to_line_start"}]}
 
 Input: "press enter and run it"
 Output: {"actions": [{"phrase": "press enter", "type": "key", "value": "enter"}]}

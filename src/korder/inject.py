@@ -21,6 +21,8 @@ _KEY_TAB = 15
 _KEY_ESCAPE = 1
 _KEY_BACKSPACE = 14
 _KEY_DELETE = 111
+_KEY_HOME = 102
+_KEY_END = 107
 _KEY_A = 30
 _KEY_Z = 44
 
@@ -32,6 +34,8 @@ NAMED_SHORTCUTS: dict[str, list[int]] = {
     "delete_word_forward": [_KEY_LCTRL, _KEY_DELETE],
     "select_all": [_KEY_LCTRL, _KEY_A],
     "undo": [_KEY_LCTRL, _KEY_Z],
+    "select_to_line_start": [_KEY_LSHIFT, _KEY_HOME],
+    "select_to_line_end": [_KEY_LSHIFT, _KEY_END],
 }
 
 
@@ -56,6 +60,10 @@ _TRIGGERS: dict[str, tuple[str, object]] = {
     "select all": ("combo", NAMED_SHORTCUTS["select_all"]),
     "cofnij": ("combo", NAMED_SHORTCUTS["undo"]),
     "undo": ("combo", NAMED_SHORTCUTS["undo"]),
+    "zaznacz linię": ("combo", NAMED_SHORTCUTS["select_to_line_start"]),
+    "select line": ("combo", NAMED_SHORTCUTS["select_to_line_start"]),
+    "zaznacz do końca": ("combo", NAMED_SHORTCUTS["select_to_line_end"]),
+    "select to end": ("combo", NAMED_SHORTCUTS["select_to_line_end"]),
 }
 
 _TRIGGER_RE = re.compile(
