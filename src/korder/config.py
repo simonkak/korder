@@ -8,6 +8,7 @@ DEFAULTS: dict[str, dict[str, str]] = {
     "audio": {
         "sample_rate": "16000",
         "device": "",
+        "gain": "0.7",
     },
     "whisper": {
         "model": "medium",

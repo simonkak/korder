@@ -1,7 +1,10 @@
 from __future__ import annotations
+import re
 import threading
 import numpy as np
 from pywhispercpp.model import Model
+
+_BRACKET_TAG = re.compile(r"\s*\[[^\]]*\]\s*")
 
 
 class WhisperEngine:
@@ -31,6 +34,7 @@ class WhisperEngine:
                     "n_threads": self.n_threads,
                     "translate": False,
                     "language": self.language or "auto",
+                    "suppress_blank": True,
                 }
                 if self.initial_prompt:
                     kwargs["initial_prompt"] = self.initial_prompt
@@ -49,7 +53,14 @@ class WhisperEngine:
         with self._lock:
             m = self._ensure_loaded()
             segments = m.transcribe(audio)
-        return " ".join(s.text.strip() for s in segments).strip()
+        text = " ".join(s.text.strip() for s in segments).strip()
+        return _strip_annotations(text)
+
+
+def _strip_annotations(text: str) -> str:
+    """Remove Whisper's bracketed sound-event annotations like [noises], [music]."""
+    cleaned = _BRACKET_TAG.sub(" ", text).strip()
+    return re.sub(r"\s+", " ", cleaned)
 
 
 def _has_speech_energy(audio: np.ndarray, threshold: float = 0.005) -> bool:
