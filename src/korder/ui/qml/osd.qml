@@ -8,7 +8,9 @@ Window {
     readonly property int hPad: 24
     readonly property int vPad: 14
     readonly property int minW: 220
-    readonly property int maxW: 640
+    // Cap below screen width so we don't slam against the edges; long
+    // sentences grow horizontally rather than wrap to multiple lines.
+    readonly property int maxW: Math.max(minW, Screen.width - 120)
     width: Math.max(minW, Math.min(maxW, textItem.width + hPad * 2))
     height: Math.max(44, textItem.implicitHeight + vPad * 2)
     color: "transparent"
