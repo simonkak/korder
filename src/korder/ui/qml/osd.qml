@@ -4,8 +4,13 @@ import org.kde.layershell as LayerShell
 
 Window {
     id: root
-    width: 520
-    height: 56
+    // Adaptive size: shrinks for short text, caps at MAX_W above which content wraps.
+    readonly property int hPad: 24
+    readonly property int vPad: 14
+    readonly property int minW: 220
+    readonly property int maxW: 640
+    width: Math.max(minW, Math.min(maxW, textItem.width + hPad * 2))
+    height: Math.max(44, textItem.implicitHeight + vPad * 2)
     color: "transparent"
     flags: Qt.FramelessWindowHint
     visible: true
@@ -31,11 +36,13 @@ Window {
         Behavior on opacity { NumberAnimation { duration: 120 } }
 
         Text {
-            anchors.fill: parent
-            anchors.margins: 14
+            id: textItem
+            anchors.centerIn: parent
+            // If natural width fits within max, use it; otherwise cap and wrap.
+            width: Math.min(implicitWidth, root.maxW - root.hPad * 2)
             color: palette.windowText
             text: osdState ? osdState.text : ""
-            font.pixelSize: 14
+            font.pixelSize: 13
             font.weight: Font.Medium
             wrapMode: Text.WordWrap
             elide: Text.ElideRight
