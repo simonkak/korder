@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPushButton,
     QSpinBox,
     QStyle,
     QTabWidget,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from korder import config
+from korder.ui.benchmark import BenchmarkDialog
 
 _WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"]
 _LANGS = ["", "pl", "en", "de", "fr", "es", "it", "uk", "cs", "ru"]
@@ -275,6 +277,35 @@ class SettingsDialog(QDialog):
         )
         f.addRow("", self._intent_show_triggers)
 
+        # Subtle separator + right-aligned benchmark action. Spanning the
+        # form's full width (single-arg addRow) avoids the field-column
+        # indent the empty-label form rows produce.
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        f.addRow(sep)
+
+        bench_row = QHBoxLayout()
+        bench_row.setContentsMargins(0, 0, 0, 0)
+        bench_row.setSpacing(_SPACING)
+        bench_hint = _hint_label(
+            "Measure latency and accuracy with the LLM settings above."
+        )
+        bench_row.addWidget(bench_hint, 1)
+        self._bench_btn = QPushButton("Run benchmark…")
+        self._bench_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+        )
+        self._bench_btn.setToolTip(
+            "Run a fixed suite of utterances against the currently configured "
+            "LLM model and toggles, then report per-case correctness and "
+            "latency. Uses the values currently shown in this dialog (no "
+            "save required)."
+        )
+        self._bench_btn.clicked.connect(self._on_benchmark)
+        bench_row.addWidget(self._bench_btn)
+        f.addRow(bench_row)
+
         outer.addWidget(inject)
         outer.addStretch(1)
         return page
@@ -430,6 +461,16 @@ class SettingsDialog(QDialog):
             self.settings_saved.emit()
         except Exception as e:
             QMessageBox.critical(self, "Failed to save", str(e))
+
+    def _on_benchmark(self) -> None:
+        """Run the intent benchmark with the values currently shown in the
+        dialog — not whatever's saved on disk. Lets the user iterate on
+        toggles without having to Apply + restart between trials."""
+        model = self._llm_model.text().strip() or "gemma4:e4b"
+        thinking = self._intent_thinking_mode.isChecked()
+        triggers = self._intent_show_triggers.isChecked()
+        dialog = BenchmarkDialog(model, thinking, triggers, self)
+        dialog.exec()
 
 
 def _truthy(s: str) -> bool:

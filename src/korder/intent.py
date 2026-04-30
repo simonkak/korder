@@ -15,6 +15,7 @@ or any phrase isn't found in the input.
 """
 from __future__ import annotations
 import json
+import sys
 import urllib.error
 import urllib.request
 
@@ -24,6 +25,42 @@ from korder.actions.parser import split_into_ops
 _OLLAMA_URL = "http://localhost:11434/api/generate"
 
 _PUNCT_TO_STRIP = " \t.!?,;:\n"
+
+
+def _extract_json_object(text: str):
+    """Parse a JSON object from a response that may include markdown fences
+    or surrounding prose.
+
+    With format=json forced, ollama returns bare JSON we can json.loads
+    directly. With thinking mode (which is incompatible with format=json
+    on /api/generate), Gemma sometimes wraps the answer in ``` or ```json
+    fences, so we have to strip those before parsing. Last resort: pull
+    the first balanced {...} slice out of the response.
+    """
+    stripped = text.strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    # Markdown fence (``` or ```json … ```)
+    if stripped.startswith("```"):
+        body = stripped.lstrip("`")
+        if body.lower().startswith("json"):
+            body = body[4:]
+        body = body.lstrip("\n").rstrip()
+        end_fence = body.rfind("```")
+        if end_fence >= 0:
+            body = body[:end_fence]
+        try:
+            return json.loads(body.strip())
+        except json.JSONDecodeError:
+            pass
+    # Last-resort: first {...} slice (greedy, balanced enough for our shape).
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        return json.loads(stripped[start : end + 1])
+    raise ValueError(f"no JSON object in LLM response: {text!r}")
 
 
 _SYSTEM_PROMPT = (
@@ -98,6 +135,10 @@ class IntentParser:
         self.timeout_s = timeout_s
         self.thinking_mode = thinking_mode
         self.show_triggers_in_prompt = show_triggers_in_prompt
+        # Reasoning trace from the most recent _call_ollama. Populated only
+        # when thinking_mode is on. Surfaced for diagnostics (logged to
+        # stderr in _call_ollama; readable by the benchmark dialog).
+        self.last_thinking: str = ""
 
     def parse(self, transcript: str) -> list[tuple]:
         if not transcript:
@@ -105,10 +146,10 @@ class IntentParser:
         try:
             actions = self._call_ollama(transcript)
         except Exception as e:
-            print(f"[korder] intent LLM failed, falling back to regex: {e}", flush=True)
+            print(f"[korder] intent LLM failed, falling back to regex: {e}", flush=True, file=sys.stderr)
             return split_into_ops(transcript)
 
-        print(f"[korder] LLM actions for {transcript!r}: {actions!r}", flush=True)
+        print(f"[korder] LLM actions for {transcript!r}: {actions!r}", flush=True, file=sys.stderr)
 
         # Supplement: if LLM came back empty but the regex parser sees an
         # actual registered trigger phrase, use the regex result. Catches
@@ -122,14 +163,15 @@ class IntentParser:
                 print(
                     f"[korder] LLM found no actions; regex caught triggers, using regex: {regex_ops!r}",
                     flush=True,
+                    file=sys.stderr,
                 )
                 return regex_ops
 
         ops = segment_input_by_actions(transcript, actions)
         if ops is None:
-            print(f"[korder] LLM action phrase not found in input, falling back to regex", flush=True)
+            print(f"[korder] LLM action phrase not found in input, falling back to regex", flush=True, file=sys.stderr)
             return split_into_ops(transcript)
-        print(f"[korder] segmented ops: {ops!r}", flush=True)
+        print(f"[korder] segmented ops: {ops!r}", flush=True, file=sys.stderr)
         return ops
 
     def _call_ollama(self, transcript: str) -> list:
@@ -141,12 +183,18 @@ class IntentParser:
             "system": _SYSTEM_PROMPT,
             "prompt": user_prompt,
             "stream": False,
-            "format": "json",
             "options": {"temperature": 0.0, "num_predict": 512},
         }
         if self.thinking_mode:
-            # Top-level option per ollama API; enables Gemma's reasoning step.
+            # Ollama's /api/generate suppresses the "thinking" field
+            # whenever format=json is set, so when reasoning is requested
+            # we drop the strict JSON constraint and rely on the system
+            # prompt to keep output well-formed. _extract_json_object
+            # handles markdown fences that Gemma tends to add in this
+            # mode.
             payload["think"] = True
+        else:
+            payload["format"] = "json"
         req = urllib.request.Request(
             _OLLAMA_URL,
             data=json.dumps(payload).encode("utf-8"),
@@ -154,8 +202,19 @@ class IntentParser:
         )
         with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
             body = json.loads(resp.read().decode("utf-8"))
+        # Capture and log Gemma's reasoning trace when thinking mode is on.
+        # Ollama returns it in a separate "thinking" field so the JSON
+        # response stays parseable; we keep it for diagnostics.
+        thinking = (body.get("thinking") or "").strip()
+        self.last_thinking = thinking
+        if thinking:
+            print(
+                f"[korder] gemma thinking for {transcript!r}:\n  {thinking}",
+                flush=True,
+                file=sys.stderr,
+            )
         raw = body.get("response", "").strip()
-        parsed = json.loads(raw)
+        parsed = _extract_json_object(raw)
         if isinstance(parsed, dict) and isinstance(parsed.get("actions"), list):
             return parsed["actions"]
         if isinstance(parsed, list):

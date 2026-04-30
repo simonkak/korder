@@ -165,3 +165,98 @@ def test_delete_word_shortcut(parser):
     assert expected in ops, f"got {ops!r}"
     # Should NOT be plain Backspace
     assert not any(op == ("key", KEY_BACKSPACE) for op in ops)
+
+
+# ---- Whisper mistranscription tolerance ---------------------------------
+
+@pytest.mark.parametrize("phrase", [
+    "Znów odtwarzanie",        # dropped W
+    "Znów odstwarzanie",       # dropped W + extra s (dual error)
+    "wzów odtwarzanie",        # missing N
+    "wznów odtwarzania",       # genitive instead of nominative
+])
+def test_whisper_polish_corruptions_resolve(parser, phrase):
+    """Real Whisper outputs corrupt Polish words in many ways; reasoning
+    should infer the intent from context regardless."""
+    ops = parser.parse(phrase)
+    assert any(op == ("key", KEY_PLAYPAUSE) for op in ops), \
+        f"{phrase!r} should still resolve to play_pause; got {ops!r}"
+
+
+# ---- Polish text fidelity (the LLM must NOT rewrite user text) ----------
+
+def test_polish_text_passed_through_verbatim(parser):
+    """When the input is plain dictation containing Polish diacritics,
+    the LLM should produce no actions and our slicer should hand back
+    the text exactly as transcribed — no Gemma-rewriting of 'stało' to
+    'stąpio' style failures."""
+    text = "Wczoraj stało się coś niezwykłego, dziękuję bardzo."
+    ops = parser.parse(text)
+    # Either the LLM returned [] (text-only segment from slicer) or it
+    # tried to action-classify but the slicer kept the text verbatim.
+    text_segs = [op[1] for op in ops if op[0] == "text"]
+    # No segment should mutate the original word forms
+    full = " ".join(text_segs)
+    for word in ("stało", "niezwykłego", "dziękuję"):
+        assert word in full, \
+            f"Polish word {word!r} mutated or lost; got segments {text_segs!r}"
+
+
+# ---- Spotify parameter extraction -- per-kind ----------------------------
+
+@pytest.mark.parametrize("phrase, expected_kind, expected_query_substring", [
+    ("Spotify zagraj album Linkin Park", "album", "Linkin Park"),
+    ("Spotify zagraj utwór Numb", "track", "Numb"),
+    ("Spotify play Pink Floyd", "album", "Pink Floyd"),  # default kind
+])
+def test_spotify_search_kind_inference(parser, phrase, expected_kind, expected_query_substring):
+    """Gemma should infer kind=album/track from explicit cues and default to
+    album otherwise, with the bare query (no Spotify trigger word)."""
+    # We can't directly inspect the closure args from outside, so re-call
+    # _call_ollama and inspect the structured output.
+    raw = parser._call_ollama(phrase)
+    assert raw, f"LLM returned no actions for {phrase!r}"
+    spotify = next((a for a in raw if a.get("name") == "spotify_search"), None)
+    assert spotify is not None, f"No spotify_search in {raw!r}"
+    params = spotify.get("params") or {}
+    assert params.get("kind") == expected_kind, \
+        f"{phrase!r}: expected kind={expected_kind!r}, got {params!r}"
+    assert expected_query_substring.lower() in (params.get("query") or "").lower(), \
+        f"{phrase!r}: query missing {expected_query_substring!r}, got {params!r}"
+    # Trigger word should not leak into the query.
+    assert "spotify" not in (params.get("query") or "").lower()
+
+
+# ---- Multi-action ordering ----------------------------------------------
+
+def test_multiple_actions_preserved_in_order(parser):
+    """Two distinct actions in one utterance should both fire, in order."""
+    ops = parser.parse("press enter and turn it down")
+    action_ops = [op for op in ops if op[0] in ("key", "combo", "callable")]
+    assert any(op == ("key", KEY_ENTER) for op in action_ops), \
+        f"Expected press_enter; got {ops!r}"
+    assert any(op == ("key", KEY_VOLUMEDOWN) for op in action_ops), \
+        f"Expected volume_down; got {ops!r}"
+    # Ordering: enter before volume_down (matches utterance order)
+    enter_idx = next(i for i, op in enumerate(action_ops) if op == ("key", KEY_ENTER))
+    voldown_idx = next(i for i, op in enumerate(action_ops) if op == ("key", KEY_VOLUMEDOWN))
+    assert enter_idx < voldown_idx, f"action order wrong: {action_ops!r}"
+
+
+# ---- Empty / pure-text inputs --------------------------------------------
+
+def test_empty_string_returns_no_ops(parser):
+    assert parser.parse("") == []
+
+
+def test_long_dictation_passes_through_as_text(parser):
+    """A multi-sentence dictation block with no commands should produce
+    text-only ops, no false action detection."""
+    text = (
+        "Today I worked on the kitchen renovation, mostly the cabinet "
+        "alignment, then took a long walk in the park before dinner."
+    )
+    ops = parser.parse(text)
+    for op in ops:
+        assert op[0] in ("text", "char"), \
+            f"Long dictation produced unexpected action {op!r}; got {ops!r}"
