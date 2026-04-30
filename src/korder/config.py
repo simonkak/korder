@@ -26,7 +26,7 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "action_parser": "regex",
         "llm_model": "gemma4:e4b",
     },
-    # LLM intent parser tuning. Both knobs apply only when
+    # LLM intent parser tuning. All knobs apply only when
     # inject.action_parser = "llm".
     "intent": {
         # Enable Gemma's "thinking" reasoning step before answering.
@@ -39,6 +39,12 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # Smaller prompt, more flexible — handles synonyms in any
         # language Gemma understands without hand-coding them.
         "show_triggers_in_prompt": "false",
+        # Per-call timeout in seconds. Generous default because thinking
+        # mode regularly takes 3-5s and a single slow call shouldn't
+        # trip the fallback to regex (which loses parameterized actions
+        # like Spotify search). Matches the pending-parameter window in
+        # main_window so the timeouts compose coherently.
+        "timeout_s": "20",
     },
     "ui": {
         "show_history_on_start": "false",

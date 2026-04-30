@@ -277,6 +277,18 @@ class SettingsDialog(QDialog):
         )
         f.addRow("", self._intent_show_triggers)
 
+        self._intent_timeout = QSpinBox()
+        self._intent_timeout.setRange(2, 120)
+        self._intent_timeout.setSuffix(" s")
+        self._intent_timeout.setToolTip(
+            "Per-call timeout for the LLM action parser. Thinking mode "
+            "regularly takes 3-5s and slow cases can hit 6+; the default "
+            "of 20s means a transient slow call won't trip the fallback "
+            "to regex (which loses parameterized actions like Spotify "
+            "search)."
+        )
+        f.addRow("LLM timeout:", self._intent_timeout)
+
         # Subtle separator + right-aligned benchmark action. Spanning the
         # form's full width (single-arg addRow) avoids the field-column
         # indent the empty-label form rows produce.
@@ -409,6 +421,10 @@ class SettingsDialog(QDialog):
         # Intent (LLM tuning)
         self._intent_thinking_mode.setChecked(_truthy(c["intent"]["thinking_mode"]))
         self._intent_show_triggers.setChecked(_truthy(c["intent"]["show_triggers_in_prompt"]))
+        try:
+            self._intent_timeout.setValue(int(float(c["intent"]["timeout_s"])))
+        except (KeyError, ValueError):
+            self._intent_timeout.setValue(20)
 
         # Spotify
         self._spotify_client_id.setText(c["spotify"]["client_id"])
@@ -440,6 +456,7 @@ class SettingsDialog(QDialog):
         c["intent"]["show_triggers_in_prompt"] = (
             "true" if self._intent_show_triggers.isChecked() else "false"
         )
+        c["intent"]["timeout_s"] = str(self._intent_timeout.value())
 
         c["spotify"]["client_id"] = self._spotify_client_id.text().strip()
         c["spotify"]["client_secret"] = self._spotify_client_secret.text().strip()
@@ -469,7 +486,8 @@ class SettingsDialog(QDialog):
         model = self._llm_model.text().strip() or "gemma4:e4b"
         thinking = self._intent_thinking_mode.isChecked()
         triggers = self._intent_show_triggers.isChecked()
-        dialog = BenchmarkDialog(model, thinking, triggers, self)
+        timeout_s = float(self._intent_timeout.value())
+        dialog = BenchmarkDialog(model, thinking, triggers, timeout_s, self)
         dialog.exec()
 
 

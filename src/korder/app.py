@@ -91,8 +91,13 @@ def _run_app() -> int:
         from korder.intent import IntentParser
         thinking = _bool(cfg["intent"]["thinking_mode"])
         show_triggers = _bool(cfg["intent"]["show_triggers_in_prompt"])
+        try:
+            timeout_s = float(cfg["intent"]["timeout_s"])
+        except (KeyError, ValueError):
+            timeout_s = 20.0
         op_parser = IntentParser(
             model=cfg["inject"]["llm_model"],
+            timeout_s=timeout_s,
             thinking_mode=thinking,
             show_triggers_in_prompt=show_triggers,
         ).parse

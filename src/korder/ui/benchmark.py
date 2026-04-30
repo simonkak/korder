@@ -47,12 +47,13 @@ class _BenchmarkWorker(QThread):
         model: str,
         thinking_mode: bool,
         show_triggers: bool,
+        timeout_s: float,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._parser = IntentParser(
             model=model,
-            timeout_s=30.0,  # thinking mode can blow past the default
+            timeout_s=timeout_s,
             thinking_mode=thinking_mode,
             show_triggers_in_prompt=show_triggers,
         )
@@ -79,6 +80,7 @@ class BenchmarkDialog(QDialog):
         model: str,
         thinking_mode: bool,
         show_triggers: bool,
+        timeout_s: float = 30.0,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -86,7 +88,9 @@ class BenchmarkDialog(QDialog):
         self.resize(720, 480)
         self._build_ui(model, thinking_mode, show_triggers)
 
-        self._worker = _BenchmarkWorker(model, thinking_mode, show_triggers, self)
+        self._worker = _BenchmarkWorker(
+            model, thinking_mode, show_triggers, timeout_s, self
+        )
         self._worker.progress.connect(self._on_progress)
         self._worker.finished_results.connect(self._on_done)
         self._worker.failed.connect(self._on_failed)
