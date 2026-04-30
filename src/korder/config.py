@@ -29,6 +29,13 @@ DEFAULTS: dict[str, dict[str, str]] = {
     "ui": {
         "show_history_on_start": "false",
     },
+    # Spotify Web API credentials. Optional — without these, voice search
+    # falls back to xdg-open (opens search UI, user clicks). Get them at
+    # https://developer.spotify.com/dashboard (no Premium required).
+    "spotify": {
+        "client_id": "",
+        "client_secret": "",
+    },
 }
 
 

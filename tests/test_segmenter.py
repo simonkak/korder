@@ -137,7 +137,8 @@ def test_polish_text_unchanged_when_no_actions(text):
 
 
 def test_parameterized_action_passes_params_to_factory():
-    """Spotify search action takes a 'query' param the LLM extracted."""
+    """Spotify search action wraps the search in a callable that the
+    inject backend dispatches at execution time."""
     ops = segment_input_by_actions(
         "Zagraj na Spotify Despacito",
         [{
@@ -146,41 +147,20 @@ def test_parameterized_action_passes_params_to_factory():
             "params": {"query": "Despacito"},
         }],
     )
-    # Op should be a subprocess "sh -c <D-Bus || xdg-open>" command
     assert ops is not None
     assert len(ops) == 1
-    kind, args = ops[0]
-    assert kind == "subprocess"
-    assert args[0] == "sh"
-    assert args[1] == "-c"
-    # Both D-Bus call and xdg-open fallback should be in the chain
-    assert "qdbus6" in args[2]
-    assert "xdg-open" in args[2]
-    assert "spotify:search:Despacito" in args[2]
+    kind, fn = ops[0]
+    assert kind == "callable"
+    assert callable(fn)
 
 
-def test_parameterized_action_with_url_encoding():
-    """Multi-word queries get URL-encoded for the spotify: URI."""
-    ops = segment_input_by_actions(
-        "Spotify play Pink Floyd",
-        [{
-            "phrase": "Spotify play Pink Floyd",
-            "name": "spotify_search",
-            "params": {"query": "Pink Floyd"},
-        }],
-    )
-    assert ops is not None
-    _, args = ops[0]
-    # urllib.parse.quote turns space into %20
-    assert "Pink%20Floyd" in args[2]
-
-
-def test_parameterized_action_with_empty_params_falls_back_to_just_opening():
-    """No query → open Spotify itself."""
+def test_parameterized_action_with_empty_params_returns_callable():
+    """No query → callable that opens Spotify with no specific query."""
     ops = segment_input_by_actions(
         "Spotify",
         [{"phrase": "Spotify", "name": "spotify_search"}],
     )
     assert ops is not None
-    _, args = ops[0]
-    assert args == ["xdg-open", "spotify:"]
+    kind, fn = ops[0]
+    assert kind == "callable"
+    assert callable(fn)

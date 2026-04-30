@@ -97,10 +97,21 @@ class YdotoolBackend:
                 self._press_combo(op[1])
             elif kind == "subprocess":
                 self._run_subprocess(op[1])
+            elif kind == "callable":
+                self._run_callable(op[1])
             # write_mode ops are advisory — caller filters them before
             # passing to execute_ops; if any slip through, no-op.
             if i < len(ops) - 1:
                 time.sleep(0.04)
+
+    def _run_callable(self, fn) -> None:
+        """Execute an arbitrary Python callable (typically a closure capturing
+        whatever state the action needs — config, params, etc.). Errors are
+        logged but not raised so a failing action doesn't kill the worker."""
+        try:
+            fn()
+        except Exception as e:
+            print(f"[korder] callable action failed: {e}", flush=True)
 
     def _run_subprocess(self, args: list[str]) -> None:
         """Issue a system command (volume, media, etc.) — fire and forget.
