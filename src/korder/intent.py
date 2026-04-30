@@ -66,6 +66,18 @@ def _build_prompt() -> str:
         'Input: "press enter and run it"',
         'Output: {"actions": [{"phrase": "press enter", "name": "press_enter"}]}',
         "",
+        'Input: "Pisz."',
+        'Output: {"actions": [{"phrase": "Pisz", "name": "enter_write_mode"}]}',
+        "",
+        'Input: "Przestań."',
+        'Output: {"actions": [{"phrase": "Przestań", "name": "exit_write_mode"}]}',
+        "",
+        'Input: "Przestań pisać."',
+        'Output: {"actions": [{"phrase": "Przestań pisać", "name": "exit_write_mode"}]}',
+        "",
+        'Input: "głośniej"',
+        'Output: {"actions": [{"phrase": "głośniej", "name": "volume_up"}]}',
+        "",
         'Input: "she pressed enter on the keyboard"',
         'Output: {"actions": []}',
         "",
@@ -91,6 +103,22 @@ class IntentParser:
             return split_into_ops(transcript)
 
         print(f"[korder] LLM actions for {transcript!r}: {actions!r}", flush=True)
+
+        # Supplement: if LLM came back empty but the regex parser sees an
+        # actual registered trigger phrase, use the regex result. Catches
+        # cases where E2B-class models miss obvious triggers (Polish exit
+        # mode toggles in particular). LLM still wins for "she pressed
+        # enter on the keyboard" because regex would also classify that
+        # as text-only thanks to the word-boundary trigger phrasing.
+        if not actions:
+            regex_ops = split_into_ops(transcript)
+            if any(op[0] != "text" for op in regex_ops):
+                print(
+                    f"[korder] LLM found no actions; regex caught triggers, using regex: {regex_ops!r}",
+                    flush=True,
+                )
+                return regex_ops
+
         ops = segment_input_by_actions(transcript, actions)
         if ops is None:
             print(f"[korder] LLM action phrase not found in input, falling back to regex", flush=True)
