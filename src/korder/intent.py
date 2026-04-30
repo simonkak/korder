@@ -196,7 +196,17 @@ def segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | No
             continue
         action = get_action(action_name)
         if action is None:
-            return None
+            # Gemma sometimes returns a trigger phrase ("resume", "pauza")
+            # as the action name instead of the proper name ("play_pause").
+            # Look it up in the trigger phrase map and recover gracefully.
+            from korder.actions.parser import _compile_trigger_regex
+            _, phrase_map = _compile_trigger_regex()
+            mapped = phrase_map.get(action_name.lower())
+            if mapped:
+                action = get_action(mapped)
+                action_name = mapped
+            if action is None:
+                return None
         params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
         idx = lower.find(phrase.lower(), cursor)
         if idx == -1:
