@@ -96,33 +96,67 @@ def test_empty_text_is_noop(fake_backend):
     assert calls == []
 
 
-def test_subprocess_op_runs_command(fake_backend):
-    """Audio actions translate to plain subprocess calls."""
+def test_volume_up_emits_media_keycode(fake_backend):
+    """Audio actions emit media keys (KDE/Plasma routes them automatically)."""
     backend, calls = fake_backend
     backend.type("głośniej")
-    assert ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"] in calls
+    # KEY_VOLUMEUP = 115
+    key_call = next(c for c in calls if c[0] == "ydotool" and c[1] == "key")
+    assert "115:1" in key_call and "115:0" in key_call
+
+
+def test_play_music_emits_play_pause_keycode(fake_backend):
+    backend, calls = fake_backend
+    backend.type("play music")
+    # KEY_PLAYPAUSE = 164
+    key_call = next(c for c in calls if c[0] == "ydotool" and c[1] == "key")
+    assert "164:1" in key_call and "164:0" in key_call
 
 
 def test_subprocess_op_swallows_failure(fake_backend, monkeypatch):
-    """playerctl exits non-zero when nothing's playing — should not raise."""
+    """The subprocess op kind stays for future actions (screenshot, app launch);
+    failures should not raise."""
     from korder import inject
+    from korder.actions.base import Action, register, reset
+    from korder.actions.parser import invalidate_trigger_cache
+    import korder.actions  # ensure default registrations
+    from korder.actions.base import all_actions
 
     backend, _calls = fake_backend
 
-    class FailingResult:
-        returncode = 1
-        stdout = ""
-        stderr = ""
+    # Save and replace registry so we can register a test subprocess action.
+    saved = list(all_actions())
+    try:
+        reset()
+        for a in saved:
+            register(a)
+        register(Action(
+            name="test_failing_subproc",
+            description="",
+            triggers={"en": ["fail subproc"]},
+            op_factory=lambda _: ("subprocess", ["false"]),
+        ))
+        invalidate_trigger_cache()
 
-    def fake_run(cmd, *args, **kwargs):
-        if cmd[:1] == ["playerctl"]:
-            return FailingResult()
-        class OK:
-            returncode = 0
+        class FailingResult:
+            returncode = 1
             stdout = ""
             stderr = ""
-        return OK()
 
-    monkeypatch.setattr(inject.subprocess, "run", fake_run)
-    # Should not raise
-    backend.type("next song")
+        def fake_run(cmd, *args, **kwargs):
+            if cmd == ["false"]:
+                return FailingResult()
+            class OK:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return OK()
+
+        monkeypatch.setattr(inject.subprocess, "run", fake_run)
+        # Should not raise
+        backend.type("fail subproc")
+    finally:
+        reset()
+        for a in saved:
+            register(a)
+        invalidate_trigger_cache()

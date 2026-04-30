@@ -1,56 +1,61 @@
 """Audio and media control actions.
 
-Volume changes go through wpctl (PipeWire native). Media transport
-(play/pause/skip) goes through playerctl which talks MPRIS to whatever
-player is currently active — Spotify, Strawberry, browser tabs, etc.
-
-Failures are silent (subprocess op uses check=False) — saying "next song"
-with nothing playing harmlessly no-ops rather than surfacing an error.
+Uses standard kernel media keycodes injected via /dev/uinput. KDE Plasma's
+media-key handler picks these up and routes them: volume keys to PipeWire,
+play/skip keys to whichever MPRIS player is currently active. No
+playerctl, wpctl, or D-Bus glue required — same mechanism a hardware
+keyboard's media buttons use.
 """
 from korder.actions.base import Action, register
-
-
-_SINK = "@DEFAULT_AUDIO_SINK@"
+from korder.actions.codes import (
+    KEY_MUTE,
+    KEY_NEXTSONG,
+    KEY_PLAYPAUSE,
+    KEY_PREVIOUSSONG,
+    KEY_STOPCD,
+    KEY_VOLUMEDOWN,
+    KEY_VOLUMEUP,
+)
 
 
 register(Action(
     name="volume_up",
-    description="Increase system volume by 5%",
+    description="Raise volume one step",
     triggers={
         "en": ["louder", "volume up"],
         "pl": ["głośniej", "zwiększ głośność"],
     },
-    op_factory=lambda _args: ("subprocess", ["wpctl", "set-volume", _SINK, "5%+"]),
+    op_factory=lambda _args: ("key", KEY_VOLUMEUP),
 ))
 
 register(Action(
     name="volume_down",
-    description="Decrease system volume by 5%",
+    description="Lower volume one step",
     triggers={
         "en": ["quieter", "volume down"],
         "pl": ["ciszej", "zmniejsz głośność"],
     },
-    op_factory=lambda _args: ("subprocess", ["wpctl", "set-volume", _SINK, "5%-"]),
+    op_factory=lambda _args: ("key", KEY_VOLUMEDOWN),
 ))
 
 register(Action(
     name="volume_mute",
-    description="Toggle mute on the default audio sink",
+    description="Toggle mute",
     triggers={
         "en": ["mute audio", "toggle mute"],
         "pl": ["wycisz", "wycisz dźwięk"],
     },
-    op_factory=lambda _args: ("subprocess", ["wpctl", "set-mute", _SINK, "toggle"]),
+    op_factory=lambda _args: ("key", KEY_MUTE),
 ))
 
 register(Action(
     name="play_pause",
-    description="Toggle play/pause on the active media player (MPRIS)",
+    description="Toggle play/pause on the active media player",
     triggers={
         "en": ["play music", "pause music", "toggle music"],
         "pl": ["puść muzykę", "zatrzymaj muzykę", "wstrzymaj muzykę"],
     },
-    op_factory=lambda _args: ("subprocess", ["playerctl", "play-pause"]),
+    op_factory=lambda _args: ("key", KEY_PLAYPAUSE),
 ))
 
 register(Action(
@@ -60,7 +65,7 @@ register(Action(
         "en": ["next song", "next track", "skip song"],
         "pl": ["następna piosenka", "następny utwór"],
     },
-    op_factory=lambda _args: ("subprocess", ["playerctl", "next"]),
+    op_factory=lambda _args: ("key", KEY_NEXTSONG),
 ))
 
 register(Action(
@@ -70,7 +75,7 @@ register(Action(
         "en": ["previous song", "previous track"],
         "pl": ["poprzednia piosenka", "poprzedni utwór"],
     },
-    op_factory=lambda _args: ("subprocess", ["playerctl", "previous"]),
+    op_factory=lambda _args: ("key", KEY_PREVIOUSSONG),
 ))
 
 register(Action(
@@ -80,5 +85,5 @@ register(Action(
         "en": ["stop music", "stop playback"],
         "pl": ["zatrzymaj odtwarzanie"],
     },
-    op_factory=lambda _args: ("subprocess", ["playerctl", "stop"]),
+    op_factory=lambda _args: ("key", KEY_STOPCD),
 ))

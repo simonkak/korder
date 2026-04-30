@@ -102,24 +102,25 @@ def test_consecutive_actions_no_text_between():
     ]
 
 
-def test_volume_up_routes_to_wpctl():
+def test_volume_up_uses_media_keycode():
+    """KDE listens for KEY_VOLUMEUP at the kernel layer; no external CLI."""
     ops = split_into_ops("głośniej")
-    assert ops == [("subprocess", ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"])]
+    assert ops == [("key", 115)]  # KEY_VOLUMEUP
 
 
-def test_play_music_routes_to_playerctl():
+def test_play_music_uses_media_keycode():
     ops = split_into_ops("play music")
-    assert ops == [("subprocess", ["playerctl", "play-pause"])]
+    assert ops == [("key", 164)]  # KEY_PLAYPAUSE
 
 
 def test_next_song_polish():
     ops = split_into_ops("następna piosenka")
-    assert ops == [("subprocess", ["playerctl", "next"])]
+    assert ops == [("key", 163)]  # KEY_NEXTSONG
 
 
 def test_text_then_volume_action():
     ops = split_into_ops("write this then volume down")
     assert ops == [
         ("text", "write this then"),
-        ("subprocess", ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"]),
+        ("key", 114),  # KEY_VOLUMEDOWN
     ]
