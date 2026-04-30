@@ -20,7 +20,10 @@ from korder.actions.codes import (
 
 register(Action(
     name="volume_up",
-    description="Raise volume one step",
+    description=(
+        "Raise the system volume by one step. Use for any imperative meaning "
+        "louder / increase volume / turn it up."
+    ),
     triggers={
         "en": ["louder", "volume up"],
         "pl": ["głośniej", "zwiększ głośność"],
@@ -30,7 +33,10 @@ register(Action(
 
 register(Action(
     name="volume_down",
-    description="Lower volume one step",
+    description=(
+        "Lower the system volume by one step. Use for any imperative meaning "
+        "quieter / decrease volume / turn it down."
+    ),
     triggers={
         "en": ["quieter", "volume down"],
         "pl": ["ciszej", "zmniejsz głośność"],
@@ -40,7 +46,7 @@ register(Action(
 
 register(Action(
     name="volume_mute",
-    description="Toggle mute",
+    description="Toggle mute on the system audio output (mute/unmute).",
     triggers={
         "en": ["mute audio", "toggle mute"],
         "pl": ["wycisz", "wycisz dźwięk"],
@@ -50,7 +56,14 @@ register(Action(
 
 register(Action(
     name="play_pause",
-    description="Toggle play/pause on the active media player",
+    description=(
+        "Toggle the currently active media playback between play and pause. "
+        "Use for ANY imperative meaning start, pause, resume, or toggle "
+        "music / video — match the user's intent, not the literal phrase. "
+        "Distinct from stop_playback, which fully halts rather than just "
+        "pausing. If the user is plainly saying 'pause' / 'play' / 'resume' / "
+        "the equivalent in their language, this is the action."
+    ),
     triggers={
         "en": ["play music", "pause music", "toggle music", "pause", "resume"],
         "pl": [
@@ -72,7 +85,9 @@ register(Action(
 
 register(Action(
     name="next_track",
-    description="Skip to the next track",
+    description=(
+        "Skip to the next track / song / video on the active media player."
+    ),
     triggers={
         "en": ["next song", "next track", "skip song"],
         "pl": ["następna piosenka", "następny utwór"],
@@ -82,7 +97,9 @@ register(Action(
 
 register(Action(
     name="previous_track",
-    description="Go to the previous track",
+    description=(
+        "Go back to the previous track / song / video on the active media player."
+    ),
     triggers={
         "en": ["previous song", "previous track"],
         "pl": ["poprzednia piosenka", "poprzedni utwór"],
@@ -92,7 +109,12 @@ register(Action(
 
 register(Action(
     name="stop_playback",
-    description="Stop media playback",
+    description=(
+        "COMPLETELY STOP media playback (different from pausing). Use only "
+        "when the user explicitly asks to halt or stop — not for pause / "
+        "resume / toggle, which are play_pause. If unsure between this and "
+        "play_pause, prefer play_pause."
+    ),
     triggers={
         "en": ["stop music", "stop playback"],
         "pl": ["zatrzymaj odtwarzanie"],

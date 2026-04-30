@@ -87,8 +87,23 @@ def _run_app() -> int:
     op_parser = None
     if cfg["inject"]["action_parser"].lower() == "llm":
         from korder.intent import IntentParser
-        op_parser = IntentParser(model=cfg["inject"]["llm_model"]).parse
-        print(f"[korder] using LLM action parser ({cfg['inject']['llm_model']})", file=sys.stderr)
+        thinking = _bool(cfg["intent"]["thinking_mode"])
+        show_triggers = _bool(cfg["intent"]["show_triggers_in_prompt"])
+        op_parser = IntentParser(
+            model=cfg["inject"]["llm_model"],
+            thinking_mode=thinking,
+            show_triggers_in_prompt=show_triggers,
+        ).parse
+        flags = []
+        if thinking:
+            flags.append("thinking")
+        if show_triggers:
+            flags.append("show-triggers")
+        flag_str = f" [{', '.join(flags)}]" if flags else ""
+        print(
+            f"[korder] using LLM action parser ({cfg['inject']['llm_model']}){flag_str}",
+            file=sys.stderr,
+        )
 
     try:
         injector = make_backend(paste_mode=cfg["inject"]["paste_mode"], op_parser=op_parser)

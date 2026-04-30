@@ -14,7 +14,11 @@ from korder.actions.base import Action, register
 
 register(Action(
     name="enter_write_mode",
-    description="Start typing dictated text into the focused app",
+    description=(
+        "Begin typing dictated text into the focused application. Use when "
+        "the user gives a brief imperative meaning 'start writing' / 'begin "
+        "typing' / 'write mode on'."
+    ),
     triggers={
         "en": ["start writing", "write mode on"],
         "pl": ["pisz", "włącz pisanie"],
@@ -24,7 +28,11 @@ register(Action(
 
 register(Action(
     name="exit_write_mode",
-    description="Stop typing — return to preview-only mode",
+    description=(
+        "End typing — return korder to preview-only mode where dictation is "
+        "shown but not injected. Use when the user says 'stop' / 'stop writing' / "
+        "'cease' / equivalent in their language."
+    ),
     triggers={
         "en": ["stop writing", "write mode off"],
         "pl": ["przestań", "przestań pisać", "wyłącz pisanie"],

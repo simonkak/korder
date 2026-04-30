@@ -153,6 +153,27 @@ class SettingsDialog(QDialog):
         self._llm_model.setToolTip("Ollama tag of the model used when action_parser = llm.")
         f.addRow("LLM model (ollama tag):", self._llm_model)
 
+        self._intent_thinking_mode = QCheckBox(
+            "Use Gemma's thinking mode (slower but reasons better)"
+        )
+        self._intent_thinking_mode.setToolTip(
+            "Enables Gemma's 'think before answering' step. Adds ~1-2s of "
+            "latency per command but resolves ambiguous phrasings without "
+            "hand-coded triggers. Only affects LLM action parser."
+        )
+        f.addRow("", self._intent_thinking_mode)
+
+        self._intent_show_triggers = QCheckBox(
+            "Show full trigger lists in LLM prompt (legacy / explicit matching)"
+        )
+        self._intent_show_triggers.setToolTip(
+            "When off (default), the LLM only sees action descriptions and "
+            "must reason about whether an utterance matches. When on, every "
+            "trigger phrase per action is included in the prompt — more "
+            "deterministic but bigger prompt and worse generalization."
+        )
+        f.addRow("", self._intent_show_triggers)
+
         outer.addWidget(inject)
         outer.addStretch(1)
         return page
@@ -250,6 +271,10 @@ class SettingsDialog(QDialog):
         self._action_parser.setCurrentText(c["inject"]["action_parser"])
         self._llm_model.setText(c["inject"]["llm_model"])
 
+        # Intent (LLM tuning)
+        self._intent_thinking_mode.setChecked(_truthy(c["intent"]["thinking_mode"]))
+        self._intent_show_triggers.setChecked(_truthy(c["intent"]["show_triggers_in_prompt"]))
+
         # Spotify
         self._spotify_client_id.setText(c["spotify"]["client_id"])
         self._spotify_client_secret.setText(c["spotify"]["client_secret"])
@@ -273,6 +298,13 @@ class SettingsDialog(QDialog):
         c["inject"]["trailing_space"] = "true" if self._trailing_space.isChecked() else "false"
         c["inject"]["action_parser"] = self._action_parser.currentText()
         c["inject"]["llm_model"] = self._llm_model.text().strip()
+
+        c["intent"]["thinking_mode"] = (
+            "true" if self._intent_thinking_mode.isChecked() else "false"
+        )
+        c["intent"]["show_triggers_in_prompt"] = (
+            "true" if self._intent_show_triggers.isChecked() else "false"
+        )
 
         c["spotify"]["client_id"] = self._spotify_client_id.text().strip()
         c["spotify"]["client_secret"] = self._spotify_client_secret.text().strip()

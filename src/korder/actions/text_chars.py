@@ -5,7 +5,12 @@ from korder.actions.base import Action, register
 
 register(Action(
     name="new_line",
-    description="Insert a newline character (\\n) within typed text",
+    description=(
+        "Insert a literal newline character (\\n) within typed text. "
+        "Distinct from press_enter — this is for adding a line break inside "
+        "a multi-line text field; press_enter is for submitting/confirming. "
+        "Use when the user says 'new line' / 'line break' / equivalent."
+    ),
     triggers={
         "en": ["new line", "newline"],
         "pl": ["nowa linia", "nowy wiersz"],
@@ -15,7 +20,7 @@ register(Action(
 
 register(Action(
     name="new_paragraph",
-    description="Insert a paragraph break (two newlines)",
+    description="Insert a paragraph break (two newlines) within typed text.",
     triggers={
         "en": ["new paragraph"],
         "pl": ["nowy akapit"],

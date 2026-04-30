@@ -26,6 +26,20 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "action_parser": "regex",
         "llm_model": "gemma4:e4b",
     },
+    # LLM intent parser tuning. Both knobs apply only when
+    # inject.action_parser = "llm".
+    "intent": {
+        # Enable Gemma's "thinking" reasoning step before answering.
+        # Slower (~1-2s vs ~300-500ms) but resolves ambiguous phrasings
+        # without explicit trigger lists.
+        "thinking_mode": "false",
+        # Show every trigger phrase per action in the LLM prompt. When
+        # false (default), only the action name + a semantic description
+        # are shown; Gemma reasons about whether an utterance matches.
+        # Smaller prompt, more flexible — handles synonyms in any
+        # language Gemma understands without hand-coding them.
+        "show_triggers_in_prompt": "false",
+    },
     "ui": {
         "show_history_on_start": "false",
         # Stop the recording session automatically after a command-style

@@ -26,92 +26,78 @@ _OLLAMA_URL = "http://localhost:11434/api/generate"
 _PUNCT_TO_STRIP = " \t.!?,;:\n"
 
 
-def _build_prompt() -> str:
-    """Render the LLM prompt from the current registry state."""
-    lines = [
-        "You are an inline action detector for a voice dictation tool. "
-        "Identify imperative action phrases in a transcript and return JSON describing them. "
-        "You do NOT reproduce text content — just identify where the action phrases are.",
-        "",
-        'Return a JSON object: {"actions": [{"phrase": "...", "name": "..."}]}',
-        "",
-        "The phrase field must be a contiguous substring that appears VERBATIM in the input "
-        "(case-insensitive matching is fine, but preserve characters and accents).",
-        "",
-        "Available actions:",
-    ]
+_SYSTEM_PROMPT = (
+    "You are an inline action detector for a voice dictation tool. The user "
+    "dictates speech that may include imperative commands (key presses, media "
+    "control, app actions). Your job is to identify which commands are present "
+    "and classify them by *intent*, not by literal string match. The user may "
+    "speak in any language Whisper transcribed — match meaning, not surface form.\n"
+    "\n"
+    "Return a single JSON object with this exact shape:\n"
+    '  {"actions": [{"phrase": "<exact substring of input>", "name": "<action_name>", "params": {...}}]}\n'
+    "\n"
+    "Rules you must always follow:\n"
+    "- If the transcript is plain dictation (description, prose, narrative, no imperative command), "
+    'return {"actions": []}.\n'
+    "- The `phrase` field must be a substring that appears verbatim in the user input.\n"
+    "- The `name` field must be one of the action names listed in the user message.\n"
+    "- Multiple actions in one input are allowed; return them in the order they appear.\n"
+    "- Descriptive prose about a command (e.g., 'she pressed enter on the keyboard') is NOT an action.\n"
+    "- For parameterized actions, extract relevant fields into `params`. If a required parameter "
+    "is not present in the input, leave `params` empty or omit it — do NOT invent values."
+)
+
+
+def _render_action_catalogue(*, show_triggers: bool) -> str:
+    """Render the per-call action list. With show_triggers=False (default), "
+    "the LLM only sees name + description + params and reasons by intent. "
+    "With show_triggers=True, full trigger phrase lists are appended."""
+    lines = []
     for action in all_actions():
-        triggers_flat = ", ".join(f'"{t}"' for t in action.all_triggers())
-        line = f'- name="{action.name}": {action.description}. Triggers: {triggers_flat}'
+        line = f'- {action.name}: {action.description}'
         if action.parameters:
             param_keys = ", ".join(action.parameters.keys())
             line += f' [params: {param_keys}]'
+        if show_triggers:
+            triggers_flat = ", ".join(f'"{t}"' for t in action.all_triggers())
+            line += f' (example phrasings: {triggers_flat})'
         lines.append(line)
-    lines.extend([
-        "",
-        "Rules:",
-        '- If no action triggers are present, return {"actions": []}.',
-        "- Descriptive prose like \"she pressed enter on the keyboard\" is NOT an action.",
-        "- Return phrases in the order they appear. Multiple actions per input are fine.",
-        "",
-        "Examples:",
-        'Input: "hello world"',
-        'Output: {"actions": []}',
-        "",
-        'Input: "Naciśnij Enter."',
-        'Output: {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}',
-        "",
-        'Input: "Co tu się stało? Naciśnij Enter."',
-        'Output: {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}',
-        "",
-        'Input: "Usuń słowo"',
-        'Output: {"actions": [{"phrase": "Usuń słowo", "name": "delete_word"}]}',
-        "",
-        'Input: "press enter and run it"',
-        'Output: {"actions": [{"phrase": "press enter", "name": "press_enter"}]}',
-        "",
-        'Input: "Pisz."',
-        'Output: {"actions": [{"phrase": "Pisz", "name": "enter_write_mode"}]}',
-        "",
-        'Input: "Przestań."',
-        'Output: {"actions": [{"phrase": "Przestań", "name": "exit_write_mode"}]}',
-        "",
-        'Input: "Przestań pisać."',
-        'Output: {"actions": [{"phrase": "Przestań pisać", "name": "exit_write_mode"}]}',
-        "",
-        'Input: "głośniej"',
-        'Output: {"actions": [{"phrase": "głośniej", "name": "volume_up"}]}',
-        "",
-        '# Parameterized examples — extract search query and kind into params:',
-        '# Default kind for spotify_search is "album"; only set "track" when',
-        '# the user explicitly says track/song/utwór/piosenka.',
-        '',
-        'Input: "Zagraj na Spotify Linkin Park"',
-        'Output: {"actions": [{"phrase": "Zagraj na Spotify Linkin Park", "name": "spotify_search", "params": {"query": "Linkin Park", "kind": "album"}}]}',
-        "",
-        'Input: "Spotify play Pink Floyd Wish You Were Here"',
-        'Output: {"actions": [{"phrase": "Spotify play Pink Floyd Wish You Were Here", "name": "spotify_search", "params": {"query": "Pink Floyd Wish You Were Here", "kind": "album"}}]}',
-        "",
-        'Input: "Spotify zagraj utwór Numb"',
-        'Output: {"actions": [{"phrase": "Spotify zagraj utwór Numb", "name": "spotify_search", "params": {"query": "Numb", "kind": "track"}}]}',
-        "",
-        'Input: "Spotify play track Despacito"',
-        'Output: {"actions": [{"phrase": "Spotify play track Despacito", "name": "spotify_search", "params": {"query": "Despacito", "kind": "track"}}]}',
-        "",
-        'Input: "she pressed enter on the keyboard"',
-        'Output: {"actions": []}',
-        "",
-        "Now analyze this transcript and return ONLY the JSON object, no other text.",
-        "Input: %s",
-        "Output:",
-    ])
     return "\n".join(lines)
 
 
+def _build_user_prompt(transcript: str, *, show_triggers: bool) -> str:
+    """Per-call user message: action catalogue + transcript + reminder of
+    the JSON output format."""
+    catalogue = _render_action_catalogue(show_triggers=show_triggers)
+    return (
+        "Available actions:\n"
+        f"{catalogue}\n"
+        "\n"
+        "A few examples to anchor your output shape:\n"
+        '  "hello world" → {"actions": []}\n'
+        '  "Naciśnij Enter." → {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}\n'
+        '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_search", "params": {"query": "Linkin Park", "kind": "album"}}]}\n'
+        '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
+        '  "she pressed enter on the keyboard" → {"actions": []}\n'
+        "\n"
+        f"Now analyze this transcript and return ONLY the JSON object:\n"
+        f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
+        "Output:"
+    )
+
+
 class IntentParser:
-    def __init__(self, model: str = "gemma4:e2b", timeout_s: float = 5.0):
+    def __init__(
+        self,
+        model: str = "gemma4:e2b",
+        timeout_s: float = 8.0,
+        thinking_mode: bool = False,
+        show_triggers_in_prompt: bool = False,
+    ):
         self.model = model
         self.timeout_s = timeout_s
+        self.thinking_mode = thinking_mode
+        self.show_triggers_in_prompt = show_triggers_in_prompt
 
     def parse(self, transcript: str) -> list[tuple]:
         if not transcript:
@@ -147,14 +133,20 @@ class IntentParser:
         return ops
 
     def _call_ollama(self, transcript: str) -> list:
-        prompt = _build_prompt() % json.dumps(transcript)
-        payload = {
+        user_prompt = _build_user_prompt(
+            transcript, show_triggers=self.show_triggers_in_prompt
+        )
+        payload: dict = {
             "model": self.model,
-            "prompt": prompt,
+            "system": _SYSTEM_PROMPT,
+            "prompt": user_prompt,
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0.0, "num_predict": 256},
+            "options": {"temperature": 0.0, "num_predict": 512},
         }
+        if self.thinking_mode:
+            # Top-level option per ollama API; enables Gemma's reasoning step.
+            payload["think"] = True
         req = urllib.request.Request(
             _OLLAMA_URL,
             data=json.dumps(payload).encode("utf-8"),

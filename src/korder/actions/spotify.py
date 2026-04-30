@@ -99,7 +99,16 @@ def _spotify_search_op(args: dict) -> tuple | None:
 
 register(Action(
     name="spotify_search",
-    description="Search Spotify for an album (default) or a single track and play it",
+    description=(
+        "Search Spotify and play the result. Use when the user invokes "
+        "Spotify by name and provides a query (album / artist / song). "
+        "Extract the search target (everything after the Spotify trigger word) "
+        "into params.query — do NOT include the word 'Spotify' itself or the "
+        "imperative verb in the query. Set params.kind to 'track' only when "
+        "the user explicitly indicates a single song (e.g., says 'track', "
+        "'song', 'utwór', 'piosenka'). Otherwise default kind='album' — most "
+        "queries by band or album name are about playing the body of work."
+    ),
     triggers={
         "en": ["play on spotify", "spotify search", "spotify play"],
         "pl": ["zagraj na spotify", "spotify wyszukaj", "puść na spotify"],

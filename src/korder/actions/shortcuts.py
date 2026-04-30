@@ -14,7 +14,11 @@ from korder.actions.codes import (
 
 register(Action(
     name="delete_word",
-    description="Delete the previous word (Ctrl+Backspace)",
+    description=(
+        "Delete the previous WORD before the cursor (Ctrl+Backspace). Use "
+        "when the user wants to remove the word they just typed, not just "
+        "one character. Distinct from press_backspace, which removes a single character."
+    ),
     triggers={
         "en": ["delete word"],
         "pl": ["usuń słowo", "skasuj słowo"],
@@ -24,7 +28,10 @@ register(Action(
 
 register(Action(
     name="delete_word_forward",
-    description="Delete the next word (Ctrl+Delete)",
+    description=(
+        "Delete the word AFTER the cursor (Ctrl+Delete). Less common — use "
+        "only when the user explicitly says 'next word' / 'forward word' / equivalent."
+    ),
     triggers={
         "en": ["delete next word"],
         "pl": ["usuń następne słowo"],
@@ -34,7 +41,9 @@ register(Action(
 
 register(Action(
     name="select_all",
-    description="Select all (Ctrl+A)",
+    description=(
+        "Select all content in the focused field/document (Ctrl+A)."
+    ),
     triggers={
         "en": ["select all"],
         "pl": ["zaznacz wszystko"],
@@ -44,7 +53,10 @@ register(Action(
 
 register(Action(
     name="undo",
-    description="Undo (Ctrl+Z)",
+    description=(
+        "Undo the last action (Ctrl+Z). Use when the user says 'undo', "
+        "'revert', 'go back', or equivalent."
+    ),
     triggers={
         "en": ["undo"],
         "pl": ["cofnij"],
@@ -54,7 +66,10 @@ register(Action(
 
 register(Action(
     name="select_to_line_start",
-    description="Select from cursor to start of line (Shift+Home)",
+    description=(
+        "Select from the cursor to the start of the current line (Shift+Home). "
+        "Use when the user says 'select line' or 'select to beginning'."
+    ),
     triggers={
         "en": ["select line"],
         "pl": ["zaznacz linię"],
@@ -64,7 +79,9 @@ register(Action(
 
 register(Action(
     name="select_to_line_end",
-    description="Select from cursor to end of line (Shift+End)",
+    description=(
+        "Select from the cursor to the end of the current line (Shift+End)."
+    ),
     triggers={
         "en": ["select to end"],
         "pl": ["zaznacz do końca"],

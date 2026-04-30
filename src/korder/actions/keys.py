@@ -10,7 +10,11 @@ from korder.actions.codes import (
 
 register(Action(
     name="press_enter",
-    description="Press the Enter key (submit, newline-as-key)",
+    description=(
+        "Press the Enter / Return key. Use when the user asks to submit, "
+        "send, confirm, or insert a newline-as-key (the kind that submits "
+        "a form, sends a chat message, or runs a command line)."
+    ),
     triggers={
         "en": ["press enter", "press return"],
         "pl": ["wciśnij enter", "naciśnij enter", "wyślij", "potem enter"],
@@ -20,7 +24,10 @@ register(Action(
 
 register(Action(
     name="press_tab",
-    description="Press the Tab key",
+    description=(
+        "Press the Tab key. Use for explicit requests to insert a tab "
+        "character or move focus to the next field."
+    ),
     triggers={
         "en": ["press tab"],
         "pl": ["tabuluj", "wciśnij tab", "naciśnij tab"],
@@ -30,7 +37,10 @@ register(Action(
 
 register(Action(
     name="press_escape",
-    description="Press the Escape key",
+    description=(
+        "Press the Escape key. Use when the user asks to cancel, dismiss, "
+        "or close a dialog/menu."
+    ),
     triggers={
         "en": ["press escape", "press esc"],
         "pl": ["wciśnij escape", "naciśnij escape"],
@@ -40,7 +50,10 @@ register(Action(
 
 register(Action(
     name="press_backspace",
-    description="Press the Backspace key (delete one character before cursor)",
+    description=(
+        "Press the Backspace key once — deletes one character before the "
+        "cursor. Distinct from delete_word (which deletes a whole word)."
+    ),
     triggers={
         "en": ["press backspace"],
         "pl": ["skasuj", "wciśnij backspace", "naciśnij backspace"],
