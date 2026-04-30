@@ -1,28 +1,41 @@
 """Spotify integration actions.
 
-Phase 1 (this file): xdg-open with a spotify: search URI. Opens the
-Spotify desktop client with search results for the query — user clicks
-the first result. No API setup needed but doesn't auto-play.
+Uses Spotify's MPRIS D-Bus interface (org.mpris.MediaPlayer2.spotify) for
+search-URI navigation when the desktop client is running, with an
+xdg-open fallback when it isn't (xdg-open launches Spotify and forwards
+the URI). The shell-`||` chain in the subprocess op handles both cases.
 
-Phase 2 (TODO): Spotify Web API via spotipy + OAuth for true
-voice-driven search-and-play. Requires Spotify Premium and a registered
-developer app at developer.spotify.com.
-
-Parameter extraction is LLM-only — the regex parser can't extract
-free-form query strings. In LLM mode Gemma extracts the post-trigger
-text into params.query and the op_factory feeds it to xdg-open.
+Limitation: Spotify's OpenUri handles spotify:track:ID by playing the
+track, but spotify:search:QUERY just opens the search view — user
+still clicks the first result. For true voice→play, we'd need Phase 2:
+Spotify Web API to search→track-ID→OpenUri the track. That requires
+Premium + a registered dev app at developer.spotify.com + OAuth.
 """
+import shlex
+from urllib.parse import quote
+
 from korder.actions.base import Action, register
 
 
 def _spotify_search_op(args: dict) -> tuple:
     query = args.get("query", "").strip() if isinstance(args, dict) else ""
     if not query:
-        # No query → just open Spotify itself
         return ("subprocess", ["xdg-open", "spotify:"])
-    # Spotify URI scheme: spotify:search:QUERY (URL-encoded)
-    from urllib.parse import quote
-    return ("subprocess", ["xdg-open", f"spotify:search:{quote(query)}"])
+
+    # spotify: URI with the query URL-encoded so things like 'Pink Floyd'
+    # don't break the D-Bus argument parsing.
+    uri = f"spotify:search:{quote(query)}"
+    quoted_uri = shlex.quote(uri)
+
+    # Try D-Bus first (no URL-handler popup, doesn't focus-steal). Fall
+    # back to xdg-open if Spotify isn't running so the daemon launches.
+    cmd = (
+        f"qdbus6 org.mpris.MediaPlayer2.spotify "
+        f"/org/mpris/MediaPlayer2 "
+        f"org.mpris.MediaPlayer2.Player.OpenUri {quoted_uri} 2>/dev/null "
+        f"|| xdg-open {quoted_uri}"
+    )
+    return ("subprocess", ["sh", "-c", cmd])
 
 
 register(Action(
