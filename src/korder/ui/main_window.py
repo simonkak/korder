@@ -453,6 +453,7 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._on_inject_failed)
         worker.mode_changed.connect(self._on_mode_changed)
         worker.pending_action.connect(self._on_pending_action)
+        worker.command_executed.connect(self._on_command_executed)
         worker.finished.connect(lambda w=worker: self._reap_inject(w))
         self._inject_workers.add(worker)
         worker.start()
