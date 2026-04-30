@@ -16,6 +16,7 @@ from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import InjectError, make_backend
 from korder.ui.main_window import MainWindow
 from korder.ui.osd import OSDWindow
+from korder.ui.settings_dialog import SettingsDialog
 
 SOCKET_NAME = f"korder-{os.getuid()}"
 SOCKET_PATH = os.path.join(tempfile.gettempdir(), SOCKET_NAME)
@@ -136,6 +137,10 @@ def _make_tray(window: MainWindow) -> QSystemTrayIcon:
     act_history.triggered.connect(lambda: (window.show(), window.raise_(), window.activateWindow()))
     menu.addAction(act_history)
 
+    act_settings = QAction("Settings…", menu)
+    act_settings.triggered.connect(lambda: _show_settings(window))
+    menu.addAction(act_settings)
+
     menu.addSeparator()
 
     act_quit = QAction("Quit", menu)
@@ -150,6 +155,14 @@ def _make_tray(window: MainWindow) -> QSystemTrayIcon:
 
     tray.activated.connect(_on_activated)
     return tray
+
+
+def _show_settings(parent: MainWindow) -> None:
+    dlg = SettingsDialog(parent)
+    dlg.settings_saved.connect(lambda: parent.statusBar().showMessage(
+        "Settings saved — restart Korder for all changes to take effect.", 8000
+    ))
+    dlg.exec()
 
 
 def _tray_icon() -> QIcon:
