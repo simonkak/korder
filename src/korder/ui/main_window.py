@@ -52,6 +52,7 @@ class _InjectWorker(QThread):
     failed = Signal(str)
     mode_changed = Signal(bool)  # True = write mode on, False = off
     pending_action = Signal(str)  # name of an action waiting for a param
+    command_executed = Signal()  # at least one non-text, non-mode action ran
 
     def __init__(
         self,
@@ -75,6 +76,7 @@ class _InjectWorker(QThread):
             else:
                 ops = self._injector.parse_ops(self._payload)
             filtered: list[tuple] = []
+            had_command_action = False
             for op in ops:
                 kind = op[0]
                 if kind == "write_mode":
@@ -90,9 +92,13 @@ class _InjectWorker(QThread):
                     if self._write_mode:
                         filtered.append(op)
                 else:
-                    # key, combo, subprocess, callable: always execute
+                    # key, combo, subprocess, callable: always execute,
+                    # and counts as a "command" for auto-stop purposes.
                     filtered.append(op)
+                    had_command_action = True
             self._injector.execute_ops(filtered)
+            if had_command_action:
+                self.command_executed.emit()
             self.done.emit(self._original)
         except Exception as e:
             self.failed.emit(str(e))
@@ -107,6 +113,7 @@ class MainWindow(QMainWindow):
         injector: YdotoolBackend | None,
         osd: OSDWindow,
         trailing_space: bool = True,
+        auto_stop_after_action: bool = True,
     ):
         super().__init__()
         self.setWindowTitle("Korder — transcript history")
@@ -117,6 +124,8 @@ class MainWindow(QMainWindow):
         self._injector = injector
         self._osd = osd
         self._trailing_space = trailing_space
+        self._auto_stop_after_action = auto_stop_after_action
+        self._auto_stop_pending = False
         self._detector = SpeechDetector(sample_rate=recorder.sample_rate, aggressiveness=3)
         self._workers: set[_TranscribeWorker] = set()
         self._inject_workers: set[_InjectWorker] = set()
@@ -352,6 +361,7 @@ class MainWindow(QMainWindow):
             worker.failed.connect(self._on_inject_failed)
             worker.mode_changed.connect(self._on_mode_changed)
             worker.pending_action.connect(self._on_pending_action)
+            worker.command_executed.connect(self._on_command_executed)
             worker.finished.connect(lambda w=worker: self._reap_inject(w))
             self._inject_workers.add(worker)
             worker.start()
@@ -377,8 +387,27 @@ class MainWindow(QMainWindow):
         else:
             self._osd.show_text(decorated, transient_ms=1500)
 
+        # Auto-stop if a command-style action just ran. Deferred so the
+        # OSD's post-execution frame renders before recording stops.
+        if self._auto_stop_pending and self._auto_stop_after_action:
+            self._auto_stop_pending = False
+            if self._recorder.is_recording:
+                QTimer.singleShot(150, self._auto_stop)
+
     def _on_inject_failed(self, msg: str) -> None:
         self.statusBar().showMessage(f"Inject failed: {msg}", 8000)
+        self._auto_stop_pending = False
+
+    def _on_command_executed(self) -> None:
+        """Worker reports a non-text, non-mode-toggle action ran. Flag set
+        so _on_inject_done can stop recording after the UI update lands."""
+        self._auto_stop_pending = True
+
+    def _auto_stop(self) -> None:
+        """Quietly stop recording — used after a command finishes."""
+        if self._recorder.is_recording:
+            self._stop_recording()
+            self._sync_button()
 
     def _on_mode_changed(self, write_mode: bool) -> None:
         """Worker reports the user toggled write mode mid-commit."""

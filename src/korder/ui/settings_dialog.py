@@ -192,6 +192,16 @@ class SettingsDialog(QDialog):
         f = QFormLayout(ui)
         self._show_history_on_start = QCheckBox("Show transcript history window on start")
         f.addRow("", self._show_history_on_start)
+
+        self._auto_stop_after_action = QCheckBox(
+            "Stop recording automatically after a command executes"
+        )
+        self._auto_stop_after_action.setToolTip(
+            "When on, recording closes after media/Spotify/key-press commands. "
+            "Pure dictation and write-mode toggles (Pisz/Przestań) keep the "
+            "session open so the typing flow isn't interrupted."
+        )
+        f.addRow("", self._auto_stop_after_action)
         outer.addWidget(ui)
         outer.addStretch(1)
         return page
@@ -246,6 +256,7 @@ class SettingsDialog(QDialog):
 
         # UI
         self._show_history_on_start.setChecked(_truthy(c["ui"]["show_history_on_start"]))
+        self._auto_stop_after_action.setChecked(_truthy(c["ui"]["auto_stop_after_action"]))
 
     def _write_to_config(self) -> None:
         c = self._cfg
@@ -267,6 +278,7 @@ class SettingsDialog(QDialog):
         c["spotify"]["client_secret"] = self._spotify_client_secret.text().strip()
 
         c["ui"]["show_history_on_start"] = "true" if self._show_history_on_start.isChecked() else "false"
+        c["ui"]["auto_stop_after_action"] = "true" if self._auto_stop_after_action.isChecked() else "false"
 
     def _on_apply(self) -> None:
         self._save_and_notify()

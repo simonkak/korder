@@ -28,6 +28,11 @@ DEFAULTS: dict[str, dict[str, str]] = {
     },
     "ui": {
         "show_history_on_start": "false",
+        # Stop the recording session automatically after a command-style
+        # action (media, Spotify, key press, subprocess) executes. Doesn't
+        # affect pure dictation or mode toggles (Pisz/Przestań) — those
+        # keep the session open. Set to false to require manual toggle.
+        "auto_stop_after_action": "true",
     },
     # Spotify Web API credentials. Optional — without these, voice search
     # falls back to xdg-open (opens search UI, user clicks). Get them at

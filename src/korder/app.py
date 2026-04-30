@@ -105,6 +105,7 @@ def _run_app() -> int:
         injector=injector,
         osd=osd,
         trailing_space=_bool(cfg["inject"]["trailing_space"]),
+        auto_stop_after_action=_bool(cfg["ui"]["auto_stop_after_action"]),
     )
 
     tray = _make_tray(window)
