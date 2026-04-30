@@ -145,7 +145,6 @@ class SettingsDialog(QDialog):
         layout.setSpacing(_SPACING)
 
         self._tabs = QTabWidget()
-        self._tabs.setDocumentMode(True)
         self._tabs.addTab(self._build_audio_whisper_tab(), "Mic && Whisper")
         self._tabs.addTab(self._build_actions_tab(), "Actions && Output")
         self._tabs.addTab(self._build_spotify_tab(), "Spotify")

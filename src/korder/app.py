@@ -4,10 +4,12 @@ import os
 import socket
 import sys
 import tempfile
+from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt
-from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QByteArray, QRectF, Qt
+from PySide6.QtGui import QAction, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from korder import config
@@ -181,26 +183,32 @@ def _show_settings(parent: MainWindow) -> None:
     dlg.exec()
 
 
+_TRAY_SVG = Path(__file__).resolve().parent / "ui" / "icons" / "tray.svg"
+_TRAY_RENDER_SIZES = (16, 22, 24, 32, 48, 64)
+
+
 def _tray_icon() -> QIcon:
-    icon = QIcon.fromTheme("audio-input-microphone")
-    if not icon.isNull():
-        return icon
-    icon = QIcon.fromTheme("microphone")
-    if not icon.isNull():
-        return icon
-    pix = QPixmap(64, 64)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    p.setBrush(QColor(220, 220, 220))
-    p.setPen(Qt.PenStyle.NoPen)
-    p.drawRoundedRect(20, 8, 24, 36, 12, 12)
-    p.setBrush(QColor(180, 180, 180))
-    p.drawRoundedRect(14, 28, 36, 6, 3, 3)
-    p.drawRoundedRect(30, 36, 4, 14, 2, 2)
-    p.drawRoundedRect(20, 50, 24, 4, 2, 2)
-    p.end()
-    return QIcon(pix)
+    """Bundled waveform tray icon, recolored to the active theme.
+
+    The SVG paints with ``currentColor``, which Qt's icon engine doesn't
+    substitute on its own. We render to a transparent pixmap, then composite
+    the foreground color in via ``CompositionMode_SourceIn`` — that recolors
+    the alpha-shaped glyph without touching the SVG source.
+    """
+    renderer = QSvgRenderer(str(_TRAY_SVG))
+    fg = QGuiApplication.palette().windowText().color()
+    icon = QIcon()
+    for size in _TRAY_RENDER_SIZES:
+        pix = QPixmap(size, size)
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        renderer.render(p, QRectF(0, 0, size, size))
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        p.fillRect(pix.rect(), fg)
+        p.end()
+        icon.addPixmap(pix)
+    return icon
 
 
 def _start_ipc_server(window: MainWindow) -> QLocalServer:

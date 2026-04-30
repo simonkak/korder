@@ -53,6 +53,8 @@ class _InjectWorker(QThread):
     mode_changed = Signal(bool)  # True = write mode on, False = off
     pending_action = Signal(str)  # name of an action waiting for a param
     command_executed = Signal()  # at least one non-text, non-mode action ran
+    parse_started = Signal()  # LLM parse is about to start (slow path)
+    parse_done = Signal()  # parse finished, executing now
 
     def __init__(
         self,
@@ -74,7 +76,9 @@ class _InjectWorker(QThread):
             if self._prebuilt_ops is not None:
                 ops = self._prebuilt_ops
             else:
+                self.parse_started.emit()
                 ops = self._injector.parse_ops(self._payload)
+                self.parse_done.emit()
             filtered: list[tuple] = []
             had_command_action = False
             for op in ops:
@@ -197,7 +201,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Mic error: {e}", 6000)
             return
         self._status.setText("Listening...")
-        self._osd.show_text("Listening…")
+        self._osd.set_listening(write_mode=self._write_mode)
         self._partial_in_flight = False
         self._committed_samples = 0
         self._last_partial_norm = ""
@@ -216,7 +220,7 @@ class MainWindow(QMainWindow):
             self._osd.hide_after(300)
             return
         self._status.setText("Transcribing...")
-        self._osd.show_text("Transcribing…")
+        self._osd.set_thinking(self._osd._state.prompt or "", "transcribing…")
         self._submit_transcribe(remaining, kind="commit")
 
     def _on_partial_tick(self) -> None:
@@ -267,7 +271,7 @@ class MainWindow(QMainWindow):
         text = text.strip()
         if not text:
             return
-        self._osd.show_text(text)
+        self._osd.set_partial(text, write_mode=self._write_mode)
 
         # Stability-based commit: if the model returns the same content twice
         # in a row, the audio buffer's content has converged — user paused.
@@ -362,11 +366,10 @@ class MainWindow(QMainWindow):
         injecting = self._inject_chk.isChecked() and self._injector is not None
 
         if injecting:
-            # Show thinking + mode marker while inject (and possible LLM
-            # parse) runs in a worker. ✏️ = write mode on, 👁 = preview only.
-            mode_glyph = "✏️ " if self._write_mode else "👁 "
-            slow = "💭 " if self._injector.is_slow_parser else ""
-            self._osd.show_text(f"{slow}{mode_glyph}{text}")
+            # Keep the user's text bright at the top; worker signals
+            # (parse_started / parse_done / command_executed) will set the
+            # status hint underneath ("thinking", "executing", etc.).
+            self._osd.set_committed(text)
             payload = text + (" " if self._trailing_space else "")
             worker = _InjectWorker(self._injector, payload, text, self._write_mode)
             worker.done.connect(self._on_inject_done)
@@ -374,16 +377,18 @@ class MainWindow(QMainWindow):
             worker.mode_changed.connect(self._on_mode_changed)
             worker.pending_action.connect(self._on_pending_action)
             worker.command_executed.connect(self._on_command_executed)
+            worker.parse_started.connect(lambda t=text: self._on_parse_started(t))
+            worker.parse_done.connect(self._on_parse_done)
             worker.finished.connect(lambda w=worker: self._reap_inject(w))
             self._inject_workers.add(worker)
             worker.start()
         else:
             if self._recorder.is_recording:
                 self._status.setText("Listening...")
-                self._osd.show_text(text)
+                self._osd.set_partial(text, write_mode=self._write_mode)
             else:
                 self._status.setText("Idle.")
-                self._osd.show_text(text, transient_ms=1500)
+                self._osd.set_committed(text, transient_ms=1500)
 
         if self._recorder.is_recording:
             self._status.setText("Listening...")
@@ -391,13 +396,11 @@ class MainWindow(QMainWindow):
             self._status.setText("Idle.")
 
     def _on_inject_done(self, original_text: str) -> None:
-        # Post-inject: replace the marker'd text with mode-prefixed text.
-        mode_glyph = "✏️ " if self._write_mode else "👁 "
-        decorated = f"{mode_glyph}{original_text}"
+        # Post-inject: status line clears, prompt stays bright.
         if self._recorder.is_recording:
-            self._osd.show_text(decorated)
+            self._osd.set_committed(original_text)
         else:
-            self._osd.show_text(decorated, transient_ms=1500)
+            self._osd.set_committed(original_text, transient_ms=1500)
 
         # Auto-stop if a command-style action just ran. Deferred so the
         # OSD's post-execution frame renders before recording stops.
@@ -405,6 +408,18 @@ class MainWindow(QMainWindow):
             self._auto_stop_pending = False
             if self._recorder.is_recording:
                 QTimer.singleShot(150, self._auto_stop)
+
+    def _on_parse_started(self, prompt: str) -> None:
+        """LLM parse is starting (only fires for the slow LLM parser)."""
+        if self._injector and self._injector.is_slow_parser:
+            self._osd.set_thinking(prompt)
+
+    def _on_parse_done(self) -> None:
+        """LLM parse finished. We don't have the ops at this point (worker
+        keeps them locally) — just transition to a generic 'executing'
+        status. The real action description would need an extra signal."""
+        if self._injector and self._injector.is_slow_parser:
+            self._osd.set_executing(self._osd._state.prompt or "")
 
     def _on_inject_failed(self, msg: str) -> None:
         self.statusBar().showMessage(f"Inject failed: {msg}", 8000)
@@ -439,7 +454,9 @@ class MainWindow(QMainWindow):
         param_label = ""
         if action and action.parameters:
             param_label = next(iter(action.parameters.keys()))
-        self._osd.show_text(f"⏳ {action_name} → say {param_label}…")
+        prompt_so_far = self._osd._state.prompt or action_name
+        hint = f"say the {param_label}…" if param_label else ""
+        self._osd.set_pending(prompt_so_far, hint)
         self.statusBar().showMessage(
             f"Pending: {action_name} waiting for parameter",
             int(self.PENDING_ACTION_TIMEOUT_S * 1000),
@@ -456,8 +473,8 @@ class MainWindow(QMainWindow):
         op = action.op_factory({first_param: param_text})
         if op is None or self._injector is None:
             return False
-        # Run on a worker thread so the LLM-free path here doesn't block UI.
-        self._osd.show_text(f"💭 {action_name}: {param_text}")
+        # Run on a worker thread so execution doesn't block UI.
+        self._osd.set_executing(param_text, action_name)
         worker = _InjectWorker(
             self._injector, "", param_text, self._write_mode,
             prebuilt_ops=[op],
@@ -467,6 +484,8 @@ class MainWindow(QMainWindow):
         worker.mode_changed.connect(self._on_mode_changed)
         worker.pending_action.connect(self._on_pending_action)
         worker.command_executed.connect(self._on_command_executed)
+        worker.parse_started.connect(lambda t=param_text: self._on_parse_started(t))
+        worker.parse_done.connect(self._on_parse_done)
         worker.finished.connect(lambda w=worker: self._reap_inject(w))
         self._inject_workers.add(worker)
         worker.start()
