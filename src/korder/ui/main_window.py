@@ -405,10 +405,15 @@ class MainWindow(QMainWindow):
 
     def _on_inject_done(self, original_text: str) -> None:
         # Post-inject: status line clears, prompt stays bright.
-        if self._recorder.is_recording:
-            self._osd.set_committed(original_text)
-        else:
-            self._osd.set_committed(original_text, transient_ms=1500)
+        # BUT: if the worker just emitted pending_action (and the main
+        # thread set self._pending_action), don't override the
+        # set_pending(...) state with set_committed(...). Pending OSD
+        # already shows the right hint + cursor.
+        if self._pending_action is None:
+            if self._recorder.is_recording:
+                self._osd.set_committed(original_text)
+            else:
+                self._osd.set_committed(original_text, transient_ms=1500)
 
         # Auto-stop if a command-style action just ran. Deferred so the
         # OSD's post-execution frame renders before recording stops.
