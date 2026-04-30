@@ -1,0 +1,37 @@
+Kogu, czy my moemy zrobi co?
+
+
+Dawną, dawno temu za siedmiama górami, za siedmiama lasami było sobie pewne królestwo. W tym królestwie mieszkała goda. Kota była pięknym korgi z dużymi uszkami i z pięknymi ciemnymi oczkami. Gota kochała ser i dla serka potrafiła zrobić wszystko. Potrafiła wszystkie sztuczki na świecie, potrafiła siadać, potrafiła leżeć, potrafiła łapkę. Odnawę potrafiła trochę głos. Koniec.
+
+
+Dawno, dawno temu, za siedmioma grtwie mieszkaa Gouda. Gouda bya piknym koami,estwo. W tym krlesrgi, z duymi kami i z piknymi ciemnymi oczkami. Gouda kochaa ser i dla serka potrafia zrobi wszystko. Potrafia wszystkie sztuczki na wiecie. Potrafia siada, potrafia lee, podawaa apk i potrafia dawa gos. Koniec.
+
+--------------------------
+
+Dawno, dawno temu, za siedmioma górami i siedmioma rzekami mieszkała Gouda. Gouda była pięknym pieskiem rasy corgi, z dużymi uszami i ślicznymi, ciemnymi oczkami.
+
+Gouda kochała ser i dla kawałka serka potrafiła zrobić wszystko. Znała wszystkie sztuczki na świecie! Potrafiła siadać, leżeć, podawać łapkę, a nawet dawać głos.
+
+Była bardzo mądrym i wesołym pieskiem, który każdego dnia przynosił radość wszystkim wokół.
+
+I żyła długo i szczęśliwie.
+
+Koniec. 🧀🐶
+
+
+-- test 1 -- VK
+
+Long, long ago, in the middle of the mountains and rivers lived Gouda. Gouda was a beautiful dog with big ears and beautiful dark eyes. Gouda loved cheese and for a piece of cheese she could do anything. She knew all the tricks in the world. She could sit, lie, give a paw and at the same time give hair. She was a very clever and cheerful dog, who every day brought joy to everyone around her and lived happily ever after.
+
+
+--- test 2 -- vk
+
+Dawno dawno temu za siedmioma grami i za siedmioma rzekami mieszkaa Goda. Goda bya piknym pieskiem rasy Korgi z duymi uszami i licznymi ciemnymi oczkami. Goda kochaa ser i dla kawaka sera potrafia zrobi wszystko. Znaa wszystkie sztuczki na wiecie, potrafia siada, lee, podawa ap a nawet dawa gos. Bya bardzo mdrym i wesoym pieskiem, ktry kadego dnia przynosi rado wszystkim wok. I ya dugo i szczliwie. Koniec.
+
+--- test 3 - vk  fix ęą
+
+dawno dawno temu za siedmioma górami i za siedmioma rzekami mieszkała Gołda Gołda była pięknym pieskiem rasy korki z dużymi uszami i ślicznymi ciemnymi oczkami Gołda kochała ser i dla kawałka sera potrafiła zrobić wszystko znała wszystkie sztuczki na świecie potrafiła siadać, leżeć, podawać łapkę a nawet dawać włosy Była bardzo mądrym i wesołym pieskiem, który każdego dnia przynosił radość wszystkim wokół i żyło długo i szczęśliwie koniec.
+
+
+------
+

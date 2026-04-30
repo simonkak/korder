@@ -1,103 +1,43 @@
+"""ydotool/wl-clipboard injection backend.
+
+This module is now thin — actions are registered in korder.actions, the
+op-list builder lives in korder.actions.parser, and YdotoolBackend just
+executes whatever op tuples come back. Backward compatibility shims
+(_split_into_ops re-export, NAMED_SHORTCUTS) are kept so the rest of
+the codebase and any external scripts keep working.
+"""
 from __future__ import annotations
-import re
 import shutil
 import subprocess
 import threading
 import time
+
+from korder.actions.codes import KEY_LCTRL, KEY_V
+from korder.actions.parser import split_into_ops as _split_into_ops  # noqa: F401  (re-export)
 
 
 class InjectError(RuntimeError):
     pass
 
 
-# Linux evdev keycodes.
-_KEY_LCTRL = 29
-_KEY_LSHIFT = 42
-_KEY_LALT = 56
-_KEY_LMETA = 125
-_KEY_V = 47
-_KEY_ENTER = 28
-_KEY_TAB = 15
-_KEY_ESCAPE = 1
-_KEY_BACKSPACE = 14
-_KEY_DELETE = 111
-_KEY_HOME = 102
-_KEY_END = 107
-_KEY_A = 30
-_KEY_Z = 44
+# Legacy keycode aliases retained for any external imports.
+_KEY_LCTRL = KEY_LCTRL
+_KEY_V = KEY_V
 
 
-# Named shortcut → keycodes to press in order. Modifiers first, main key last;
-# release in reverse order so modifiers stay held while the main key fires.
-NAMED_SHORTCUTS: dict[str, list[int]] = {
-    "delete_word": [_KEY_LCTRL, _KEY_BACKSPACE],
-    "delete_word_forward": [_KEY_LCTRL, _KEY_DELETE],
-    "select_all": [_KEY_LCTRL, _KEY_A],
-    "undo": [_KEY_LCTRL, _KEY_Z],
-    "select_to_line_start": [_KEY_LSHIFT, _KEY_HOME],
-    "select_to_line_end": [_KEY_LSHIFT, _KEY_END],
-}
+# Legacy alias preserved so any callers that imported NAMED_SHORTCUTS keep
+# working. New code should query the action registry directly.
+def _legacy_named_shortcuts() -> dict[str, list[int]]:
+    from korder.actions.base import all_actions
+    out: dict[str, list[int]] = {}
+    for action in all_actions():
+        op = action.op_factory({})
+        if op[0] == "combo" and isinstance(op[1], list):
+            out[action.name] = op[1]
+    return out
 
 
-# Inline action triggers: phrases in the transcript that get translated into
-# special-key presses or character emissions instead of being typed verbatim.
-# Keys require an explicit "press" prefix so prose like "she pressed enter"
-# stays literal text. Char emissions like "new line" are unambiguous enough
-# without a prefix.
-_TRIGGERS: dict[str, tuple[str, object]] = {
-    "press enter": ("key", _KEY_ENTER),
-    "press return": ("key", _KEY_ENTER),
-    "press tab": ("key", _KEY_TAB),
-    "press escape": ("key", _KEY_ESCAPE),
-    "press backspace": ("key", _KEY_BACKSPACE),
-    "skasuj": ("key", _KEY_BACKSPACE),
-    "new line": ("char", "\n"),
-    "new paragraph": ("char", "\n\n"),
-    # Named shortcuts (Polish + English)
-    "usuń słowo": ("combo", NAMED_SHORTCUTS["delete_word"]),
-    "skasuj słowo": ("combo", NAMED_SHORTCUTS["delete_word"]),
-    "delete word": ("combo", NAMED_SHORTCUTS["delete_word"]),
-    "zaznacz wszystko": ("combo", NAMED_SHORTCUTS["select_all"]),
-    "select all": ("combo", NAMED_SHORTCUTS["select_all"]),
-    "cofnij": ("combo", NAMED_SHORTCUTS["undo"]),
-    "undo": ("combo", NAMED_SHORTCUTS["undo"]),
-    "zaznacz linię": ("combo", NAMED_SHORTCUTS["select_to_line_start"]),
-    "select line": ("combo", NAMED_SHORTCUTS["select_to_line_start"]),
-    "zaznacz do końca": ("combo", NAMED_SHORTCUTS["select_to_line_end"]),
-    "select to end": ("combo", NAMED_SHORTCUTS["select_to_line_end"]),
-}
-
-_TRIGGER_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(t) for t in sorted(_TRIGGERS, key=len, reverse=True)) + r")\b",
-    re.IGNORECASE,
-)
-
-
-def _split_into_ops(text: str) -> list[tuple]:
-    """Split a transcript into a sequence of ('text', s) / ('key', code) /
-    ('char', s) / ('combo', [codes]) ops. Returns an empty list for empty input."""
-    if not text:
-        return []
-    # Strip whitespace and trailing punctuation Whisper adds around the
-    # trigger phrase (a trailing period after "Press Enter." for example).
-    # Leading commas after a trigger likewise dropped.
-    _PUNCT_AFTER = " \t.!?,;:"
-    _PUNCT_BEFORE = " \t.!?;:"
-    ops: list[tuple] = []
-    last_end = 0
-    for m in _TRIGGER_RE.finditer(text):
-        if m.start() > last_end:
-            seg = text[last_end:m.start()].rstrip(_PUNCT_BEFORE)
-            if seg:
-                ops.append(("text", seg))
-        kind, val = _TRIGGERS[m.group(0).lower()]
-        ops.append((kind, val))
-        last_end = m.end()
-    if last_end < len(text):
-        seg = text[last_end:].lstrip(_PUNCT_AFTER) if ops else text[last_end:]
-        if seg:
-            ops.append(("text", seg))
-    return ops
+NAMED_SHORTCUTS = _legacy_named_shortcuts()
 
 
 class YdotoolBackend:
@@ -117,15 +57,8 @@ class YdotoolBackend:
             )
         self.paste_mode = paste_mode
         self._has_wl_copy = shutil.which("wl-copy") is not None
-        # If supplied, op_parser(text) -> ops list takes precedence over the
-        # built-in regex parser. Lets app.py inject the LLM-backed parser.
         self._op_parser = op_parser or _split_into_ops
-        # Serializes type() calls across worker threads so concurrent
-        # commits don't race on wl-copy clipboard state.
         self._lock = threading.Lock()
-        # True when op_parser is non-default — i.e., a slow LLM-backed
-        # parser. UI uses this to decide whether to show a "thinking"
-        # indicator during injection.
         self.is_slow_parser = op_parser is not None
 
     def type(self, text: str) -> None:
@@ -150,35 +83,8 @@ class YdotoolBackend:
                 self._press_key(op[1])
             elif kind == "combo":
                 self._press_combo(op[1])
-            # Inter-op pause so paste-target apps fully receive the previous
-            # operation's events before the next one fires (especially
-            # important between paste and key press).
             if i < len(ops) - 1:
                 time.sleep(0.04)
-
-    def _press_key(self, keycode: int) -> None:
-        self._press_combo([keycode])
-
-    def _press_combo(self, keycodes: list[int]) -> None:
-        """Hold modifiers + main key, release in reverse so modifiers stay
-        held until the main key is released. e.g., [29, 14] = Ctrl+Backspace."""
-        if not keycodes:
-            return
-        # Press modifiers + main, then release in reverse order
-        args = [f"{kc}:1" for kc in keycodes]
-        args += [f"{kc}:0" for kc in reversed(keycodes)]
-        try:
-            subprocess.run(
-                ["ydotool", "key", *args],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except subprocess.CalledProcessError as e:
-            raise InjectError(
-                f"ydotool combo {keycodes} failed: {(e.stderr or '').strip() or e}"
-            ) from e
 
     def _should_paste(self, text: str) -> bool:
         if not self._has_wl_copy:
@@ -221,16 +127,19 @@ class YdotoolBackend:
         except subprocess.TimeoutExpired as e:
             raise InjectError(f"wl-copy timed out: {e}") from e
         time.sleep(0.04)
+        self._press_combo([KEY_LCTRL, KEY_V])
+
+    def _press_key(self, keycode: int) -> None:
+        self._press_combo([keycode])
+
+    def _press_combo(self, keycodes: list[int]) -> None:
+        if not keycodes:
+            return
+        args = [f"{kc}:1" for kc in keycodes]
+        args += [f"{kc}:0" for kc in reversed(keycodes)]
         try:
             subprocess.run(
-                [
-                    "ydotool",
-                    "key",
-                    f"{_KEY_LCTRL}:1",
-                    f"{_KEY_V}:1",
-                    f"{_KEY_V}:0",
-                    f"{_KEY_LCTRL}:0",
-                ],
+                ["ydotool", "key", *args],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -238,7 +147,7 @@ class YdotoolBackend:
             )
         except subprocess.CalledProcessError as e:
             raise InjectError(
-                f"ydotool Ctrl+V failed: {(e.stderr or '').strip() or e}"
+                f"ydotool combo {keycodes} failed: {(e.stderr or '').strip() or e}"
             ) from e
 
 

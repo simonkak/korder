@@ -1,148 +1,105 @@
 """LLM-based intent parser for inline voice actions.
 
 Architecture:
-- Gemma is asked to *identify* trigger phrases in the transcript (where they
-  start, what action they map to). Gemma does NOT reproduce text content.
-- We then find each phrase in the original input and segment around it
-  ourselves. Text op values come from the original input verbatim, so the
-  model can't corrupt user speech.
+- The action registry (korder.actions) is the single source of truth for
+  what triggers exist. The LLM prompt is auto-generated from it; adding
+  a new action means writing one module under actions/ and never editing
+  the prompt by hand.
+- Gemma is asked to *identify* trigger phrases in the transcript and the
+  action name — it does NOT reproduce text content. We slice the input
+  around action positions ourselves, so text op contents come from the
+  original transcript verbatim.
 
-Falls back to inject's regex parser if ollama is unreachable, the model
-returns malformed output, or any phrase isn't found in the input — so
-enabling LLM mode never breaks the dictation path.
+Fall back to the regex parser if ollama is unreachable, output is malformed,
+or any phrase isn't found in the input.
 """
 from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
 
-from korder.inject import (
-    NAMED_SHORTCUTS,
-    _KEY_BACKSPACE,
-    _KEY_ENTER,
-    _KEY_ESCAPE,
-    _KEY_TAB,
-    _split_into_ops,
-)
+from korder.actions.base import all_actions, get_action
+from korder.actions.parser import split_into_ops
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
 
-_KEY_NAMES_TO_CODES = {
-    "enter": _KEY_ENTER,
-    "return": _KEY_ENTER,
-    "tab": _KEY_TAB,
-    "escape": _KEY_ESCAPE,
-    "esc": _KEY_ESCAPE,
-    "backspace": _KEY_BACKSPACE,
-}
-
 _PUNCT_TO_STRIP = " \t.!?,;:\n"
 
-_PROMPT_TEMPLATE = """You are an inline action detector for a voice dictation tool. Identify imperative key-press phrases in a transcript and return JSON describing them. You do NOT reproduce text content — just identify where the action phrases are.
 
-Return a JSON object with one field "actions" containing an array of detected actions:
-{
-  "actions": [
-    {"phrase": "<exact phrase as it appears in input>", "type": "key|char|shortcut", "value": "<value>"}
-  ]
-}
-
-The "phrase" field must be a contiguous substring that appears VERBATIM in the input (case-sensitive).
-The "type" determines what gets executed:
-- "key": single key press; value is one of: enter, return, tab, escape, backspace
-- "char": insert character; value is a literal string like "\\n"
-- "shortcut": named keyboard shortcut; value is one of: delete_word, delete_word_forward, select_all, undo, select_to_line_start, select_to_line_end
-
-Action triggers (English and Polish):
-- "press enter", "wciśnij enter", "naciśnij enter", "submit", "wyślij", "potem enter", "and enter" → type=key, value=enter
-- "press tab", "tabuluj" → type=key, value=tab
-- "press escape" → type=key, value=escape
-- "press backspace", "skasuj" → type=key, value=backspace
-- "new line", "nowa linia", "nowy wiersz" → type=char, value=\\n
-- "delete word", "usuń słowo", "skasuj słowo" → type=shortcut, value=delete_word
-- "select all", "zaznacz wszystko" → type=shortcut, value=select_all
-- "select line", "zaznacz linię" → type=shortcut, value=select_to_line_start
-- "select to end", "zaznacz do końca" → type=shortcut, value=select_to_line_end
-- "undo", "cofnij" → type=shortcut, value=undo
-
-Rules:
-- If no action triggers are present, return {"actions": []}.
-- Descriptive prose like "she pressed enter on the keyboard" is NOT an action — it's narrative text.
-- Return phrases in the order they appear. Multiple actions per input are fine.
-- The phrase must match the input EXACTLY (preserve case, accents, etc.) so we can find it.
-
-Examples:
-Input: "hello world"
-Output: {"actions": []}
-
-Input: "Naciśnij Enter."
-Output: {"actions": [{"phrase": "Naciśnij Enter", "type": "key", "value": "enter"}]}
-
-Input: "Co tu się stało? Naciśnij Enter."
-Output: {"actions": [{"phrase": "Naciśnij Enter", "type": "key", "value": "enter"}]}
-
-Input: "Usuń słowo"
-Output: {"actions": [{"phrase": "Usuń słowo", "type": "shortcut", "value": "delete_word"}]}
-
-Input: "ten kod jest zły usuń słowo"
-Output: {"actions": [{"phrase": "usuń słowo", "type": "shortcut", "value": "delete_word"}]}
-
-Input: "Zaznacz linię"
-Output: {"actions": [{"phrase": "Zaznacz linię", "type": "shortcut", "value": "select_to_line_start"}]}
-
-Input: "Skasuj"
-Output: {"actions": [{"phrase": "Skasuj", "type": "key", "value": "backspace"}]}
-
-Input: "press enter and run it"
-Output: {"actions": [{"phrase": "press enter", "type": "key", "value": "enter"}]}
-
-Input: "napisz coś potem wyślij"
-Output: {"actions": [{"phrase": "potem wyślij", "type": "key", "value": "enter"}]}
-
-Input: "she pressed enter on the keyboard"
-Output: {"actions": []}
-
-Input: "Myślę, że to jest OK."
-Output: {"actions": []}
-
-Now analyze this transcript and return ONLY the JSON object, no other text.
-Input: %s
-Output:"""
+def _build_prompt() -> str:
+    """Render the LLM prompt from the current registry state."""
+    lines = [
+        "You are an inline action detector for a voice dictation tool. "
+        "Identify imperative action phrases in a transcript and return JSON describing them. "
+        "You do NOT reproduce text content — just identify where the action phrases are.",
+        "",
+        'Return a JSON object: {"actions": [{"phrase": "...", "name": "..."}]}',
+        "",
+        "The phrase field must be a contiguous substring that appears VERBATIM in the input "
+        "(case-insensitive matching is fine, but preserve characters and accents).",
+        "",
+        "Available actions:",
+    ]
+    for action in all_actions():
+        triggers_flat = ", ".join(f'"{t}"' for t in action.all_triggers())
+        lines.append(f'- name="{action.name}": {action.description}. Triggers: {triggers_flat}')
+    lines.extend([
+        "",
+        "Rules:",
+        '- If no action triggers are present, return {"actions": []}.',
+        "- Descriptive prose like \"she pressed enter on the keyboard\" is NOT an action.",
+        "- Return phrases in the order they appear. Multiple actions per input are fine.",
+        "",
+        "Examples:",
+        'Input: "hello world"',
+        'Output: {"actions": []}',
+        "",
+        'Input: "Naciśnij Enter."',
+        'Output: {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}',
+        "",
+        'Input: "Co tu się stało? Naciśnij Enter."',
+        'Output: {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}',
+        "",
+        'Input: "Usuń słowo"',
+        'Output: {"actions": [{"phrase": "Usuń słowo", "name": "delete_word"}]}',
+        "",
+        'Input: "press enter and run it"',
+        'Output: {"actions": [{"phrase": "press enter", "name": "press_enter"}]}',
+        "",
+        'Input: "she pressed enter on the keyboard"',
+        'Output: {"actions": []}',
+        "",
+        "Now analyze this transcript and return ONLY the JSON object, no other text.",
+        "Input: %s",
+        "Output:",
+    ])
+    return "\n".join(lines)
 
 
 class IntentParser:
     def __init__(self, model: str = "gemma4:e2b", timeout_s: float = 5.0):
-        # Gemma 4 ships in E2B (2.3B effective) / E4B (4.5B) / 26B-A4B / 31B
-        # variants per huggingface.co/blog/gemma4. E4B is recommended for
-        # JSON tasks; E2B is faster but more prone to text mangling — which
-        # is why this parser only uses the LLM for *classification*, not
-        # for reproducing text. Adjust llm_model in config to match the
-        # actual ollama tag.
         self.model = model
         self.timeout_s = timeout_s
 
     def parse(self, transcript: str) -> list[tuple]:
-        """Returns ops in inject's format. Text ops always come from the
-        original transcript verbatim — LLM never touches text content."""
         if not transcript:
             return []
         try:
             actions = self._call_ollama(transcript)
         except Exception as e:
             print(f"[korder] intent LLM failed, falling back to regex: {e}", flush=True)
-            return _split_into_ops(transcript)
+            return split_into_ops(transcript)
 
         print(f"[korder] LLM actions for {transcript!r}: {actions!r}", flush=True)
-
-        ops = _segment_input_by_actions(transcript, actions)
+        ops = segment_input_by_actions(transcript, actions)
         if ops is None:
             print(f"[korder] LLM action phrase not found in input, falling back to regex", flush=True)
-            return _split_into_ops(transcript)
+            return split_into_ops(transcript)
         print(f"[korder] segmented ops: {ops!r}", flush=True)
         return ops
 
     def _call_ollama(self, transcript: str) -> list:
-        prompt = _PROMPT_TEMPLATE % json.dumps(transcript)
+        prompt = _build_prompt() % json.dumps(transcript)
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -164,85 +121,86 @@ class IntentParser:
         if isinstance(parsed, list):
             return parsed
         if isinstance(parsed, dict) and "phrase" in parsed:
-            # Single action collapsed to a bare object
             return [parsed]
         raise ValueError(f"unexpected LLM output shape: {type(parsed).__name__}: {parsed!r}")
 
 
-def _segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | None:
+def segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | None:
     """Slice the original transcript at action phrase boundaries, returning
     ops whose text values come straight from the input. Returns None if any
-    phrase can't be located in the input (signals fallback)."""
+    phrase can't be located in the input or names an unknown action
+    (signals fallback to regex)."""
     if not isinstance(actions, list):
         return None
 
-    # Find each phrase's position in the transcript (case-insensitive,
-    # left-to-right, advancing past previous matches).
-    found: list[tuple[int, int, dict]] = []
+    found: list[tuple[int, int, str]] = []
     cursor = 0
     lower = transcript.lower()
-    for a in actions:
-        if not isinstance(a, dict):
+    for entry in actions:
+        if not isinstance(entry, dict):
             return None
-        phrase = a.get("phrase")
-        if not isinstance(phrase, str) or not phrase:
+        phrase = entry.get("phrase")
+        action_name = entry.get("name")
+        # Backward compat with old {type, value} shape — translate to a name.
+        if action_name is None and "type" in entry and "value" in entry:
+            action_name = _legacy_type_value_to_name(entry["type"], entry["value"])
+        if not isinstance(phrase, str) or not phrase or not isinstance(action_name, str):
             continue
+        action = get_action(action_name)
+        if action is None:
+            return None
         idx = lower.find(phrase.lower(), cursor)
         if idx == -1:
-            # Try without leading word boundary cursor advance — phrase might
-            # appear anywhere; if still not found, the model hallucinated it.
             idx = lower.find(phrase.lower())
             if idx == -1 or idx < cursor:
                 return None
-        found.append((idx, idx + len(phrase), a))
+        found.append((idx, idx + len(phrase), action_name))
         cursor = idx + len(phrase)
 
     ops: list[tuple] = []
     pos = 0
-    for start, end, a in found:
+    for start, end, action_name in found:
         if start > pos:
             seg = transcript[pos:start]
-            # Inner edges adjacent to action boundaries get stripped;
-            # outer edges (start of input, end of input) pass through
-            # untouched so trailing whitespace added by the caller for
-            # inter-commit separation is preserved.
             if pos > 0:
                 seg = seg.lstrip(_PUNCT_TO_STRIP)
             seg = seg.rstrip(_PUNCT_TO_STRIP)
             if seg:
                 ops.append(("text", seg))
-        op = _action_to_op(a)
-        if op is not None:
-            ops.append(op)
+        action = get_action(action_name)
+        if action is not None:
+            ops.append(action.op_factory({}))
         pos = end
     if pos < len(transcript):
         seg = transcript[pos:]
         if pos > 0:
             seg = seg.lstrip(_PUNCT_TO_STRIP)
-        # No rstrip — preserve outer trailing whitespace.
         if seg:
             ops.append(("text", seg))
-
     return ops
 
 
-def _action_to_op(action: dict) -> tuple | None:
-    type_ = action.get("type")
-    value = action.get("value")
+def _legacy_type_value_to_name(type_: str, value: str) -> str | None:
+    """Backward-compat: old prompt used {type: key|char|shortcut, value: enter|...}.
+    Some existing models still emit that shape; map to action names."""
     if not isinstance(value, str):
         return None
+    v = value.lower()
     if type_ == "key":
-        keycode = _KEY_NAMES_TO_CODES.get(value.lower())
-        if keycode is None:
-            return None
-        return ("key", keycode)
+        return {
+            "enter": "press_enter",
+            "return": "press_enter",
+            "tab": "press_tab",
+            "escape": "press_escape",
+            "esc": "press_escape",
+            "backspace": "press_backspace",
+        }.get(v)
     if type_ == "shortcut":
-        keycodes = NAMED_SHORTCUTS.get(value.lower())
-        if keycodes is None:
-            return None
-        return ("combo", keycodes)
+        # Shortcut value is already an action name.
+        return v
     if type_ == "char":
-        if not value:
-            return None
-        return ("char", value)
+        if value == "\n":
+            return "new_line"
+        if value == "\n\n":
+            return "new_paragraph"
     return None
