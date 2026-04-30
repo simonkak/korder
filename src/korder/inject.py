@@ -32,6 +32,10 @@ def _legacy_named_shortcuts() -> dict[str, list[int]]:
     out: dict[str, list[int]] = {}
     for action in all_actions():
         op = action.op_factory({})
+        if op is None:
+            # Parameterized actions return None when params are missing —
+            # they're not shortcuts in the legacy sense.
+            continue
         if op[0] == "combo" and isinstance(op[1], list):
             out[action.name] = op[1]
     return out

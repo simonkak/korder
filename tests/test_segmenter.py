@@ -154,13 +154,13 @@ def test_parameterized_action_passes_params_to_factory():
     assert callable(fn)
 
 
-def test_parameterized_action_with_empty_params_returns_callable():
-    """No query → callable that opens Spotify with no specific query."""
+def test_parameterized_action_with_empty_params_returns_pending():
+    """When LLM identifies the action but provides no params, segmenter
+    should emit a pending_action marker rather than executing with empty
+    query. MainWindow then waits for the next commit as the parameter."""
     ops = segment_input_by_actions(
-        "Spotify",
-        [{"phrase": "Spotify", "name": "spotify_search"}],
+        "Odtwórz w Spotify",
+        [{"phrase": "Odtwórz w Spotify", "name": "spotify_search"}],
     )
     assert ops is not None
-    kind, fn = ops[0]
-    assert kind == "callable"
-    assert callable(fn)
+    assert ("pending_action", "spotify_search") in ops

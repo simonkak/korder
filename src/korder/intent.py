@@ -209,7 +209,14 @@ def segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | No
                 ops.append(("text", seg))
         action = get_action(action_name)
         if action is not None:
-            ops.append(action.op_factory(params))
+            op = action.op_factory(params)
+            if op is None and action.parameters:
+                # Action has declared params but the LLM didn't supply
+                # them — emit a pending marker so MainWindow can grab the
+                # next commit as the parameter.
+                ops.append(("pending_action", action_name))
+            elif op is not None:
+                ops.append(op)
         pos = end
     if pos < len(transcript):
         seg = transcript[pos:]

@@ -15,6 +15,9 @@ from PySide6.QtWidgets import (
     QCheckBox,
 )
 
+import time
+
+from korder.actions.base import get_action
 from korder.audio.capture import MicRecorder
 from korder.audio.vad import SpeechDetector
 from korder.transcribe.whisper_engine import WhisperEngine
@@ -42,11 +45,13 @@ class _TranscribeWorker(QThread):
 class _InjectWorker(QThread):
     """Parses + filters + executes ops off the UI thread so the LLM call
     (300-500ms with Gemma) doesn't freeze the OSD. Tracks write-mode state
-    locally and emits mode_changed back to main thread when toggle ops fire."""
+    locally and emits mode_changed / pending_action back to main thread
+    when toggle / parameterized-incomplete ops fire."""
 
     done = Signal(str)  # carries the original text for post-inject UI update
     failed = Signal(str)
     mode_changed = Signal(bool)  # True = write mode on, False = off
+    pending_action = Signal(str)  # name of an action waiting for a param
 
     def __init__(
         self,
@@ -54,16 +59,21 @@ class _InjectWorker(QThread):
         payload: str,
         original: str,
         initial_write_mode: bool,
+        prebuilt_ops: list | None = None,
     ):
         super().__init__()
         self._injector = injector
         self._payload = payload
         self._original = original
         self._write_mode = initial_write_mode
+        self._prebuilt_ops = prebuilt_ops
 
     def run(self) -> None:
         try:
-            ops = self._injector.parse_ops(self._payload)
+            if self._prebuilt_ops is not None:
+                ops = self._prebuilt_ops
+            else:
+                ops = self._injector.parse_ops(self._payload)
             filtered: list[tuple] = []
             for op in ops:
                 kind = op[0]
@@ -72,11 +82,15 @@ class _InjectWorker(QThread):
                     if new_mode != self._write_mode:
                         self._write_mode = new_mode
                         self.mode_changed.emit(new_mode)
+                elif kind == "pending_action":
+                    # Don't execute; main thread will store and use the
+                    # next text commit as the parameter.
+                    self.pending_action.emit(op[1])
                 elif kind in ("text", "char"):
                     if self._write_mode:
                         filtered.append(op)
                 else:
-                    # key, combo, subprocess: always execute
+                    # key, combo, subprocess, callable: always execute
                     filtered.append(op)
             self._injector.execute_ops(filtered)
             self.done.emit(self._original)
@@ -107,6 +121,12 @@ class MainWindow(QMainWindow):
         self._workers: set[_TranscribeWorker] = set()
         self._inject_workers: set[_InjectWorker] = set()
         self._write_mode = False  # default: preview only, no typing
+        # When the LLM detects an action with empty required params (e.g.,
+        # spotify_search with no query), we store the action name + time
+        # and treat the NEXT text-only commit as the parameter.
+        self._pending_action: str | None = None
+        self._pending_action_time: float = 0.0
+        self.PENDING_ACTION_TIMEOUT_S = 8.0
         self._partial_in_flight = False
         self._committed_samples = 0
         self._last_partial_norm = ""
@@ -302,6 +322,21 @@ class MainWindow(QMainWindow):
                 self._status.setText("Idle.")
                 self._osd.hide_after(300)
             return
+
+        # If a parameterized action is waiting for its input and we're
+        # within the timeout, take this commit's text as the parameter.
+        if self._pending_action is not None:
+            elapsed = time.time() - self._pending_action_time
+            if elapsed <= self.PENDING_ACTION_TIMEOUT_S:
+                pending = self._pending_action
+                self._pending_action = None
+                if self._resolve_pending_action(pending, text):
+                    self._transcript.appendPlainText(text)
+                    return
+            else:
+                # Timeout — drop the pending state and fall through.
+                self._pending_action = None
+
         self._transcript.appendPlainText(text)
         injecting = self._inject_chk.isChecked() and self._injector is not None
 
@@ -316,6 +351,7 @@ class MainWindow(QMainWindow):
             worker.done.connect(self._on_inject_done)
             worker.failed.connect(self._on_inject_failed)
             worker.mode_changed.connect(self._on_mode_changed)
+            worker.pending_action.connect(self._on_pending_action)
             worker.finished.connect(lambda w=worker: self._reap_inject(w))
             self._inject_workers.add(worker)
             worker.start()
@@ -351,6 +387,47 @@ class MainWindow(QMainWindow):
             "Write mode ON" if write_mode else "Write mode OFF (preview only)",
             3000,
         )
+
+    def _on_pending_action(self, action_name: str) -> None:
+        """Worker reports a parameterized action with empty params —
+        wait for the next commit and treat it as the parameter."""
+        self._pending_action = action_name
+        self._pending_action_time = time.time()
+        action = get_action(action_name)
+        param_label = ""
+        if action and action.parameters:
+            param_label = next(iter(action.parameters.keys()))
+        self._osd.show_text(f"⏳ {action_name} → say {param_label}…")
+        self.statusBar().showMessage(
+            f"Pending: {action_name} waiting for parameter",
+            int(self.PENDING_ACTION_TIMEOUT_S * 1000),
+        )
+
+    def _resolve_pending_action(self, action_name: str, param_text: str) -> bool:
+        """Build params from the follow-up text and dispatch the action.
+        Returns True on successful dispatch, False if the action couldn't
+        be resolved (caller should fall through to normal flow)."""
+        action = get_action(action_name)
+        if action is None or not action.parameters:
+            return False
+        first_param = next(iter(action.parameters.keys()))
+        op = action.op_factory({first_param: param_text})
+        if op is None or self._injector is None:
+            return False
+        # Run on a worker thread so the LLM-free path here doesn't block UI.
+        self._osd.show_text(f"💭 {action_name}: {param_text}")
+        worker = _InjectWorker(
+            self._injector, "", param_text, self._write_mode,
+            prebuilt_ops=[op],
+        )
+        worker.done.connect(self._on_inject_done)
+        worker.failed.connect(self._on_inject_failed)
+        worker.mode_changed.connect(self._on_mode_changed)
+        worker.pending_action.connect(self._on_pending_action)
+        worker.finished.connect(lambda w=worker: self._reap_inject(w))
+        self._inject_workers.add(worker)
+        worker.start()
+        return True
 
     def _reap_inject(self, worker: _InjectWorker) -> None:
         self._inject_workers.discard(worker)

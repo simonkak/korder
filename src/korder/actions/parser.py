@@ -63,7 +63,14 @@ def split_into_ops(text: str) -> list[tuple]:
         action_name = phrase_map[m.group(0).lower()]
         action = get_action(action_name)
         if action is not None:
-            ops.append(action.op_factory({}))
+            op = action.op_factory({})
+            if op is None and action.parameters:
+                # Parameterized action triggered via regex — emit pending
+                # marker so MainWindow can grab the next commit as the
+                # parameter, same as via the LLM path.
+                ops.append(("pending_action", action_name))
+            elif op is not None:
+                ops.append(op)
         last_end = m.end()
     if last_end < len(text):
         seg = text[last_end:]

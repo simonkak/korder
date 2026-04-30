@@ -85,8 +85,12 @@ def _spotify_play_query(query: str) -> None:
     _open_uri_via_dbus_or_xdg(fallback_uri)
 
 
-def _spotify_search_op(args: dict) -> tuple:
+def _spotify_search_op(args: dict) -> tuple | None:
     query = args.get("query", "").strip() if isinstance(args, dict) else ""
+    if not query:
+        # Incomplete — signal "pending; need a query" so MainWindow can
+        # take the next text commit as the parameter.
+        return None
     return ("callable", lambda q=query: _spotify_play_query(q))
 
 
