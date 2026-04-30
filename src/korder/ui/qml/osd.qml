@@ -87,11 +87,12 @@ Window {
                 }
             }
 
-            // Bottom row: faded italic status hint, only when status is non-empty
+            // Bottom row: faded italic status hint. Always renders (non-breaking
+            // space when empty) so the OSD's overall height stays stable across
+            // state transitions instead of jumping when status appears/clears.
             Text {
                 id: statusText
-                visible: osdState && osdState.status.length > 0
-                text: osdState ? osdState.status : ""
+                text: (osdState && osdState.status.length > 0) ? osdState.status : " "
                 color: root.statusColor
                 font.pixelSize: 12
                 font.italic: true

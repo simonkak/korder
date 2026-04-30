@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         # and treat the NEXT text-only commit as the parameter.
         self._pending_action: str | None = None
         self._pending_action_time: float = 0.0
-        self.PENDING_ACTION_TIMEOUT_S = 8.0
+        self.PENDING_ACTION_TIMEOUT_S = 20.0
         self._partial_in_flight = False
         self._committed_samples = 0
         self._last_partial_norm = ""
@@ -342,9 +342,17 @@ class MainWindow(QMainWindow):
         # previous worker emits pending_action — losing the "next text
         # commit is my parameter" wiring. _reap_inject drains the queue.
         if self._inject_workers:
+            print(
+                f"[korder] commit {text!r} queued (workers in flight={len(self._inject_workers)}, pending={self._pending_action!r})",
+                flush=True,
+            )
             self._commit_queue.append(text)
             return
 
+        print(
+            f"[korder] commit {text!r} immediate (pending={self._pending_action!r})",
+            flush=True,
+        )
         self._process_commit(text)
 
     def _process_commit(self, text: str) -> None:
@@ -448,6 +456,7 @@ class MainWindow(QMainWindow):
     def _on_pending_action(self, action_name: str) -> None:
         """Worker reports a parameterized action with empty params —
         wait for the next commit and treat it as the parameter."""
+        print(f"[korder] pending action set: {action_name!r}", flush=True)
         self._pending_action = action_name
         self._pending_action_time = time.time()
         action = get_action(action_name)
@@ -498,6 +507,10 @@ class MainWindow(QMainWindow):
         # worker to fully finish before starting the next.
         if not self._inject_workers and self._commit_queue:
             next_text = self._commit_queue.pop(0)
+            print(
+                f"[korder] draining queue: {next_text!r} (pending={self._pending_action!r})",
+                flush=True,
+            )
             self._process_commit(next_text)
 
     def _on_fail(self, msg: str) -> None:
