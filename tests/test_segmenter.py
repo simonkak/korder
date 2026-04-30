@@ -134,3 +134,49 @@ def test_polish_text_unchanged_when_no_actions(text):
     """Battery of phrases that previously got mangled when LLM regenerated text."""
     ops = segment_input_by_actions(text, [])
     assert ops == [("text", text)]
+
+
+def test_parameterized_action_passes_params_to_factory():
+    """Spotify search action takes a 'query' param the LLM extracted."""
+    ops = segment_input_by_actions(
+        "Zagraj na Spotify Despacito",
+        [{
+            "phrase": "Zagraj na Spotify Despacito",
+            "name": "spotify_search",
+            "params": {"query": "Despacito"},
+        }],
+    )
+    # Op should be a subprocess call with the query in the URI
+    assert ops is not None
+    assert len(ops) == 1
+    kind, args = ops[0]
+    assert kind == "subprocess"
+    assert args[0] == "xdg-open"
+    assert args[1] == "spotify:search:Despacito"
+
+
+def test_parameterized_action_with_url_encoding():
+    """Multi-word queries get URL-encoded for the spotify: URI."""
+    ops = segment_input_by_actions(
+        "Spotify play Pink Floyd",
+        [{
+            "phrase": "Spotify play Pink Floyd",
+            "name": "spotify_search",
+            "params": {"query": "Pink Floyd"},
+        }],
+    )
+    assert ops is not None
+    _, args = ops[0]
+    # urllib.parse.quote turns space into %20
+    assert "Pink%20Floyd" in args[1]
+
+
+def test_parameterized_action_with_empty_params_falls_back_to_just_opening():
+    """No query → open Spotify itself."""
+    ops = segment_input_by_actions(
+        "Spotify",
+        [{"phrase": "Spotify", "name": "spotify_search"}],
+    )
+    assert ops is not None
+    _, args = ops[0]
+    assert args == ["xdg-open", "spotify:"]

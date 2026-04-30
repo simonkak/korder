@@ -42,7 +42,11 @@ def _build_prompt() -> str:
     ]
     for action in all_actions():
         triggers_flat = ", ".join(f'"{t}"' for t in action.all_triggers())
-        lines.append(f'- name="{action.name}": {action.description}. Triggers: {triggers_flat}')
+        line = f'- name="{action.name}": {action.description}. Triggers: {triggers_flat}'
+        if action.parameters:
+            param_keys = ", ".join(action.parameters.keys())
+            line += f' [params: {param_keys}]'
+        lines.append(line)
     lines.extend([
         "",
         "Rules:",
@@ -77,6 +81,13 @@ def _build_prompt() -> str:
         "",
         'Input: "głośniej"',
         'Output: {"actions": [{"phrase": "głośniej", "name": "volume_up"}]}',
+        "",
+        '# Parameterized example — extract the search query into params:',
+        'Input: "Zagraj na Spotify Despacito"',
+        'Output: {"actions": [{"phrase": "Zagraj na Spotify Despacito", "name": "spotify_search", "params": {"query": "Despacito"}}]}',
+        "",
+        'Input: "Spotify play Pink Floyd Wish You Were Here"',
+        'Output: {"actions": [{"phrase": "Spotify play Pink Floyd Wish You Were Here", "name": "spotify_search", "params": {"query": "Pink Floyd Wish You Were Here"}}]}',
         "",
         'Input: "she pressed enter on the keyboard"',
         'Output: {"actions": []}',
@@ -161,7 +172,7 @@ def segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | No
     if not isinstance(actions, list):
         return None
 
-    found: list[tuple[int, int, str]] = []
+    found: list[tuple[int, int, str, dict]] = []
     cursor = 0
     lower = transcript.lower()
     for entry in actions:
@@ -177,17 +188,18 @@ def segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | No
         action = get_action(action_name)
         if action is None:
             return None
+        params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
         idx = lower.find(phrase.lower(), cursor)
         if idx == -1:
             idx = lower.find(phrase.lower())
             if idx == -1 or idx < cursor:
                 return None
-        found.append((idx, idx + len(phrase), action_name))
+        found.append((idx, idx + len(phrase), action_name, params))
         cursor = idx + len(phrase)
 
     ops: list[tuple] = []
     pos = 0
-    for start, end, action_name in found:
+    for start, end, action_name, params in found:
         if start > pos:
             seg = transcript[pos:start]
             if pos > 0:
@@ -197,7 +209,7 @@ def segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | No
                 ops.append(("text", seg))
         action = get_action(action_name)
         if action is not None:
-            ops.append(action.op_factory({}))
+            ops.append(action.op_factory(params))
         pos = end
     if pos < len(transcript):
         seg = transcript[pos:]
