@@ -18,7 +18,7 @@ Op tuples returned by parser/segmenter:
   ("key",   int)             — single keycode
   ("combo", list[int])       — keycodes pressed in order, released in reverse
 """
-from korder.actions import base, keys, shortcuts, text_chars  # noqa: F401  (self-register)
+from korder.actions import base, keys, media, shortcuts, text_chars  # noqa: F401  (self-register)
 from korder.actions.base import (
     Action,
     all_actions,

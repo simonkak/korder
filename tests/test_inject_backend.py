@@ -94,3 +94,35 @@ def test_empty_text_is_noop(fake_backend):
     backend, calls = fake_backend
     backend.type("")
     assert calls == []
+
+
+def test_subprocess_op_runs_command(fake_backend):
+    """Audio actions translate to plain subprocess calls."""
+    backend, calls = fake_backend
+    backend.type("głośniej")
+    assert ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"] in calls
+
+
+def test_subprocess_op_swallows_failure(fake_backend, monkeypatch):
+    """playerctl exits non-zero when nothing's playing — should not raise."""
+    from korder import inject
+
+    backend, _calls = fake_backend
+
+    class FailingResult:
+        returncode = 1
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:1] == ["playerctl"]:
+            return FailingResult()
+        class OK:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return OK()
+
+    monkeypatch.setattr(inject.subprocess, "run", fake_run)
+    # Should not raise
+    backend.type("next song")

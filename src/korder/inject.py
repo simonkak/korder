@@ -83,8 +83,26 @@ class YdotoolBackend:
                 self._press_key(op[1])
             elif kind == "combo":
                 self._press_combo(op[1])
+            elif kind == "subprocess":
+                self._run_subprocess(op[1])
             if i < len(ops) - 1:
                 time.sleep(0.04)
+
+    def _run_subprocess(self, args: list[str]) -> None:
+        """Issue a system command (volume, media, etc.) — fire and forget.
+        Failure is non-fatal; users say 'next song' with nothing playing
+        sometimes, which is harmless and shouldn't surface an error."""
+        if not args:
+            return
+        try:
+            subprocess.run(
+                args,
+                check=False,
+                capture_output=True,
+                timeout=5,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            print(f"[korder] subprocess action {args!r} failed: {e}", flush=True)
 
     def _should_paste(self, text: str) -> bool:
         if not self._has_wl_copy:

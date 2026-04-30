@@ -100,3 +100,26 @@ def test_consecutive_actions_no_text_between():
         ("key", 15),  # KEY_TAB
         ("key", KEY_ENTER),
     ]
+
+
+def test_volume_up_routes_to_wpctl():
+    ops = split_into_ops("głośniej")
+    assert ops == [("subprocess", ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"])]
+
+
+def test_play_music_routes_to_playerctl():
+    ops = split_into_ops("play music")
+    assert ops == [("subprocess", ["playerctl", "play-pause"])]
+
+
+def test_next_song_polish():
+    ops = split_into_ops("następna piosenka")
+    assert ops == [("subprocess", ["playerctl", "next"])]
+
+
+def test_text_then_volume_action():
+    ops = split_into_ops("write this then volume down")
+    assert ops == [
+        ("text", "write this then"),
+        ("subprocess", ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"]),
+    ]
