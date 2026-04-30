@@ -40,21 +40,45 @@ class _TranscribeWorker(QThread):
 
 
 class _InjectWorker(QThread):
-    """Runs injector.type() off the UI thread so the LLM call (300-500ms with
-    Gemma) doesn't freeze the OSD's thinking indicator."""
+    """Parses + filters + executes ops off the UI thread so the LLM call
+    (300-500ms with Gemma) doesn't freeze the OSD. Tracks write-mode state
+    locally and emits mode_changed back to main thread when toggle ops fire."""
 
     done = Signal(str)  # carries the original text for post-inject UI update
     failed = Signal(str)
+    mode_changed = Signal(bool)  # True = write mode on, False = off
 
-    def __init__(self, injector: YdotoolBackend, payload: str, original: str):
+    def __init__(
+        self,
+        injector: YdotoolBackend,
+        payload: str,
+        original: str,
+        initial_write_mode: bool,
+    ):
         super().__init__()
         self._injector = injector
         self._payload = payload
         self._original = original
+        self._write_mode = initial_write_mode
 
     def run(self) -> None:
         try:
-            self._injector.type(self._payload)
+            ops = self._injector.parse_ops(self._payload)
+            filtered: list[tuple] = []
+            for op in ops:
+                kind = op[0]
+                if kind == "write_mode":
+                    new_mode = bool(op[1])
+                    if new_mode != self._write_mode:
+                        self._write_mode = new_mode
+                        self.mode_changed.emit(new_mode)
+                elif kind in ("text", "char"):
+                    if self._write_mode:
+                        filtered.append(op)
+                else:
+                    # key, combo, subprocess: always execute
+                    filtered.append(op)
+            self._injector.execute_ops(filtered)
             self.done.emit(self._original)
         except Exception as e:
             self.failed.emit(str(e))
@@ -82,6 +106,7 @@ class MainWindow(QMainWindow):
         self._detector = SpeechDetector(sample_rate=recorder.sample_rate, aggressiveness=3)
         self._workers: set[_TranscribeWorker] = set()
         self._inject_workers: set[_InjectWorker] = set()
+        self._write_mode = False  # default: preview only, no typing
         self._partial_in_flight = False
         self._committed_samples = 0
         self._last_partial_norm = ""
@@ -281,15 +306,16 @@ class MainWindow(QMainWindow):
         injecting = self._inject_chk.isChecked() and self._injector is not None
 
         if injecting:
-            # Show thinking marker while inject (and possible LLM parse) runs
-            # in a worker. For regex parser the marker is gone in <100ms;
-            # for LLM parser it persists ~300-500ms — clear visual signal.
-            marker = "💭 " if self._injector.is_slow_parser else ""
-            self._osd.show_text(f"{marker}{text}")
+            # Show thinking + mode marker while inject (and possible LLM
+            # parse) runs in a worker. ✏️ = write mode on, 👁 = preview only.
+            mode_glyph = "✏️ " if self._write_mode else "👁 "
+            slow = "💭 " if self._injector.is_slow_parser else ""
+            self._osd.show_text(f"{slow}{mode_glyph}{text}")
             payload = text + (" " if self._trailing_space else "")
-            worker = _InjectWorker(self._injector, payload, text)
+            worker = _InjectWorker(self._injector, payload, text, self._write_mode)
             worker.done.connect(self._on_inject_done)
             worker.failed.connect(self._on_inject_failed)
+            worker.mode_changed.connect(self._on_mode_changed)
             worker.finished.connect(lambda w=worker: self._reap_inject(w))
             self._inject_workers.add(worker)
             worker.start()
@@ -307,14 +333,24 @@ class MainWindow(QMainWindow):
             self._status.setText("Idle.")
 
     def _on_inject_done(self, original_text: str) -> None:
-        # Post-inject: replace the marker'd text with the plain text.
+        # Post-inject: replace the marker'd text with mode-prefixed text.
+        mode_glyph = "✏️ " if self._write_mode else "👁 "
+        decorated = f"{mode_glyph}{original_text}"
         if self._recorder.is_recording:
-            self._osd.show_text(original_text)
+            self._osd.show_text(decorated)
         else:
-            self._osd.show_text(original_text, transient_ms=1500)
+            self._osd.show_text(decorated, transient_ms=1500)
 
     def _on_inject_failed(self, msg: str) -> None:
         self.statusBar().showMessage(f"Inject failed: {msg}", 8000)
+
+    def _on_mode_changed(self, write_mode: bool) -> None:
+        """Worker reports the user toggled write mode mid-commit."""
+        self._write_mode = write_mode
+        self.statusBar().showMessage(
+            "Write mode ON" if write_mode else "Write mode OFF (preview only)",
+            3000,
+        )
 
     def _reap_inject(self, worker: _InjectWorker) -> None:
         self._inject_workers.discard(worker)

@@ -124,3 +124,26 @@ def test_text_then_volume_action():
         ("text", "write this then"),
         ("key", 114),  # KEY_VOLUMEDOWN
     ]
+
+
+def test_pisz_emits_write_mode_on():
+    assert split_into_ops("Pisz") == [("write_mode", True)]
+
+
+def test_przestań_emits_write_mode_off():
+    assert split_into_ops("Przestań") == [("write_mode", False)]
+
+
+def test_inline_mode_toggle_with_text():
+    """Pisz hello world — turn on write mode, then text."""
+    ops = split_into_ops("Pisz hello world")
+    assert ops == [("write_mode", True), ("text", "hello world")]
+
+
+def test_dictation_with_both_toggles():
+    ops = split_into_ops("Pisz hello world Przestań")
+    assert ops == [
+        ("write_mode", True),
+        ("text", "hello world"),
+        ("write_mode", False),
+    ]

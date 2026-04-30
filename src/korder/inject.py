@@ -61,16 +61,28 @@ class YdotoolBackend:
         self._lock = threading.Lock()
         self.is_slow_parser = op_parser is not None
 
-    def type(self, text: str) -> None:
+    def parse_ops(self, text: str) -> list[tuple]:
+        """Parse text into op tuples WITHOUT executing. Lets the caller
+        inspect/filter ops (e.g., apply write-mode gating) before running."""
         if not text:
-            return
-        with self._lock:
-            self._type_locked(text)
+            return []
+        return self._op_parser(text)
 
-    def _type_locked(self, text: str) -> None:
-        ops = self._op_parser(text)
+    def execute_ops(self, ops: list[tuple]) -> None:
+        """Run a pre-built op list. Caller is responsible for any filtering
+        (mode toggles, write-mode gating)."""
         if not ops:
             return
+        with self._lock:
+            self._execute_locked(ops)
+
+    def type(self, text: str) -> None:
+        """Convenience: parse_ops + execute_ops in one call. Used when no
+        filtering is needed."""
+        ops = self.parse_ops(text)
+        self.execute_ops(ops)
+
+    def _execute_locked(self, ops: list[tuple]) -> None:
         for i, op in enumerate(ops):
             kind = op[0]
             if kind == "text" or kind == "char":
@@ -85,6 +97,8 @@ class YdotoolBackend:
                 self._press_combo(op[1])
             elif kind == "subprocess":
                 self._run_subprocess(op[1])
+            # write_mode ops are advisory — caller filters them before
+            # passing to execute_ops; if any slip through, no-op.
             if i < len(ops) - 1:
                 time.sleep(0.04)
 
