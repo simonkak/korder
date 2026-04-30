@@ -129,6 +129,7 @@ class MainWindow(QMainWindow):
         self._detector = SpeechDetector(sample_rate=recorder.sample_rate, aggressiveness=3)
         self._workers: set[_TranscribeWorker] = set()
         self._inject_workers: set[_InjectWorker] = set()
+        self._commit_queue: list[str] = []
         self._write_mode = False  # default: preview only, no typing
         # When the LLM detects an action with empty required params (e.g.,
         # spotify_search with no query), we store the action name + time
@@ -332,6 +333,17 @@ class MainWindow(QMainWindow):
                 self._osd.hide_after(300)
             return
 
+        # Serialize commits while inject workers are in flight. Without
+        # this, a follow-up commit can start its own LLM parse before the
+        # previous worker emits pending_action — losing the "next text
+        # commit is my parameter" wiring. _reap_inject drains the queue.
+        if self._inject_workers:
+            self._commit_queue.append(text)
+            return
+
+        self._process_commit(text)
+
+    def _process_commit(self, text: str) -> None:
         # If a parameterized action is waiting for its input and we're
         # within the timeout, take this commit's text as the parameter.
         if self._pending_action is not None:
@@ -406,6 +418,7 @@ class MainWindow(QMainWindow):
     def _auto_stop(self) -> None:
         """Quietly stop recording — used after a command finishes."""
         if self._recorder.is_recording:
+            print("[korder] auto-stop after command", flush=True)
             self._stop_recording()
             self._sync_button()
 
@@ -462,6 +475,11 @@ class MainWindow(QMainWindow):
     def _reap_inject(self, worker: _InjectWorker) -> None:
         self._inject_workers.discard(worker)
         worker.deleteLater()
+        # Drain queued commits one at a time, waiting for the previous
+        # worker to fully finish before starting the next.
+        if not self._inject_workers and self._commit_queue:
+            next_text = self._commit_queue.pop(0)
+            self._process_commit(next_text)
 
     def _on_fail(self, msg: str) -> None:
         self._status.setText(f"Transcription failed: {msg}")
