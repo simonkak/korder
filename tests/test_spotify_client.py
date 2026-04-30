@@ -103,3 +103,81 @@ def test_token_fetch_failure_returns_none():
     with _patched_urlopen(handler):
         c = SpotifyClient("cid", "secret")
         assert c.search_track("hello") is None
+
+
+def test_search_kind_album_returns_album_uri():
+    seen_types: list[str] = []
+
+    def handler(req, *args, **kwargs):
+        url = req.full_url
+        if url.startswith("https://accounts.spotify.com/api/token"):
+            return _mock_response({"access_token": "tok", "expires_in": 3600})
+        # Capture the type= parameter Spotify was queried with
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(url).query)
+        seen_types.append(q.get("type", [""])[0])
+        return _mock_response({
+            "albums": {"items": [{"uri": "spotify:album:meteora"}]},
+            "tracks": {"items": [{"uri": "spotify:track:numb"}]},
+        })
+
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        uri = c.search("Meteora", kind="album")
+    assert uri == "spotify:album:meteora"
+    assert seen_types == ["album"]
+
+
+def test_search_kind_track_returns_track_uri():
+    def handler(req, *args, **kwargs):
+        url = req.full_url
+        if url.startswith("https://accounts.spotify.com/api/token"):
+            return _mock_response({"access_token": "tok", "expires_in": 3600})
+        return _mock_response({"tracks": {"items": [{"uri": "spotify:track:numb"}]}})
+
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        uri = c.search("Numb", kind="track")
+    assert uri == "spotify:track:numb"
+
+
+def test_search_album_falls_back_to_track_when_no_album_found():
+    """Album search empty → automatically retry as track."""
+    seen_types: list[str] = []
+
+    def handler(req, *args, **kwargs):
+        url = req.full_url
+        if url.startswith("https://accounts.spotify.com/api/token"):
+            return _mock_response({"access_token": "tok", "expires_in": 3600})
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(url).query)
+        kind = q.get("type", [""])[0]
+        seen_types.append(kind)
+        if kind == "album":
+            return _mock_response({"albums": {"items": []}})  # empty
+        return _mock_response({"tracks": {"items": [{"uri": "spotify:track:fallback"}]}})
+
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        uri = c.search("ObscureSongName", kind="album")
+    assert uri == "spotify:track:fallback"
+    # Called album first, then track
+    assert seen_types == ["album", "track"]
+
+
+def test_invalid_kind_defaults_to_album():
+    seen_types: list[str] = []
+
+    def handler(req, *args, **kwargs):
+        url = req.full_url
+        if url.startswith("https://accounts.spotify.com/api/token"):
+            return _mock_response({"access_token": "tok", "expires_in": 3600})
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(url).query)
+        seen_types.append(q.get("type", [""])[0])
+        return _mock_response({"albums": {"items": [{"uri": "spotify:album:x"}]}})
+
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        c.search("hello", kind="garbage")
+    assert seen_types == ["album"]

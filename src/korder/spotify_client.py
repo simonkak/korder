@@ -38,15 +38,22 @@ class SpotifyClient:
         self._token_expires_at: float = 0.0
         self._lock = threading.Lock()
 
-    def search_track(self, query: str) -> str | None:
-        """Return the top track's spotify: URI (e.g. spotify:track:XYZ),
-        or None if nothing found / API errored."""
+    def search(self, query: str, kind: str = "album") -> str | None:
+        """Return the top result's spotify: URI for the given kind
+        ("album" or "track"), or None if nothing found / API errored.
+        Falls back from album → track if the album search came up empty."""
+        kind = kind.lower().strip()
+        if kind not in ("album", "track"):
+            kind = "album"
+        return self._search_one(query, kind, allow_fallback=True)
+
+    def _search_one(self, query: str, kind: str, *, allow_fallback: bool) -> str | None:
         if not query.strip():
             return None
         token = self._get_token()
         if not token:
             return None
-        params = urllib.parse.urlencode({"q": query, "type": "track", "limit": 1})
+        params = urllib.parse.urlencode({"q": query, "type": kind, "limit": 1})
         url = f"{_SEARCH_URL}?{params}"
         try:
             req = urllib.request.Request(
@@ -55,12 +62,20 @@ class SpotifyClient:
             with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
-            print(f"[korder] Spotify search failed: {e}", flush=True)
+            print(f"[korder] Spotify search ({kind}) failed: {e}", flush=True)
             return None
-        items = body.get("tracks", {}).get("items", [])
-        if not items:
-            return None
-        return items[0].get("uri")
+        items = body.get(f"{kind}s", {}).get("items", [])
+        if items:
+            return items[0].get("uri")
+        # Album search returned nothing — try track. Common when query is
+        # actually a song name rather than an album.
+        if allow_fallback and kind == "album":
+            return self._search_one(query, "track", allow_fallback=False)
+        return None
+
+    # Backward-compat alias for callers that imported the old name.
+    def search_track(self, query: str) -> str | None:
+        return self._search_one(query, "track", allow_fallback=False)
 
     def _get_token(self) -> str | None:
         with self._lock:

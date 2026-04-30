@@ -65,8 +65,8 @@ def _open_uri_via_dbus_or_xdg(uri: str) -> None:
     subprocess.run(["sh", "-c", cmd], check=False, capture_output=True, timeout=10)
 
 
-def _spotify_play_query(query: str) -> None:
-    """Resolve voice query → track URI via Web API (if configured), then
+def _spotify_play_query(query: str, kind: str) -> None:
+    """Resolve voice query → spotify URI via Web API (if configured), then
     play via D-Bus. Falls back to opening search results if API isn't set
     up or returns nothing."""
     if not query:
@@ -74,38 +74,52 @@ def _spotify_play_query(query: str) -> None:
         return
     client = _get_client()
     if client is not None:
-        track_uri = client.search_track(query)
-        if track_uri:
-            print(f"[korder] Spotify: playing {track_uri} for query {query!r}", flush=True)
-            _open_uri_via_dbus_or_xdg(track_uri)
+        uri = client.search(query, kind=kind)
+        if uri:
+            print(f"[korder] Spotify: playing {uri} (kind={kind}) for query {query!r}", flush=True)
+            _open_uri_via_dbus_or_xdg(uri)
             return
     # Fallback: open search UI, user clicks
     fallback_uri = f"spotify:search:{quote(query)}"
-    print(f"[korder] Spotify: no track URI; opening search {fallback_uri}", flush=True)
+    print(f"[korder] Spotify: no API result; opening search {fallback_uri}", flush=True)
     _open_uri_via_dbus_or_xdg(fallback_uri)
 
 
 def _spotify_search_op(args: dict) -> tuple | None:
-    query = args.get("query", "").strip() if isinstance(args, dict) else ""
+    if not isinstance(args, dict):
+        args = {}
+    query = args.get("query", "").strip()
+    kind = args.get("kind", "album").strip().lower()
+    if kind not in ("album", "track"):
+        kind = "album"
     if not query:
-        # Incomplete — signal "pending; need a query" so MainWindow can
-        # take the next text commit as the parameter.
-        return None
-    return ("callable", lambda q=query: _spotify_play_query(q))
+        return None  # pending — wait for the next commit as query
+    return ("callable", lambda q=query, k=kind: _spotify_play_query(q, k))
 
 
 register(Action(
     name="spotify_search",
-    description="Search Spotify for a song, album, or artist and play it",
+    description="Search Spotify for an album (default) or a single track and play it",
     triggers={
         "en": ["play on spotify", "spotify search", "spotify play"],
         "pl": ["zagraj na spotify", "spotify wyszukaj", "puść na spotify"],
     },
     op_factory=_spotify_search_op,
     parameters={
+        # query is the primary param — pending-action follow-up text fills it
         "query": {
             "type": "string",
             "description": "The song, album, or artist to search for",
+        },
+        # kind defaults to album when unspecified — most voice queries
+        # ("Linkin Park", "Meteora", "Pink Floyd Wish You Were Here") are
+        # about a body of work; single-track requests should set
+        # kind="track" explicitly via "track" / "utwór" / "piosenka"
+        "kind": {
+            "type": "string",
+            "enum": ["album", "track"],
+            "default": "album",
+            "description": "What to play: 'album' (default) or 'track' (single song)",
         },
     },
 ))
