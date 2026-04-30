@@ -2,7 +2,8 @@
 organized in tabs. Saves write back to disk; user is told to restart for the
 changes to fully take effect."""
 from __future__ import annotations
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -10,11 +11,14 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QSpinBox,
+    QStyle,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -27,6 +31,99 @@ _LANGS = ["", "pl", "en", "de", "fr", "es", "it", "uk", "cs", "ru"]
 _PASTE_MODES = ["auto", "always", "never"]
 _PARSERS = ["regex", "llm"]
 _SAMPLE_RATES = ["16000", "32000", "48000"]
+
+# KDE HIG spacings (px). Dialog outer margins and inter-widget spacing are
+# 9 / 6 respectively in Plasma's own configuration modules.
+_MARGIN = 9
+_SPACING = 6
+
+
+class _InfoBanner(QFrame):
+    """KMessageWidget-style information banner.
+
+    Tints the panel background by mixing Window and Highlight from the active
+    palette, so it stays legible on both light and dark themes and re-renders
+    when the user changes themes mid-session.
+    """
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("KorderInfoBanner")
+        self.setAutoFillBackground(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 8, 10, 8)
+        row.setSpacing(8)
+
+        icon_label = QLabel(self)
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation)
+        icon_label.setPixmap(icon.pixmap(16, 16))
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        row.addWidget(icon_label)
+
+        self._text = QLabel(text, self)
+        self._text.setWordWrap(True)
+        self._text.setOpenExternalLinks(True)
+        self._text.setTextInteractionFlags(
+            Qt.TextInteractionFlag.LinksAccessibleByMouse
+            | Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        row.addWidget(self._text, 1)
+
+        self._apply_tint()
+
+    def _apply_tint(self) -> None:
+        pal = self.palette()
+        window = pal.color(QPalette.ColorRole.Window)
+        highlight = pal.color(QPalette.ColorRole.Highlight)
+        ratio = 0.18
+        tinted = QColor(
+            int(ratio * highlight.red() + (1 - ratio) * window.red()),
+            int(ratio * highlight.green() + (1 - ratio) * window.green()),
+            int(ratio * highlight.blue() + (1 - ratio) * window.blue()),
+        )
+        pal.setColor(QPalette.ColorRole.Window, tinted)
+        self.setPalette(pal)
+        self.setStyleSheet("QFrame#KorderInfoBanner { border-radius: 4px; }")
+
+    def changeEvent(self, event: QEvent) -> None:
+        if event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.ApplicationPaletteChange,
+            QEvent.Type.StyleChange,
+        ):
+            self._apply_tint()
+        super().changeEvent(event)
+
+
+def _hint_label(text: str) -> QLabel:
+    """De-emphasized helper text using the theme's PlaceholderText role.
+
+    Set via QPalette (not stylesheet) because Qt stylesheet's ``palette(...)``
+    function does not expose ``placeholder-text``.
+    """
+    label = QLabel(text)
+    label.setWordWrap(True)
+    pal = label.palette()
+    pal.setColor(
+        QPalette.ColorRole.WindowText,
+        pal.color(QPalette.ColorRole.PlaceholderText),
+    )
+    label.setPalette(pal)
+    return label
+
+
+def _make_form(parent: QWidget) -> QFormLayout:
+    """Form layout with KDE HIG-aligned policies."""
+    f = QFormLayout(parent)
+    f.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    f.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    f.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+    f.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+    f.setHorizontalSpacing(_SPACING * 2)
+    f.setVerticalSpacing(_SPACING)
+    return f
 
 
 class SettingsDialog(QDialog):
@@ -44,17 +141,18 @@ class SettingsDialog(QDialog):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
+        layout.setSpacing(_SPACING)
+
         self._tabs = QTabWidget()
+        self._tabs.setDocumentMode(True)
         self._tabs.addTab(self._build_audio_whisper_tab(), "Mic && Whisper")
         self._tabs.addTab(self._build_actions_tab(), "Actions && Output")
         self._tabs.addTab(self._build_spotify_tab(), "Spotify")
         self._tabs.addTab(self._build_general_tab(), "General")
-        layout.addWidget(self._tabs)
+        layout.addWidget(self._tabs, 1)
 
-        hint = QLabel(
-            "Most settings take effect after restarting Korder."
-        )
-        hint.setStyleSheet("color: palette(mid); font-style: italic;")
+        hint = _hint_label("Most settings take effect after restarting Korder.")
         layout.addWidget(hint)
 
         btns = QDialogButtonBox(
@@ -71,10 +169,12 @@ class SettingsDialog(QDialog):
     def _build_audio_whisper_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
+        outer.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
+        outer.setSpacing(_SPACING * 2)
 
         # Audio group
         audio = QGroupBox("Microphone")
-        af = QFormLayout(audio)
+        af = _make_form(audio)
         self._gain = QDoubleSpinBox()
         self._gain.setRange(0.1, 2.0)
         self._gain.setSingleStep(0.05)
@@ -96,7 +196,7 @@ class SettingsDialog(QDialog):
 
         # Whisper group
         whisper = QGroupBox("Whisper")
-        wf = QFormLayout(whisper)
+        wf = _make_form(whisper)
         self._model = QComboBox()
         self._model.setEditable(True)
         self._model.addItems(_WHISPER_MODELS)
@@ -125,9 +225,11 @@ class SettingsDialog(QDialog):
     def _build_actions_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
+        outer.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
+        outer.setSpacing(_SPACING * 2)
 
         inject = QGroupBox("Output")
-        f = QFormLayout(inject)
+        f = _make_form(inject)
         self._paste_mode = QComboBox()
         self._paste_mode.addItems(_PASTE_MODES)
         self._paste_mode.setToolTip(
@@ -181,19 +283,20 @@ class SettingsDialog(QDialog):
     def _build_spotify_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
+        outer.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
+        outer.setSpacing(_SPACING * 2)
 
-        info = QLabel(
+        info = _InfoBanner(
             "Spotify Web API credentials. Without these, voice search falls back "
             "to opening search results (you click the first one). Get free "
-            "credentials at https://developer.spotify.com/dashboard — Client "
-            "Credentials flow, no Premium required for search."
+            'credentials at <a href="https://developer.spotify.com/dashboard">'
+            "developer.spotify.com/dashboard</a> — Client Credentials flow, "
+            "no Premium required for search."
         )
-        info.setWordWrap(True)
-        info.setStyleSheet("color: palette(mid);")
         outer.addWidget(info)
 
         spotify = QGroupBox("Credentials")
-        f = QFormLayout(spotify)
+        f = _make_form(spotify)
         self._spotify_client_id = QLineEdit()
         self._spotify_client_id.setPlaceholderText("(empty = fallback to search-and-click)")
         f.addRow("Client ID:", self._spotify_client_id)
@@ -208,9 +311,11 @@ class SettingsDialog(QDialog):
     def _build_general_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
+        outer.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
+        outer.setSpacing(_SPACING * 2)
 
         ui = QGroupBox("UI")
-        f = QFormLayout(ui)
+        f = _make_form(ui)
         self._show_history_on_start = QCheckBox("Show transcript history window on start")
         f.addRow("", self._show_history_on_start)
 

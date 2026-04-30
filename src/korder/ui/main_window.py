@@ -182,11 +182,11 @@ class MainWindow(QMainWindow):
             self._start_recording()
         self._sync_button()
 
-    PAUSE_MS = 2000
+    PAUSE_MS = 3500
     MIN_COMMIT_MS = 500
-    MAX_SEGMENT_MS = 15000
+    MAX_SEGMENT_MS = 18000
     MIN_SPEECH_FOR_PARTIAL_MS = 90
-    STABILITY_REPEATS = 5  # commit after this many identical-content partials in a row
+    STABILITY_REPEATS = 8  # commit after this many identical-content partials in a row
 
     def _start_recording(self) -> None:
         if self._recorder.is_recording:
