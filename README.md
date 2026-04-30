@@ -129,7 +129,10 @@ intent.
 ## Development
 
 ```bash
-uv run pytest    # 78 tests, no external services required
+uv run pytest                                    # 87 tests, no external services required
+uv run pytest -m ollama                          # +34 integration tests against a live Gemma
+uv run python -m korder.intent_bench             # 21-case headless benchmark vs the current model
+uv run python -m korder.intent_bench --thinking  # …with Gemma's thinking step engaged
 ```
 
 Adding a new action is one file in `src/korder/actions/`:
@@ -150,6 +153,13 @@ register(Action(
 
 Then add the module to `src/korder/actions/__init__.py`'s import list. The
 LLM prompt and regex parser pick it up automatically.
+
+### Architecture notes
+
+- [`docs/intent-architecture.md`](docs/intent-architecture.md) — why the
+  intent parser uses JSON output rather than function calling, with
+  measured numbers from a head-to-head against the `function-calling`
+  branch.
 
 ## License
 
