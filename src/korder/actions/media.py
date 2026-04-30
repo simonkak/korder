@@ -52,8 +52,14 @@ register(Action(
     name="play_pause",
     description="Toggle play/pause on the active media player",
     triggers={
-        "en": ["play music", "pause music", "toggle music"],
-        "pl": ["puść muzykę", "zatrzymaj muzykę", "wstrzymaj muzykę"],
+        "en": ["play music", "pause music", "toggle music", "pause"],
+        "pl": [
+            "puść muzykę",
+            "odtwórz muzykę",
+            "zatrzymaj muzykę",
+            "wstrzymaj muzykę",
+            "pausa",
+        ],
     },
     op_factory=lambda _args: ("key", KEY_PLAYPAUSE),
 ))
