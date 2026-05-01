@@ -87,10 +87,10 @@ _SYSTEM_PROMPT = (
     "- For parameterized actions, extract relevant fields into `params`. If a required parameter "
     "is not present in the input, leave `params` empty or omit it — do NOT invent values.\n"
     "\n"
-    "The `response` field is OPTIONAL — only populate it when an action has a "
-    "`confirm` parameter and the user did not supply the confirmation word. "
-    "Then write a brief 'are you sure?' question in the user's input language. "
-    "Otherwise omit `response` entirely."
+    "Optionally include `response` — a brief 'are you sure?' question — "
+    "ONLY when the action has a `confirm` parameter and the user did not "
+    "supply it. Write `response` in the same language as the input transcript. "
+    "Otherwise omit `response`."
 )
 
 
@@ -125,7 +125,8 @@ def _build_user_prompt(transcript: str, *, show_triggers: bool) -> str:
         '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_search", "params": {"query": "Linkin Park", "kind": "album"}}]}\n'
         '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
         '  "she pressed enter on the keyboard" → {"actions": []}\n'
-        '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down the computer? Say yes or no."}\n'
+        '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
+        '  "uśpij komputer" → {"actions": [{"phrase": "uśpij komputer", "name": "sleep"}], "response": "Czy uśpić komputer? Powiedz tak lub nie."}\n'
         '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
         "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
