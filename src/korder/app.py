@@ -312,16 +312,28 @@ _USER_ICON_PATH = Path.home() / ".local" / "share" / "icons" / "hicolor" / "scal
 
 
 def _announce_pulse_identity() -> None:
-    """Set PULSE_PROP so PipeWire/PulseAudio labels our streams as
-    "Korder" with our icon, instead of the default "PipeWire ALSA
-    [python3.12]" derived from the binary name. Also installs the
-    bundled tray SVG into the user's hicolor icon theme so the
-    icon_name lookup resolves to something visual.
+    """Tell PipeWire/PulseAudio to label our streams "Korder" with our
+    icon, instead of the default "PipeWire ALSA [python3.12]" derived
+    from the binary name. Also installs the bundled tray SVG into the
+    user's hicolor icon theme so the icon_name lookup resolves.
 
-    Both env var + icon install are no-ops if already in place
-    (idempotent on every launch). PULSE_PROP is read by the Pulse
-    client library when the audio app first connects, so this MUST
-    run before sounddevice opens any stream.
+    Three env vars are set, covering the three connection paths an app
+    on Linux can take to the audio server today:
+
+    * ``PIPEWIRE_PROPS`` — read by libpipewire when it initializes a
+      client. The pipewire-alsa bridge (which is how we connect, since
+      sounddevice → PortAudio → ALSA → pipewire-alsa) calls
+      ``pw_init()`` internally and picks this up. This is the env var
+      that actually fixes the labeling on a standard PipeWire desktop.
+    * ``PULSE_PROP`` — read by libpulse. Only matters on machines
+      running plain PulseAudio (not pipewire-pulse), but cheap to set.
+    * ``PIPEWIRE_NODE_DESCRIPTION`` — backstop for older PipeWire
+      versions whose ALSA bridge ignores PIPEWIRE_PROPS but still
+      respects this older node-level knob.
+
+    All three are no-ops if already set (setdefault preserves any
+    user override). MUST run before sounddevice opens any stream —
+    the audio client lib reads these once, on first connect.
     """
     # Install our SVG into the user's icon theme if missing. Failure
     # here is non-fatal — the stream still gets renamed, it just
@@ -333,8 +345,17 @@ def _announce_pulse_identity() -> None:
     except OSError as e:
         print(f"[korder] couldn't install tray icon: {e}", file=sys.stderr)
 
-    # PULSE_PROP is space-separated key=value pairs. setdefault keeps
-    # any user override (e.g. testing with a custom name) intact.
+    # PIPEWIRE_PROPS uses a JSON-like dict (PipeWire's "SPA" format).
+    # Quoting the keys is optional; quoting the values isn't, since
+    # they may contain spaces. The bridge merges these on top of its
+    # default "ALSA plug-in [<prgname>]" so application.name wins.
+    os.environ.setdefault(
+        "PIPEWIRE_PROPS",
+        '{ application.name = "Korder" application.icon_name = "korder" }',
+    )
+    # Older pipewire-alsa versions only honour the node-level env vars.
+    os.environ.setdefault("PIPEWIRE_NODE_DESCRIPTION", "Korder")
+    # PULSE_PROP is space-separated key=value pairs.
     os.environ.setdefault(
         "PULSE_PROP",
         "application.name=Korder application.icon_name=korder",
