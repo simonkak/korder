@@ -55,3 +55,36 @@ register(Action(
     },
     op_factory=lambda _args: ("callable", _do_lock_screen),
 ))
+
+
+register(Action(
+    name="cancel_session",
+    description=(
+        "Abort the current dictation/recording. Drops any pending text "
+        "AND any other actions in the same utterance — nothing gets "
+        "injected, the OSD shows 'Cancelled' and hides, the mic closes. "
+        "Use ONLY when the user is plainly aborting the recording: "
+        "saying just 'cancel', 'nevermind', 'forget it', or similar as "
+        "the entire intent. Do NOT fire when 'cancel' / 'nevermind' "
+        "appear inside dictated content (e.g., 'I want to cancel my "
+        "subscription' is dictation, not a meta-cancel). When in doubt, "
+        "treat it as text — a misfire here loses the user's whole "
+        "utterance and is more disruptive than typing the word."
+    ),
+    triggers={
+        "en": [
+            "cancel that",
+            "nevermind",
+            "never mind",
+            "forget it",
+            "abort recording",
+        ],
+        "pl": [
+            "nieważne",
+            "nie ważne",
+            "zapomnij",
+            "anuluj nagrywanie",
+        ],
+    },
+    op_factory=lambda _args: ("cancel", None),
+))

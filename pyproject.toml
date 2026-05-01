@@ -9,10 +9,42 @@ dependencies = [
     "numpy>=1.26",
     "pywhispercpp>=1.3",
     "webrtcvad-wheels>=2.0",
+    # Process-name rebrand so PipeWire/PulseAudio's pw_get_prgname()
+    # returns "korder" instead of "python3.12". prctl(PR_SET_NAME) is
+    # insufficient — pw_get_prgname reads glibc's
+    # program_invocation_short_name pointer, which has to be rewritten
+    # alongside argv[0]. setproctitle handles all of that in one call.
+    "setproctitle>=1.3",
 ]
 
 [project.scripts]
 korder = "korder.app:main"
+
+[project.optional-dependencies]
+# Wake-word activation (issue #1). Optional because openwakeword pulls in
+# onnxruntime (~150 MB) and a model file at first use; users on the
+# hotkey-only path don't need any of it.
+#
+# openwakeword 0.6 declares a hard dep on tflite-runtime, which only
+# ships wheels up to cp311 — cp312/cp313 envs would fail to resolve.
+# We don't actually need tflite at runtime: openwakeword supports an
+# ONNX backend (selected via inference_framework="onnx" in
+# WakeWordDetector.start()), so we override tflite-runtime out of the
+# resolver via [tool.uv] below and pin onnxruntime explicitly so the
+# ONNX path is always available.
+wake = [
+    "openwakeword>=0.6",
+    "onnxruntime>=1.16",
+]
+
+[tool.uv]
+# Side-step openwakeword's hard tflite-runtime requirement. We run
+# inference through onnxruntime instead, so tflite-runtime is dead
+# weight; sys_platform == 'never' is a marker that can never match,
+# which makes uv stop trying to install it.
+override-dependencies = [
+    "tflite-runtime ; sys_platform == 'never'",
+]
 
 [dependency-groups]
 dev = [

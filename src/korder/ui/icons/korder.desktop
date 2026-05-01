@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Korder
+GenericName=Voice Dictation
+Comment=Voice transcription and voice-controlled actions for KDE Plasma
+Icon=korder
+Exec=korder
+TryExec=korder
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+StartupNotify=false
+StartupWMClass=Korder
+Keywords=voice;transcription;dictation;whisper;

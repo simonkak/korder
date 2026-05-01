@@ -48,15 +48,16 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
 
 - **Live transcription** via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with the Vulkan backend (GPU-accelerated on AMD/Nvidia/Intel)
 - **Pill-shaped layer-shell OSD** (org.kde.layershell) — overlay never steals focus, stays above all windows. Anchored to the bottom of the screen, semi-transparent so KWin's Blur effect picks it up automatically. Three sections:
-    - leading: animated accent dot + state label (*Słucham → Myślę → Wykonuję → Gotowe*)
+    - leading: animated accent dot + state label (*Listening → [Loading] → Thinking → Executing → Done*; the app shows the same labels translated when the system locale is Polish). The bracketed *Loading* state appears only on the cold-start path — when ollama needs to page the LLM into VRAM because `keep_alive_s` had expired — so the user knows the extra wait is mechanical loading, not semantic reasoning. Color-coded distinctly (soft-blue) from the amber Thinking pulse.
     - center: your transcription, with **locked-prefix highlighting** — the longest word-aligned common prefix between successive Whisper partials renders bright while the still-revising tail fades, so the eye knows what's settled. Action progress narration (*"Searching Spotify for Linkin Park… → Found album: Linkin Park → Playing Linkin Park"*) renders inline in your Plasma accent color, italic, distinct from your spoken command.
     - "Press ESC to cancel" hint below the pill while listening.
 - **System tray app** with global hotkeys (KGlobalAccel via the IPC `korder toggle` and `korder cancel` commands) and a Settings… dialog covering every config key — no hand-editing required
-- **Write mode toggle** — say *"Pisz"* to start typing into the focused app, *"Przestań"* to stop. Default is preview-only.
+- **Write mode toggle** — say *"start writing"* to start typing into the focused app, *"stop writing"* to stop. Default is preview-only.
 - **Action vocabulary** dispatched via either a regex parser or a local LLM (Gemma via ollama):
     - Keys: Enter, Tab, Escape, Backspace
     - Shortcuts: Ctrl+Backspace (delete word), Ctrl+A (select all), Ctrl+Z (undo), Shift+Home/End (select line)
-    - Media: volume up/down/mute, play/pause, stop, next/previous track (via kernel media keycodes — KDE routes to MPRIS + PipeWire automatically)
+    - Media playback: play/pause, stop, next/previous track (via kernel media keycodes — KDE routes them to whichever MPRIS player is active)
+    - System volume: up/down/mute via `wpctl` directly (kernel keycodes raced with the auto-duck through KDE's separate volume cache and lost increments). Supports magnitude qualifiers — *"much louder"* steps 20%, *"a bit quieter"* steps 2%, *"louder by 20%"* takes the explicit number. Default step is 5%.
     - Now playing: ask *"what's playing"* / *"co teraz gra"* and Korder reads MPRIS metadata from the active player (Spotify, Firefox, mpv, …) and pops a desktop notification with track + artist
     - Spotify: search and play albums, tracks, artists, or playlists via the Web API (free Client Credentials flow, no Premium required for search). When you don't say what kind ("Spotify play *Pink Floyd*"), one request fans out across all four types and the closest name match wins — artist > album > track > playlist within each match tier.
     - Web actions (xdg-routed, opens default browser): web search (DuckDuckGo / Google / Bing / Startpage / Ecosia), YouTube search, Wikipedia (auto-picks language from system locale), Maps
@@ -65,7 +66,9 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
 - **Multilingual intent** — regex mode ships hardcoded PL + EN trigger phrases for every action; LLM mode (Gemma) understands intent across any language it speaks (so Whisper can transcribe German/Spanish/French/etc. and the right action still fires)
 - **Optional Gemma thinking step** — off by default. Slower (~1.9 s vs ~600 ms on E4B; ~3.9 s on E2B) and on the current 21-case benchmark it never improved accuracy, so it's kept as an opt-in for ambiguous phrasings the regex/prompt path doesn't cover. Toggle via `[intent] thinking_mode`. See *Picking your Gemma model* below for measured numbers.
 - **Auto-stop after a command** — fires once an action lands so you don't have to hit the hotkey twice; pure dictation and mode toggles keep the session open
-- **Auto-duck system volume while listening** (default on) — drops the default PipeWire sink to 30 % when the mic opens and restores the original level on stop, so speaker bleed stops confusing Whisper. Skipped if you're already quieter than the target; restored on crash via `atexit`. Requires `wpctl`.
+- **Opportunistic LLM preload** — when the hotkey opens the mic, Korder fires a fire-and-forget load request to ollama in parallel with your speech + Whisper. By the time the transcript is ready the model is usually resident, so the LLM call jumps straight to *Thinking* even when `keep_alive_s` had expired. Cold-load logging on stderr shows whether warm-up beat Whisper to the finish.
+- **Auto-duck system volume while listening** (default on) — drops the default PipeWire sink to 30 % when the mic opens and restores the original level on stop, so speaker bleed stops confusing Whisper. Skipped if you're already quieter than the target; restored on crash via `atexit`. Volume commands ("louder", "quieter", "mute") restore the duck snapshot *before* the wpctl step lands, so an increment isn't silently overwritten by the post-action restore. Requires `wpctl`.
+- **Wake-word activation** (off by default, opt-in via the **Wake word** Settings tab) — when enabled, the mic stays open and the configured phrase ("hey jarvis", "alexa", "hey mycroft", or "hey rhasspy" from openWakeWord's pretrained catalog) fires a dictation session as if you'd pressed the hotkey. Hotkey path keeps working alongside. Tray icon flips to a soft-blue waveform while wake-listening, warm accent while dictating; tooltip changes too so you always know whether the mic is open and why. Auto-cancels back to wake-listening on accidental wakes (configurable idle-timeout). Requires the optional dep — install with `uv sync --extra wake`. Detector runs on CPU via ONNX, ~5 % of one core when idle.
 
 ## OS dependencies
 
@@ -133,6 +136,17 @@ OSD shows a "Press ESC to cancel" hint while listening — common pick is
 `Esc`, though it has to go through KGlobalAccel since the OSD is a
 focusless overlay).
 
+For wake-word activation, install the extra and enable it in the Settings
+dialog's **Wake word** tab:
+
+```bash
+uv sync --extra wake
+```
+
+The IPC accepts `wake-toggle`, `wake-on`, and `wake-off` if you want a
+hotkey to flip wake-mode without opening the dialog (or you'd rather the
+mic isn't listening 24/7 and only enable it on demand).
+
 ## Configuration
 
 The tray menu's **Settings…** entry exposes every key in a tabbed dialog —
@@ -187,6 +201,23 @@ client_secret =
 # canonical URL.
 [web]
 search_engine = duckduckgo
+
+# Optional — wake-word activation. Off by default. When enabled, the mic
+# stays open and the configured phrase opens a dictation session as if
+# the hotkey had fired. Requires `uv sync --extra wake`.
+[wake]
+enabled = false
+engine = openwakeword             # only option today
+phrase = hey_jarvis               # openwakeword catalog: hey_jarvis,
+                                  # alexa, hey_mycroft, hey_rhasspy (or
+                                  # your own model name if you trained
+                                  # one — combo accepts arbitrary text)
+sensitivity = 0.5                 # 0.0–1.0; lower = more triggers,
+                                  # higher = fewer false positives
+idle_timeout_s = 5                # cancel dictation back to wake-listening
+                                  # if no speech arrives within this many
+                                  # seconds (catches accidental wakes); 0
+                                  # disables the auto-cancel
 ```
 
 ## Picking your Gemma model
@@ -213,15 +244,15 @@ Reproduce: `uv run python -m korder.intent_bench --model gemma4:e2b [--thinking]
 
 ### What E2B specifically gets wrong
 
-Always-failing utterances on E2B that E4B handles cleanly:
-
-- *"Wznów"* — Polish "resume" (synonym of play_pause, no hardcoded trigger)
-- *"Pisz"* / *"Przestań"* — single-word Polish mode toggles
-- *"Znów odstwarzanie"* — Whisper-corrupted variant of "wznów odtwarzanie"
-
-These are short, oblique, Polish phrasings — exactly the regime where the
-extra parameters in E4B carry their weight. English commands and explicit
-Polish triggers (*"naciśnij Enter"*, *"Spotify zagraj …"*) work on both.
+E2B drops short, oblique non-English phrasings that E4B handles
+cleanly — synonym variants of play_pause that don't appear in the
+prompt's hardcoded triggers, single-word write-mode toggles, and
+Whisper-corrupted variants where a missing or duplicated character
+defeats trigger-string matching but should still be recoverable
+from intent. That's exactly the regime where E4B's extra parameters
+carry their weight. English commands and explicit triggers in any
+locale ("press enter", the Polish equivalents, etc.) work on both
+models.
 
 ### Why thinking mode misbehaves on E2B
 
@@ -242,32 +273,36 @@ matters more than getting Polish synonyms right.
 
 ## Voice commands (when LLM mode is on)
 
-Say these in normal speech; phrasing variations work because Gemma understands
-intent.
+Say these in normal speech; phrasing variations work because Gemma
+understands intent. Triggers in other locales exist for every command
+(see `src/korder/actions/`), and the LLM parser extracts intent
+across whichever language Whisper transcribes.
 
-| Action            | English                          | Polish                                |
-|-------------------|----------------------------------|---------------------------------------|
-| Press Enter       | "press enter", "submit"           | "naciśnij enter", "wyślij"            |
-| Delete word       | "delete word"                     | "usuń słowo", "skasuj słowo"          |
-| Select line       | "select line"                     | "zaznacz linię"                       |
-| Volume up/down    | "louder" / "quieter"              | "głośniej" / "ciszej"                 |
-| …with magnitude   | "much louder", "louder by 20%"    | "znacznie głośniej", "głośniej o 20%" |
-| Play/pause        | "play music", "pause"             | "puść muzykę", "pauza", "wznów"       |
-| Stop playback     | "stop playback"                   | "zatrzymaj odtwarzanie"               |
-| Next/prev track   | "next song" / "previous song"     | "następna piosenka" / "poprzednia"    |
-| Now playing       | "what's playing", "what song is this" | "co gra", "co teraz leci"           |
-| Spotify (any)     | "spotify play Pink Floyd"         | "spotify zagraj Pink Floyd"           |
-| Spotify album     | "spotify play album Meteora"      | "spotify zagraj album Meteora"        |
-| Spotify track     | "spotify play track Numb"         | "spotify zagraj utwór Numb"           |
-| Spotify artist    | "spotify play artist Pink Floyd"  | "spotify zagraj wykonawcę Pink Floyd" |
-| Spotify playlist  | "spotify play playlist workout"   | "spotify zagraj playlistę workout"    |
-| Web search        | "search for X", "google X"        | "wyszukaj X", "wygoogluj X"           |
-| YouTube           | "play X on YouTube"               | "puść X na YouTube"                   |
-| Wikipedia         | "wikipedia X", "tell me about X"  | "co to jest X", "kim jest X"          |
-| Maps              | "navigate to X", "where is X"     | "nawiguj do X", "gdzie jest X"        |
-| Lock screen       | "lock screen"                     | "zablokuj ekran"                      |
-| Write mode on     | "start writing"                   | "pisz"                                |
-| Write mode off    | "stop writing"                    | "przestań"                            |
+| Action            | Example phrasing                                 |
+|-------------------|--------------------------------------------------|
+| Press Enter       | "press enter", "submit"                           |
+| Delete word       | "delete word"                                     |
+| Select line       | "select line"                                     |
+| Volume up/down    | "louder" / "quieter"                              |
+| …with magnitude   | "much louder", "louder by 20%", "a bit quieter"   |
+| Mute              | "mute audio", "toggle mute"                       |
+| Play/pause        | "play music", "pause", "resume"                   |
+| Stop playback     | "stop playback"                                   |
+| Next/prev track   | "next song" / "previous song"                     |
+| Now playing       | "what's playing", "what song is this"             |
+| Spotify (any)     | "spotify play Pink Floyd"                         |
+| Spotify album     | "spotify play album Meteora"                      |
+| Spotify track     | "spotify play track Numb"                         |
+| Spotify artist    | "spotify play artist Pink Floyd"                  |
+| Spotify playlist  | "spotify play playlist workout"                   |
+| Web search        | "search for X", "google X"                        |
+| YouTube           | "play X on YouTube"                               |
+| Wikipedia         | "wikipedia X", "tell me about X"                  |
+| Maps              | "navigate to X", "where is X"                     |
+| Lock screen       | "lock screen"                                     |
+| Write mode on     | "start writing"                                   |
+| Write mode off    | "stop writing"                                    |
+| Cancel session    | "cancel that", "nevermind", "forget it"           |
 
 ## Development
 
@@ -287,8 +322,9 @@ register(Action(
     name="my_action",
     description="Short English description for the LLM prompt",
     triggers={
-        "en": ["do the thing"],
-        "pl": ["zrób to"],
+        "en": ["do the thing", "do that"],
+        # Add other locales here for the regex parser; the LLM parser
+        # works across whichever language Whisper transcribed.
     },
     op_factory=lambda _args: ("subprocess", ["my-cli", "--flag"]),
 ))

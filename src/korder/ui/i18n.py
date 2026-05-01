@@ -64,6 +64,18 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_locking_screen": "Blokuję ekran…",
         "progress_lock_failed": "Blokada nieudana: {error}",
         "progress_xdg_failed": "xdg-open nie powiódł się: {error}",
+        # Tray icon tooltip (Plasma system tray hover label).
+        "tray_tooltip_idle": "Korder — transkrypcja głosu",
+        "tray_tooltip_wake_listening": "Korder — nasłuchuję słowa aktywującego",
+        "tray_tooltip_dictating": "Korder — nagrywam…",
+        # Tray context menu entries.
+        "menu_toggle_recording": "Przełącz nagrywanie",
+        "menu_wake_listening": "Nasłuchuj słowa aktywującego",
+        "menu_show_history": "Pokaż historię transkrypcji",
+        "menu_settings": "Ustawienia…",
+        "menu_quit": "Zakończ",
+        # Status-bar message after the user saves the Settings dialog.
+        "settings_saved_notice": "Ustawienia zapisane — uruchom Korder ponownie, aby zmiany weszły w życie.",
     },
     "en": {
         "listening_placeholder": "Say a command…",
@@ -104,6 +116,15 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_locking_screen": "Locking screen…",
         "progress_lock_failed": "Lock failed: {error}",
         "progress_xdg_failed": "xdg-open failed: {error}",
+        "tray_tooltip_idle": "Korder — voice transcription",
+        "tray_tooltip_wake_listening": "Korder — listening for wake word",
+        "tray_tooltip_dictating": "Korder — recording…",
+        "menu_toggle_recording": "Toggle recording",
+        "menu_wake_listening": "Wake-word listening",
+        "menu_show_history": "Show transcript history",
+        "menu_settings": "Settings…",
+        "menu_quit": "Quit",
+        "settings_saved_notice": "Settings saved — restart Korder for all changes to take effect.",
     },
 }
 

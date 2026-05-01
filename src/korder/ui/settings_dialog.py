@@ -33,6 +33,12 @@ _LANGS = ["", "pl", "en", "de", "fr", "es", "it", "uk", "cs", "ru"]
 _PASTE_MODES = ["auto", "always", "never"]
 _PARSERS = ["regex", "llm"]
 _SAMPLE_RATES = ["16000", "32000", "48000"]
+# openwakeword 0.6 stock catalog — common wake phrases that ship as
+# pretrained models (downloaded on first use). Custom phrases require
+# training your own model; the editable combo in the Settings dialog
+# still accepts arbitrary text for that case.
+_WAKE_PHRASES = ["hey_jarvis", "alexa", "hey_mycroft", "hey_rhasspy"]
+_WAKE_ENGINES = ["openwakeword"]
 
 # KDE HIG spacings (px). Dialog outer margins and inter-widget spacing are
 # 9 / 6 respectively in Plasma's own configuration modules.
@@ -150,6 +156,7 @@ class SettingsDialog(QDialog):
         self._tabs.addTab(self._build_audio_whisper_tab(), "Mic && Whisper")
         self._tabs.addTab(self._build_actions_tab(), "Actions && Output")
         self._tabs.addTab(self._build_spotify_tab(), "Spotify")
+        self._tabs.addTab(self._build_wake_tab(), "Wake word")
         self._tabs.addTab(self._build_general_tab(), "General")
         layout.addWidget(self._tabs, 1)
 
@@ -384,6 +391,75 @@ class SettingsDialog(QDialog):
         outer.addStretch(1)
         return page
 
+    def _build_wake_tab(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
+        outer.setSpacing(_SPACING * 2)
+
+        info = _InfoBanner(
+            "Hands-free activation: speak the wake phrase to start a "
+            "dictation session as if you'd pressed the hotkey. The "
+            "hotkey path keeps working alongside. Requires the "
+            "<code>wake</code> optional extra: install with "
+            "<code>uv sync --extra wake</code>."
+        )
+        outer.addWidget(info)
+
+        wake = QGroupBox("Wake word")
+        f = _make_form(wake)
+
+        self._wake_enabled = QCheckBox("Listen for the wake phrase while idle")
+        self._wake_enabled.setToolTip(
+            "When checked, the mic stays open and the configured phrase "
+            "triggers a dictation session. Off by default — manual "
+            "hotkey is the only activation path."
+        )
+        f.addRow("", self._wake_enabled)
+
+        self._wake_engine = QComboBox()
+        self._wake_engine.addItems(_WAKE_ENGINES)
+        self._wake_engine.setToolTip("Detection backend. Only openwakeword today.")
+        f.addRow("Engine:", self._wake_engine)
+
+        self._wake_phrase = QComboBox()
+        self._wake_phrase.setEditable(True)
+        self._wake_phrase.addItems(_WAKE_PHRASES)
+        self._wake_phrase.setToolTip(
+            "openwakeword catalog model name. The four stock options are "
+            "pretrained and download on first use; custom phrases require "
+            "training your own ONNX model and pointing at it by name."
+        )
+        f.addRow("Phrase:", self._wake_phrase)
+
+        self._wake_sensitivity = QDoubleSpinBox()
+        self._wake_sensitivity.setRange(0.10, 0.95)
+        self._wake_sensitivity.setSingleStep(0.05)
+        self._wake_sensitivity.setDecimals(2)
+        self._wake_sensitivity.setToolTip(
+            "Detection threshold. Lower fires more often (more false "
+            "positives), higher misses softer wakes. 0.5 is a reasonable "
+            "starting point; tune up if your phrase fires randomly, down "
+            "if it misses calls."
+        )
+        f.addRow("Sensitivity:", self._wake_sensitivity)
+
+        self._wake_idle_timeout = QSpinBox()
+        self._wake_idle_timeout.setRange(0, 30)
+        self._wake_idle_timeout.setSuffix(" s")
+        self._wake_idle_timeout.setSpecialValueText("0 — never auto-cancel")
+        self._wake_idle_timeout.setToolTip(
+            "If the wake phrase fires but no follow-up speech arrives "
+            "within this many seconds, the dictation cancels back to "
+            "wake-listening. Catches accidental wakes that would "
+            "otherwise leave the OSD stuck open. 0 disables the timeout."
+        )
+        f.addRow("Idle timeout:", self._wake_idle_timeout)
+
+        outer.addWidget(wake)
+        outer.addStretch(1)
+        return page
+
     def _build_general_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
@@ -475,6 +551,26 @@ class SettingsDialog(QDialog):
         self._spotify_client_id.setText(c["spotify"]["client_id"])
         self._spotify_client_secret.setText(c["spotify"]["client_secret"])
 
+        # Wake word
+        self._wake_enabled.setChecked(_truthy(c["wake"].get("enabled", "false")))
+        engine = c["wake"].get("engine", "openwakeword")
+        ei = self._wake_engine.findText(engine)
+        self._wake_engine.setCurrentIndex(ei if ei >= 0 else 0)
+        phrase = c["wake"].get("phrase", "hey_jarvis")
+        pi = self._wake_phrase.findText(phrase)
+        if pi >= 0:
+            self._wake_phrase.setCurrentIndex(pi)
+        else:
+            self._wake_phrase.setCurrentText(phrase)
+        try:
+            self._wake_sensitivity.setValue(float(c["wake"].get("sensitivity", "0.5")))
+        except (KeyError, ValueError):
+            self._wake_sensitivity.setValue(0.5)
+        try:
+            self._wake_idle_timeout.setValue(int(float(c["wake"].get("idle_timeout_s", "5"))))
+        except (KeyError, ValueError):
+            self._wake_idle_timeout.setValue(5)
+
         # UI
         self._show_history_on_start.setChecked(_truthy(c["ui"]["show_history_on_start"]))
         self._auto_stop_after_action.setChecked(_truthy(c["ui"]["auto_stop_after_action"]))
@@ -510,6 +606,12 @@ class SettingsDialog(QDialog):
 
         c["spotify"]["client_id"] = self._spotify_client_id.text().strip()
         c["spotify"]["client_secret"] = self._spotify_client_secret.text().strip()
+
+        c["wake"]["enabled"] = "true" if self._wake_enabled.isChecked() else "false"
+        c["wake"]["engine"] = self._wake_engine.currentText().strip()
+        c["wake"]["phrase"] = self._wake_phrase.currentText().strip() or "hey_jarvis"
+        c["wake"]["sensitivity"] = f"{self._wake_sensitivity.value():.2f}"
+        c["wake"]["idle_timeout_s"] = str(self._wake_idle_timeout.value())
 
         c["ui"]["show_history_on_start"] = "true" if self._show_history_on_start.isChecked() else "false"
         c["ui"]["auto_stop_after_action"] = "true" if self._auto_stop_after_action.isChecked() else "false"
