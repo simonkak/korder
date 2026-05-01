@@ -20,7 +20,6 @@ Window {
     readonly property int hPad: 14
     readonly property int vPad: 8
     readonly property int leadingW: 140
-    readonly property int trailingMinW: 80
     // Wider default so most utterances render on a single line. Cap at the
     // screen width minus margins so the pill never spans the whole display.
     readonly property int minW: 720
@@ -28,14 +27,20 @@ Window {
     // Target preferred width for the center transcription text — used as
     // a hint to RowLayout so the window grows to a comfortable size before
     // wrapping kicks in.
-    readonly property int centerTargetW: 480
+    readonly property int centerTargetW: 540
 
     // ---- Colors ----
     // Bright (locked partial, committed text), faded-toward-bg (flux), and
     // the accent that the leading dot/icon picks up by state.
     readonly property color promptColor: palette.windowText
     readonly property color statusColor: palette.placeholderText
+    // Flux: still-revising Whisper tail. Blend toward the window bg.
     readonly property color fluxColor: _blend(promptColor, palette.window, 0.45)
+    // Hint: inline auxiliary info ("transcribing…", action name, pending
+    // param prompt). Distinct from flux: italic + further toward bg, so
+    // the eye can tell "this is system-state info" apart from "this is
+    // text Whisper hasn't settled on yet".
+    readonly property color hintColor: _blend(promptColor, palette.window, 0.35)
 
     // KDE Plasma blue for "active" states. Tied to palette.highlight when
     // available so themed users get their own accent; fallback to KDE blue.
@@ -56,6 +61,7 @@ Window {
 
     readonly property string promptHex: _toHex(promptColor)
     readonly property string fluxHex: _toHex(fluxColor)
+    readonly property string hintHex: _toHex(hintColor)
 
     function _toHex(c) {
         function pad(n) { return ('0' + Math.round(n * 255).toString(16)).slice(-2); }
@@ -201,9 +207,11 @@ Window {
                     }
                 }
 
-                // Center: transcription with locked/flux highlighting + optional cursor.
-                // preferredWidth seeds the natural pill width; fillWidth lets it
-                // expand if there's room. preferredHeight grows with wrapped text.
+                // Center: prompt (locked) + flux (uncertain Whisper tail) +
+                // hint (system-state aux info — "transcribing…", action name,
+                // pending-param prompt) all inlined in one wrapping Text via
+                // RichText. Three color tiers communicate "settled / still
+                // deciding / system-context" without needing a separate chip.
                 Item {
                     Layout.fillWidth: true
                     Layout.preferredWidth: root.centerTargetW
@@ -216,7 +224,7 @@ Window {
                         anchors.rightMargin: root.hPad
                         spacing: 6
 
-                        // Blinking cursor (only shown for placeholder + pending states)
+                        // Blinking cursor (placeholder + pending states only).
                         Rectangle {
                             id: cursor
                             Layout.alignment: Qt.AlignVCenter
@@ -234,16 +242,43 @@ Window {
 
                         Text {
                             id: promptText
-                            // RichText only when we have a flux tail; otherwise
-                            // PlainText so italics/colors apply normally.
+                            // RichText whenever flux or status is present so
+                            // we can color the segments differently. Plain
+                            // text fallback only for the placeholder path
+                            // where italic+statusColor styling is uniform.
+                            readonly property bool _hasFlux:
+                                osdState && osdState.flux !== undefined &&
+                                osdState.flux.length > 0
+                            readonly property bool _hasStatus:
+                                osdState && osdState.status !== undefined &&
+                                osdState.status.length > 0
                             readonly property bool _useRich:
                                 osdState && !osdState.placeholderMode &&
-                                osdState.flux !== undefined && osdState.flux.length > 0
+                                (_hasFlux || _hasStatus)
 
-                            text: _useRich
-                                ? '<font color="' + root.promptHex + '">' + root._escHtml(osdState.prompt) + '</font>' +
-                                  '<font color="' + root.fluxHex + '">' + root._escHtml(osdState.flux) + '</font>'
-                                : (osdState ? osdState.prompt : "")
+                            text: {
+                                if (!osdState) return "";
+                                if (osdState.placeholderMode || !_useRich) {
+                                    return osdState.prompt;
+                                }
+                                var parts = [];
+                                parts.push('<font color="' + root.promptHex + '">' +
+                                           root._escHtml(osdState.prompt) + '</font>');
+                                if (_hasFlux) {
+                                    parts.push('<font color="' + root.fluxHex + '">' +
+                                               root._escHtml(osdState.flux) + '</font>');
+                                }
+                                if (_hasStatus) {
+                                    // Subtle separator + italic hint. The
+                                    // <i>...</i> turns italic on for just
+                                    // this span; the <font color> dims it.
+                                    var sep = osdState.prompt.length > 0 ? "  ·  " : "";
+                                    parts.push('<font color="' + root.hintHex + '"><i>' +
+                                               root._escHtml(sep + osdState.status) +
+                                               '</i></font>');
+                                }
+                                return parts.join("");
+                            }
                             textFormat: _useRich ? Text.RichText : Text.PlainText
                             color: osdState && osdState.placeholderMode
                                 ? root.statusColor
@@ -257,43 +292,8 @@ Window {
                             verticalAlignment: Text.AlignVCenter
                             Layout.alignment: Qt.AlignVCenter
                             Layout.fillWidth: true
-                            Layout.maximumWidth: root.maxW - root.leadingW - root.trailingMinW - root.hPad * 4
+                            Layout.maximumWidth: root.maxW - root.leadingW - root.hPad * 3
                         }
-                    }
-                }
-
-                // Trailing: status hint (action name during Executing,
-                // pending param hint, transcribing label, etc.). Empty
-                // when the state label alone is sufficient — section
-                // collapses to width 0 in that case.
-                Item {
-                    visible: osdState && osdState.status.length > 0
-                    Layout.preferredWidth: visible ? Math.min(220, statusChipText.implicitWidth + 28) : 0
-                    Layout.fillHeight: true
-                    Layout.alignment: Qt.AlignVCenter
-
-                    Rectangle {
-                        id: divider2
-                        width: 1
-                        height: parent.height - 12
-                        anchors.left: parent.left
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.12)
-                        visible: parent.visible
-                    }
-
-                    Text {
-                        id: statusChipText
-                        anchors.fill: parent
-                        anchors.leftMargin: 12
-                        anchors.rightMargin: root.hPad
-                        text: osdState ? osdState.status : ""
-                        color: root.statusColor
-                        font.pixelSize: 12
-                        font.italic: true
-                        verticalAlignment: Text.AlignVCenter
-                        horizontalAlignment: Text.AlignRight
-                        elide: Text.ElideRight
                     }
                 }
             }
