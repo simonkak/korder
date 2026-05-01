@@ -317,23 +317,25 @@ def _announce_pulse_identity() -> None:
     from the binary name. Also installs the bundled tray SVG into the
     user's hicolor icon theme so the icon_name lookup resolves.
 
-    Three env vars are set, covering the three connection paths an app
-    on Linux can take to the audio server today:
+    Two env vars are set, both via setdefault so user overrides win:
 
-    * ``PIPEWIRE_PROPS`` — read by libpipewire when it initializes a
-      client. The pipewire-alsa bridge (which is how we connect, since
-      sounddevice → PortAudio → ALSA → pipewire-alsa) calls
-      ``pw_init()`` internally and picks this up. This is the env var
-      that actually fixes the labeling on a standard PipeWire desktop.
-    * ``PULSE_PROP`` — read by libpulse. Only matters on machines
-      running plain PulseAudio (not pipewire-pulse), but cheap to set.
-    * ``PIPEWIRE_NODE_DESCRIPTION`` — backstop for older PipeWire
-      versions whose ALSA bridge ignores PIPEWIRE_PROPS but still
-      respects this older node-level knob.
+    * ``PIPEWIRE_ALSA`` — read by libasound_module_pcm_pipewire.so (the
+      ALSA-to-PipeWire bridge through which sounddevice → PortAudio →
+      ALSA actually reaches PipeWire). Format is SPA-JSON: a dict of
+      properties merged onto the stream node at creation. This is the
+      env var that actually overrides the bridge's default
+      "ALSA plug-in [<prgname>]" labelling.
+    * ``PULSE_PROP`` — read by libpulse, on the off chance someone is
+      on plain PulseAudio rather than pipewire-pulse.
 
-    All three are no-ops if already set (setdefault preserves any
-    user override). MUST run before sounddevice opens any stream —
-    the audio client lib reads these once, on first connect.
+    A previous attempt set ``PIPEWIRE_PROPS`` (libpipewire's
+    context-level dict). It does not propagate to the ALSA bridge's
+    stream node and, with a slightly off format, can stall ``pw_init``
+    when the first stream opens — which freezes the Qt event loop
+    before the tray ever shows. PIPEWIRE_ALSA is the correct knob.
+
+    MUST run before sounddevice opens any stream — both env vars are
+    read once, when the audio backend connects.
     """
     # Install our SVG into the user's icon theme if missing. Failure
     # here is non-fatal — the stream still gets renamed, it just
@@ -345,17 +347,15 @@ def _announce_pulse_identity() -> None:
     except OSError as e:
         print(f"[korder] couldn't install tray icon: {e}", file=sys.stderr)
 
-    # PIPEWIRE_PROPS uses a JSON-like dict (PipeWire's "SPA" format).
-    # Quoting the keys is optional; quoting the values isn't, since
-    # they may contain spaces. The bridge merges these on top of its
-    # default "ALSA plug-in [<prgname>]" so application.name wins.
+    # SPA-JSON dict for the pipewire-alsa bridge. node.name is what
+    # the volume mixer surfaces in the Strumienie wejściowe row.
     os.environ.setdefault(
-        "PIPEWIRE_PROPS",
-        '{ application.name = "Korder" application.icon_name = "korder" }',
+        "PIPEWIRE_ALSA",
+        '{ application.name = "Korder" '
+        'application.icon_name = "korder" '
+        'node.name = "Korder" }',
     )
-    # Older pipewire-alsa versions only honour the node-level env vars.
-    os.environ.setdefault("PIPEWIRE_NODE_DESCRIPTION", "Korder")
-    # PULSE_PROP is space-separated key=value pairs.
+    # PULSE_PROP is space-separated key=value pairs (libpulse format).
     os.environ.setdefault(
         "PULSE_PROP",
         "application.name=Korder application.icon_name=korder",
