@@ -40,6 +40,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         # declares a known parameter name (query / kind / address / …).
         "say_the_param_query": "powiedz zapytanie…",
         "say_the_param_kind": "powiedz rodzaj…",
+        # Action-specific confirmation prompts for destructive power
+        # actions. Resolved as `pending_prompt_<action_name>` in
+        # _on_pending_action, ahead of the per-parameter fallback.
+        "pending_prompt_shutdown": "Wyłączyć komputer? powiedz „tak”",
+        "pending_prompt_reboot": "Zrestartować komputer? powiedz „tak”",
+        "pending_prompt_sleep": "Uśpić komputer? powiedz „tak”",
         # Spotify "kind" labels — used in progress narration like
         # "Found album: Linkin Park"
         "kind_album": "album",
@@ -108,6 +114,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "press_to_cancel": "Press ESC to cancel",
         "say_the_param_query": "say the query…",
         "say_the_param_kind": "say the kind…",
+        "pending_prompt_shutdown": "Shut down the computer? say 'yes' to confirm",
+        "pending_prompt_reboot": "Restart the computer? say 'yes' to confirm",
+        "pending_prompt_sleep": "Suspend the computer? say 'yes' to confirm",
         "kind_album": "album",
         "kind_track": "track",
         "kind_artist": "artist",

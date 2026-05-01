@@ -878,10 +878,17 @@ class MainWindow(QMainWindow):
         if action and action.parameters:
             param_label = next(iter(action.parameters.keys()))
         prompt_so_far = self._osd._state.prompt or action_name
-        # Look up a per-parameter hint; if the action's param name doesn't
-        # have a dedicated localized string (we ship "query" and "kind"),
-        # fall back to the generic pending-parameter hint.
-        if param_label:
+        # Hint resolution: try action-specific pending prompt first
+        # (e.g. "Shut down the computer? say 'yes'" for shutdown), then
+        # per-parameter prompt ("say the query…" for spotify_search),
+        # then generic ("say the parameter…"). i18n's t() returns the
+        # key itself when no translation exists, so a key-equals-result
+        # comparison detects the miss.
+        action_key = f"pending_prompt_{action_name}"
+        action_hint = t(action_key)
+        if action_hint != action_key:
+            hint = action_hint
+        elif param_label:
             specific_key = f"say_the_param_{param_label}"
             specific = t(specific_key)
             hint = specific if specific != specific_key else t("pending_param_hint")
