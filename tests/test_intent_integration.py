@@ -78,16 +78,40 @@ def test_stop_playback_distinct_from_play_pause(parser):
 
 # ---- Volume control ------------------------------------------------------
 
-@pytest.mark.parametrize("phrase, expected_kind", [
+@pytest.mark.parametrize("phrase, expected_dir", [
     ("głośniej", "up"),
     ("louder", "up"),
     ("ciszej", "down"),
     ("quieter", "down"),
 ])
-def test_volume_commands(parser, phrase, expected_kind):
+def test_volume_commands(parser, phrase, expected_dir):
     ops = parser.parse(phrase)
-    assert any(op == ("system_volume", expected_kind) for op in ops), \
-        f"{phrase!r} expected system_volume {expected_kind}; got {ops!r}"
+    vol_ops = [op for op in ops if op[0] == "system_volume"]
+    assert vol_ops, f"{phrase!r} produced no system_volume op; got {ops!r}"
+    direction, _step_pct = vol_ops[0][1]
+    assert direction == expected_dir, \
+        f"{phrase!r} expected direction {expected_dir!r}; got {vol_ops[0]!r}"
+
+
+@pytest.mark.parametrize("phrase, expected_dir, min_step", [
+    ("znacznie głośniej", "up", 10),
+    ("much louder", "up", 10),
+    ("głośniej o 20 procent", "up", 15),
+    ("louder by 20%", "up", 15),
+    ("ciszej o 30%", "down", 20),
+])
+def test_volume_magnitude(parser, phrase, expected_dir, min_step):
+    """Magnitude qualifiers should bump step_pct beyond the 5% default.
+    'min_step' is a soft floor — the LLM may pick a slightly different
+    number, but it should clearly exceed default-5 for these phrasings."""
+    ops = parser.parse(phrase)
+    vol_ops = [op for op in ops if op[0] == "system_volume"]
+    assert vol_ops, f"{phrase!r} produced no system_volume op; got {ops!r}"
+    direction, step_pct = vol_ops[0][1]
+    assert direction == expected_dir, \
+        f"{phrase!r} expected {expected_dir!r}; got {vol_ops[0]!r}"
+    assert step_pct >= min_step, \
+        f"{phrase!r} expected step_pct >= {min_step}; got {step_pct}"
 
 
 # ---- False positive avoidance --------------------------------------------
@@ -257,11 +281,14 @@ def test_multiple_actions_preserved_in_order(parser):
     action_ops = [op for op in ops if op[0] in ("key", "combo", "callable", "system_volume")]
     assert any(op == ("key", KEY_ENTER) for op in action_ops), \
         f"Expected press_enter; got {ops!r}"
-    assert any(op == ("system_volume", "down") for op in action_ops), \
-        f"Expected volume_down; got {ops!r}"
+    voldown = next(
+        (op for op in action_ops if op[0] == "system_volume" and op[1][0] == "down"),
+        None,
+    )
+    assert voldown is not None, f"Expected volume_down; got {ops!r}"
     # Ordering: enter before volume_down (matches utterance order)
     enter_idx = next(i for i, op in enumerate(action_ops) if op == ("key", KEY_ENTER))
-    voldown_idx = next(i for i, op in enumerate(action_ops) if op == ("system_volume", "down"))
+    voldown_idx = action_ops.index(voldown)
     assert enter_idx < voldown_idx, f"action order wrong: {action_ops!r}"
 
 

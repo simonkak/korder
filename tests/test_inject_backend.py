@@ -110,6 +110,33 @@ def test_volume_up_routes_through_wpctl(fake_backend):
     ]
 
 
+def test_volume_op_with_explicit_step(fake_backend):
+    """system_volume payload of (direction, step_pct) lets the LLM bump
+    the wpctl step beyond the 5% default for 'znacznie głośniej' /
+    'louder by 20%' utterances."""
+    backend, _ = fake_backend
+    calls: list[list[str]] = []
+    def capture(cmd, *a, **kw):
+        calls.append(cmd)
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+    from korder import inject as inject_mod
+    backend_module_run = inject_mod.subprocess.run
+    inject_mod.subprocess.run = capture
+    try:
+        backend.execute_ops([("system_volume", ("up", 20))])
+        backend.execute_ops([("system_volume", ("down", 2))])
+        backend.execute_ops([("system_volume", ("mute_toggle", 0))])
+    finally:
+        inject_mod.subprocess.run = backend_module_run
+    assert calls[0] == ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "20%+"]
+    assert calls[1] == ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "2%-"]
+    assert calls[2] == ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]
+
+
 def test_play_music_emits_play_pause_keycode(fake_backend):
     backend, calls = fake_backend
     backend.type("play music")

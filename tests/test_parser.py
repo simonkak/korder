@@ -105,9 +105,9 @@ def test_consecutive_actions_no_text_between():
 def test_volume_up_uses_wpctl_op():
     """Volume actions emit the system_volume op kind; the inject backend
     runs wpctl directly. KEY_VOLUMEUP keycode path was removed because
-    KDE's media-key handler raced with the ducker."""
+    KDE's media-key handler raced with the ducker. Default step is 5%."""
     ops = split_into_ops("głośniej")
-    assert ops == [("system_volume", "up")]
+    assert ops == [("system_volume", ("up", 5))]
 
 
 def test_play_music_uses_media_keycode():
@@ -124,7 +124,7 @@ def test_text_then_volume_action():
     ops = split_into_ops("write this then volume down")
     assert ops == [
         ("text", "write this then"),
-        ("system_volume", "down"),
+        ("system_volume", ("down", 5)),
     ]
 
 

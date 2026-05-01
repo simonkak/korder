@@ -152,27 +152,36 @@ class YdotoolBackend:
         except Exception as e:
             print(f"[korder] callable action failed: {e}", flush=True)
 
-    def _run_system_volume(self, kind: str) -> None:
+    def _run_system_volume(self, payload) -> None:
         """Adjust the default audio sink directly via wpctl. Replaces the
         old KEY_VOLUMEUP/DOWN/MUTE keycode path: routing through KDE's
         media-key handler raced with the ducker (the keycode arrived at
         plasma-pa before our wpctl-set 'restore' value had propagated
         there), so 'louder' would land on the still-ducked level. Going
         through wpctl matches the ducker's own write path — same IPC
-        channel, no synchronization surprises."""
-        if kind == "up":
-            args = ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"]
-        elif kind == "down":
-            args = ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"]
-        elif kind == "mute_toggle":
+        channel, no synchronization surprises.
+
+        Payload is (direction, step_pct). step_pct is an int percent of
+        full scale; ignored for mute_toggle. Action layer is responsible
+        for clamping to a sane range."""
+        try:
+            direction, step_pct = payload
+        except (TypeError, ValueError):
+            print(f"[korder] system_volume: bad payload {payload!r}", flush=True)
+            return
+        if direction == "up":
+            args = ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{step_pct}%+"]
+        elif direction == "down":
+            args = ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{step_pct}%-"]
+        elif direction == "mute_toggle":
             args = ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]
         else:
-            print(f"[korder] system_volume: unknown kind {kind!r}", flush=True)
+            print(f"[korder] system_volume: unknown direction {direction!r}", flush=True)
             return
         try:
             subprocess.run(args, check=False, capture_output=True, timeout=2.0)
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            print(f"[korder] system_volume {kind} failed: {e}", flush=True)
+            print(f"[korder] system_volume {direction} failed: {e}", flush=True)
 
     def _run_subprocess(self, args: list[str]) -> None:
         """Issue a system command (volume, media, etc.) — fire and forget.

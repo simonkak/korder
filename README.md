@@ -251,6 +251,7 @@ intent.
 | Delete word       | "delete word"                     | "usuń słowo", "skasuj słowo"          |
 | Select line       | "select line"                     | "zaznacz linię"                       |
 | Volume up/down    | "louder" / "quieter"              | "głośniej" / "ciszej"                 |
+| …with magnitude   | "much louder", "louder by 20%"    | "znacznie głośniej", "głośniej o 20%" |
 | Play/pause        | "play music", "pause"             | "puść muzykę", "pauza", "wznów"       |
 | Stop playback     | "stop playback"                   | "zatrzymaj odtwarzanie"               |
 | Next/prev track   | "next song" / "previous song"     | "następna piosenka" / "poprzednia"    |
