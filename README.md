@@ -11,8 +11,11 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
 ## Features
 
 - **Live transcription** via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with the Vulkan backend (GPU-accelerated on AMD/Nvidia/Intel)
-- **Multi-state layer-shell OSD** (org.kde.layershell) — overlay never steals focus, stays above all windows; shows a status hint ("listening", "thinking", pending-parameter prompt) with a blinking cursor while you're mid-utterance
-- **System tray app** with global hotkey (KGlobalAccel via the IPC `korder toggle` command) and a Settings… dialog covering every config key — no hand-editing required
+- **Pill-shaped layer-shell OSD** (org.kde.layershell) — overlay never steals focus, stays above all windows. Anchored to the bottom of the screen, semi-transparent so KWin's Blur effect picks it up automatically. Three sections:
+    - leading: animated accent dot + state label (*Słucham → Myślę → Wykonuję → Gotowe*)
+    - center: your transcription, with **locked-prefix highlighting** — the longest word-aligned common prefix between successive Whisper partials renders bright while the still-revising tail fades, so the eye knows what's settled. Action progress narration (*"Searching Spotify for Linkin Park… → Found album: Linkin Park → Playing Linkin Park"*) renders inline in your Plasma accent color, italic, distinct from your spoken command.
+    - "Press ESC to cancel" hint below the pill while listening.
+- **System tray app** with global hotkeys (KGlobalAccel via the IPC `korder toggle` and `korder cancel` commands) and a Settings… dialog covering every config key — no hand-editing required
 - **Write mode toggle** — say *"Pisz"* to start typing into the focused app, *"Przestań"* to stop. Default is preview-only.
 - **Action vocabulary** dispatched via either a regex parser or a local LLM (Gemma via ollama):
     - Keys: Enter, Tab, Escape, Backspace
@@ -20,6 +23,8 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
     - Media: volume up/down/mute, play/pause, stop, next/previous track (via kernel media keycodes — KDE routes to MPRIS + PipeWire automatically)
     - Now playing: ask *"what's playing"* / *"co teraz gra"* and Korder reads MPRIS metadata from the active player (Spotify, Firefox, mpv, …) and pops a desktop notification with track + artist
     - Spotify: search and play albums, tracks, artists, or playlists via the Web API (free Client Credentials flow, no Premium required for search). When you don't say what kind ("Spotify play *Pink Floyd*"), one request fans out across all four types and the closest name match wins — artist > album > track > playlist within each match tier.
+    - Web actions (xdg-routed, opens default browser): web search (DuckDuckGo / Google / Bing / Startpage / Ecosia), YouTube search, Wikipedia (auto-picks language from system locale), Maps
+    - System: lock screen via `xdg-screensaver lock`
 - **Pending parameter handling** — say *"Spotify play"* … pause to think … *"Linkin Park"* and the second utterance becomes the search query for the first action
 - **Polish + English** trigger phrases for every action
 - **Optional Gemma thinking step** — slower (~1–2 s vs ~500 ms) but resolves ambiguous phrasings without hand-coded triggers; toggle via `[intent] thinking_mode`
@@ -133,6 +138,13 @@ auto_stop_after_action = true   # stop recording once a command-style action
 [spotify]
 client_id =
 client_secret =
+
+# Engine for the "search the web for X" / "google X" / "wyszukaj X" voice
+# action. Supported: duckduckgo (default), google, bing, startpage, ecosia.
+# YouTube/Wikipedia/Maps actions don't read this — they go to their
+# canonical URL.
+[web]
+search_engine = duckduckgo
 ```
 
 ## Voice commands (when LLM mode is on)
@@ -155,6 +167,11 @@ intent.
 | Spotify track     | "spotify play track Numb"         | "spotify zagraj utwór Numb"           |
 | Spotify artist    | "spotify play artist Pink Floyd"  | "spotify zagraj wykonawcę Pink Floyd" |
 | Spotify playlist  | "spotify play playlist workout"   | "spotify zagraj playlistę workout"    |
+| Web search        | "search for X", "google X"        | "wyszukaj X", "wygoogluj X"           |
+| YouTube           | "play X on YouTube"               | "puść X na YouTube"                   |
+| Wikipedia         | "wikipedia X", "tell me about X"  | "co to jest X", "kim jest X"          |
+| Maps              | "navigate to X", "where is X"     | "nawiguj do X", "gdzie jest X"        |
+| Lock screen       | "lock screen"                     | "zablokuj ekran"                      |
 | Write mode on     | "start writing"                   | "pisz"                                |
 | Write mode off    | "stop writing"                    | "przestań"                            |
 
