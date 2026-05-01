@@ -11,27 +11,39 @@ import pytest
 
 
 def _install_fake_openwakeword(monkeypatch, predict_returns):
-    """Inject a fake openwakeword.model.Model into sys.modules so the
-    deferred import inside WakeWordDetector.start() picks it up.
-    `predict_returns` is a callable invoked with each predict() chunk
-    and must return a dict {phrase: score}."""
+    """Inject fake openwakeword.model.Model + utils.download_models
+    into sys.modules so the deferred import inside
+    WakeWordDetector.start() picks them up. `predict_returns` is a
+    callable invoked with each predict() chunk and must return a dict
+    {phrase: score}."""
     fake_model = MagicMock()
     fake_model.predict.side_effect = predict_returns
 
-    def fake_factory(wakeword_models):
+    def fake_factory(wakeword_models, inference_framework=None, **_kwargs):
         # Round-trip the phrase so callers can assert the model was
-        # asked for the right one.
+        # asked for the right one + with the right backend.
         fake_model.requested = list(wakeword_models)
+        fake_model.inference_framework = inference_framework
         return fake_model
 
-    fake_module = types.ModuleType("openwakeword.model")
-    fake_module.Model = fake_factory
+    download_calls: list[list[str]] = []
+    def fake_download(model_names):
+        download_calls.append(list(model_names))
+
+    fake_model_module = types.ModuleType("openwakeword.model")
+    fake_model_module.Model = fake_factory
+
+    fake_utils_module = types.ModuleType("openwakeword.utils")
+    fake_utils_module.download_models = fake_download
 
     fake_top = types.ModuleType("openwakeword")
-    fake_top.model = fake_module
+    fake_top.model = fake_model_module
+    fake_top.utils = fake_utils_module
 
     monkeypatch.setitem(sys.modules, "openwakeword", fake_top)
-    monkeypatch.setitem(sys.modules, "openwakeword.model", fake_module)
+    monkeypatch.setitem(sys.modules, "openwakeword.model", fake_model_module)
+    monkeypatch.setitem(sys.modules, "openwakeword.utils", fake_utils_module)
+    fake_model.download_calls = download_calls
     return fake_model
 
 
@@ -58,6 +70,12 @@ def test_start_loads_model_and_subscribes(monkeypatch, fake_recorder):
 
     assert det.is_running
     assert fake_model.requested == ["hey_jarvis"]
+    # ONNX backend is forced — pyproject overrides tflite-runtime out
+    # of the resolver, so we must not let openwakeword default to it.
+    assert fake_model.inference_framework == "onnx"
+    # Pre-download is invoked so the first-ever start of a new phrase
+    # doesn't surface a confusing missing-file error inside Model.
+    assert fake_model.download_calls == [["hey_jarvis"]]
     fake_recorder.subscribe.assert_called_once_with(det._on_frame)
 
 

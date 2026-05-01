@@ -59,19 +59,35 @@ class WakeWordDetector(QObject):
 
     def start(self) -> None:
         """Load the model (if not already loaded) and begin listening.
-        Raises ImportError if the openwakeword extra isn't installed."""
+        Raises ImportError if the openwakeword extra isn't installed.
+        First call ever for a given phrase downloads ~3-5 MB of ONNX
+        weights from openwakeword's GitHub release; subsequent starts
+        hit the local cache and are instant."""
         if self._running:
             return
         if self._model is None:
             try:
                 from openwakeword.model import Model
+                from openwakeword.utils import download_models
             except ImportError as e:
                 raise ImportError(
                     "openwakeword is required for wake-word activation. "
                     "Install with `uv sync --extra wake`."
                 ) from e
             try:
-                self._model = Model(wakeword_models=[self._phrase])
+                # Pre-download in case this phrase has never been used
+                # on this machine. download_models is a no-op when the
+                # files are already present, and skipping the call would
+                # surface a confusing FileNotFoundError deep in Model.
+                download_models([self._phrase])
+                # inference_framework="onnx" sidesteps openwakeword's
+                # tflite default — we deliberately don't ship
+                # tflite-runtime (no cp312 wheels) and the override in
+                # pyproject.toml stops the resolver from trying to.
+                self._model = Model(
+                    wakeword_models=[self._phrase],
+                    inference_framework="onnx",
+                )
             except Exception as e:
                 raise RuntimeError(
                     f"failed to load wake-word model {self._phrase!r}: {e}"

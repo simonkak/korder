@@ -33,11 +33,11 @@ _LANGS = ["", "pl", "en", "de", "fr", "es", "it", "uk", "cs", "ru"]
 _PASTE_MODES = ["auto", "always", "never"]
 _PARSERS = ["regex", "llm"]
 _SAMPLE_RATES = ["16000", "32000", "48000"]
-# openwakeword's stock catalog — common wake phrases that ship as
-# pretrained ONNX models. Custom phrases require training your own
-# model; a free-text Other option still lets users point at a local
-# model name.
-_WAKE_PHRASES = ["hey_jarvis", "alexa", "hey_mycroft", "ok_nabu"]
+# openwakeword 0.6 stock catalog — common wake phrases that ship as
+# pretrained models (downloaded on first use). Custom phrases require
+# training your own model; the editable combo in the Settings dialog
+# still accepts arbitrary text for that case.
+_WAKE_PHRASES = ["hey_jarvis", "alexa", "hey_mycroft", "hey_rhasspy"]
 _WAKE_ENGINES = ["openwakeword"]
 
 # KDE HIG spacings (px). Dialog outer margins and inter-widget spacing are

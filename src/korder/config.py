@@ -71,7 +71,7 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # only option today.
         "engine": "openwakeword",
         # With openwakeword, this is the model name from its pretrained
-        # catalog (hey_jarvis, alexa, hey_mycroft, ok_nabu, …). Custom
+        # catalog (hey_jarvis, alexa, hey_mycroft, hey_rhasspy). Custom
         # phrases require training your own model.
         "phrase": "hey_jarvis",
         # Detection threshold (0.0-1.0). Lower fires more often (more
