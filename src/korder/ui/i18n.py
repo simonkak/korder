@@ -18,6 +18,9 @@ _STRINGS: dict[str, dict[str, str]] = {
     "pl": {
         # OSD placeholders + state labels
         "listening_placeholder": "Powiedz polecenie…",
+        # Shown after a pure-text commit where the LLM didn't recognize
+        # any action — recorder stays open, user can retry.
+        "didnt_get_that": "Nie zrozumiałem. Powiedz polecenie…",
         "thinking": "myślę…",
         "executing": "wykonuję",
         "transcribing": "transkrybuję…",
@@ -79,6 +82,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
     "en": {
         "listening_placeholder": "Say a command…",
+        "didnt_get_that": "I didn't get that. Say a command…",
         "thinking": "thinking…",
         "executing": "executing",
         "transcribing": "transcribing…",

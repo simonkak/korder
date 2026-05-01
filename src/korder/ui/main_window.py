@@ -742,12 +742,60 @@ class MainWindow(QMainWindow):
             else:
                 self._osd.set_committed(original_text, transient_ms=1500)
 
-        # Auto-stop if a command-style action just ran. Deferred so the
-        # OSD's post-execution frame renders before recording stops.
-        if self._auto_stop_pending and self._auto_stop_after_action:
-            self._auto_stop_pending = False
+        # Capture "did a command fire this round?" before mutating the
+        # flag below. _auto_stop_pending is True iff command_executed
+        # fired during this inject worker's run.
+        command_fired = self._auto_stop_pending
+        self._auto_stop_pending = False  # always reset, never leak
+
+        # Auto-stop if a command-style action just ran AND auto-stop is
+        # configured. Deferred so the OSD's post-execution frame renders
+        # before recording stops.
+        if command_fired and self._auto_stop_after_action:
             if self._recorder.is_recording:
                 QTimer.singleShot(150, self._auto_stop)
+            return
+
+        # Pure-dictation path: the LLM produced no command actions this
+        # round (or auto-stop is off). If the recorder is still open and
+        # there's no pending parameter expected, give the user a fresh
+        # listening state with a "didn't get that" hint after a brief
+        # pause — long enough that a quick follow-up utterance starts
+        # transcribing first (set_partial transitions us to listening
+        # naturally and the reset becomes a no-op), short enough that a
+        # silent user sees the hint instead of a stale committed frame.
+        if (
+            not command_fired
+            and self._pending_action is None
+            and self._recorder.is_recording
+        ):
+            QTimer.singleShot(700, self._reset_to_listening_after_miss)
+
+    def _reset_to_listening_after_miss(self) -> None:
+        """Transition from 'committed' to a fresh 'listening' with a
+        'didn't get that' placeholder, so the user sees the LLM didn't
+        recognize a command and the recorder is ready for another try.
+        No-op if the user already started talking (set_partial moved us
+        to listening), entered pending mode, or stopped recording in
+        the interim."""
+        if not self._recorder.is_recording:
+            return
+        if self._pending_action is not None:
+            return
+        if self._osd._state.stateKind != "committed":
+            return
+        # Skip past the audio captured during Thinking/Executing/Done
+        # so the next partial-tick starts fresh — anything spoken
+        # during the system-busy window was unintended (the LLM just
+        # told us this round produced no command).
+        self._committed_samples = self._recorder.snapshot().shape[0]
+        self._reset_partial_render_state()
+        self._last_partial_norm = ""
+        self._stability_count = 0
+        self._osd.set_listening(
+            write_mode=self._write_mode,
+            placeholder_key="didnt_get_that",
+        )
 
     def _on_parse_started(self, prompt: str) -> None:
         """LLM parse is starting (only fires for the slow LLM parser)."""
