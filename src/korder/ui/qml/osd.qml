@@ -285,12 +285,17 @@ Window {
                             textFormat: _useRich ? Text.RichText : Text.PlainText
                             // Color resolution priority:
                             //  - placeholder: muted statusColor
-                            //  - feedback (action narration): state's accent
+                            //  - feedback (action narration): Plasma's
+                            //    palette.highlight (user-set accent color),
+                            //    NOT the per-state accent — feedback should
+                            //    feel like system text in any state, while
+                            //    the leading dot still varies by state for
+                            //    the activity-indicator role.
                             //  - normal: bright promptColor
                             color: {
                                 if (!osdState) return root.promptColor;
                                 if (osdState.placeholderMode) return root.statusColor;
-                                if (_isFeedback) return root.accentForState;
+                                if (_isFeedback) return root.accentColor;
                                 return root.promptColor;
                             }
                             font.pixelSize: 16
