@@ -300,6 +300,9 @@ across whichever language Whisper transcribes.
 | Wikipedia         | "wikipedia X", "tell me about X"                  |
 | Maps              | "navigate to X", "where is X"                     |
 | Lock screen       | "lock screen"                                     |
+| Shutdown          | "shutdown computer" (then "yes" to confirm)       |
+| Reboot            | "restart computer" (then "yes" to confirm)        |
+| Sleep             | "suspend computer" (then "yes" to confirm)        |
 | Write mode on     | "start writing"                                   |
 | Write mode off    | "stop writing"                                    |
 | Cancel session    | "cancel that", "nevermind", "forget it"           |

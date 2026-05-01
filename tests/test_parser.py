@@ -132,6 +132,41 @@ def test_pisz_emits_write_mode_on():
     assert split_into_ops("Pisz") == [("write_mode", True)]
 
 
+def test_shutdown_trigger_goes_pending_without_confirm():
+    """Power actions require confirmation. The trigger phrase alone
+    fires op_factory({}) which returns None — the parser then emits
+    pending_action so the next utterance is treated as the confirm
+    word. Same shape spotify_search uses for missing query."""
+    ops = split_into_ops("shutdown computer")
+    assert ops == [("pending_action", "shutdown")]
+
+
+def test_reboot_and_sleep_also_go_pending():
+    assert split_into_ops("restart computer") == [("pending_action", "reboot")]
+    assert split_into_ops("suspend computer") == [("pending_action", "sleep")]
+
+
+def test_shutdown_op_factory_yes_word_returns_callable():
+    """The op_factory's tri-state behaviour: yes-words fire, no-words
+    narrate cancellation, anything else returns None for fall-through."""
+    from korder.actions.base import get_action
+
+    action = get_action("shutdown")
+    assert action is not None
+
+    yes_op = action.op_factory({"confirm": "yes"})
+    assert yes_op is not None and yes_op[0] == "callable"
+
+    no_op = action.op_factory({"confirm": "anuluj"})
+    assert no_op is not None and no_op[0] == "callable"
+    # The no-op is a different callable than the do-action one — it
+    # narrates cancellation rather than running systemctl.
+    assert yes_op[1] is not no_op[1]
+
+    other = action.op_factory({"confirm": "what's the weather"})
+    assert other is None  # falls through
+
+
 def test_cancel_session_emits_cancel_op():
     """cancel_session emits a ('cancel', None) op; the inject worker
     detects it and aborts the whole batch rather than executing

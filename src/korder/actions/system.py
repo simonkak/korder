@@ -1,15 +1,19 @@
 """System / desktop-environment level actions.
 
 Things that affect the whole session rather than the focused app:
-locking the screen, suspending, etc. Most route through xdg-* tools
-so they work across DEs without needing KDE-specific glue.
+locking the screen, suspending, shutting down, etc. Most route through
+xdg-* / systemctl so they work across DEs without needing KDE-specific
+glue.
 
-Currently:
-- lock_screen → xdg-screensaver lock (works on any FreeDesktop-spec DE)
+Power actions (shutdown / reboot / sleep) require explicit voice
+confirmation through the pending_action flow — without a 'yes'-class
+follow-up word they don't fire, even on a clean trigger match. See
+_confirm_op_factory below for the tri-state semantics.
 """
 from __future__ import annotations
 
 import subprocess
+from typing import Callable
 
 from korder.actions.base import Action, register
 from korder.ui.i18n import t, tf
@@ -54,6 +58,195 @@ register(Action(
         ],
     },
     op_factory=lambda _args: ("callable", _do_lock_screen),
+))
+
+
+_YES_WORDS = frozenset({
+    "yes", "yeah", "yep", "yup", "ok", "okay", "sure", "confirm", "confirmed",
+    "tak", "potwierdzam", "potwierdz", "potwierdź", "okej", "dobrze", "jasne",
+})
+_NO_WORDS = frozenset({
+    "no", "nope", "nah", "negative", "cancel", "stop",
+    "nie", "anuluj", "rezygnuję", "rezygnuje", "zatrzymaj",
+})
+
+
+def _is_word(raw: str, vocab: frozenset[str]) -> bool:
+    """Strip trailing punctuation + lowercase + match against ``vocab``."""
+    word = raw.strip().lower().rstrip(".!,?…").strip()
+    # Allow phrases like "tak, wyłącz" → first word is the answer.
+    head = word.split()[0] if word else ""
+    return word in vocab or head in vocab
+
+
+def _make_confirm_op_factory(
+    do_action: Callable[[], None],
+    cancel_progress_key: str,
+):
+    """Build an op_factory for a power-state action that requires
+    voice confirmation. The returned factory is tri-state:
+
+      - empty/missing confirm → None → action goes pending, OSD asks
+        the user for a yes-word.
+      - confirm word in _YES_WORDS → returns the dangerous callable.
+      - confirm word in _NO_WORDS → returns a benign "cancelled"
+        narration callable. The pending state clears, recorder stays
+        listening for the next command.
+      - any other word → None → main-thread fallthrough re-parses the
+        new utterance as a fresh command. Catches the "user changed
+        their mind and asked for something else" case without forcing
+        an explicit cancel first.
+    """
+    def factory(args: dict) -> tuple | None:
+        raw = (args.get("confirm") or "").strip()
+        if not raw:
+            return None  # → pending, ask for confirmation
+        if _is_word(raw, _YES_WORDS):
+            return ("callable", do_action)
+        if _is_word(raw, _NO_WORDS):
+            return ("callable", lambda: emit_progress(t(cancel_progress_key)))
+        # Anything else: the user moved on. Fall through.
+        return None
+    return factory
+
+
+def _confirmable_action(
+    name: str,
+    description: str,
+    triggers: dict[str, list[str]],
+    runner: Callable[[], None],
+    cancel_progress_key: str,
+) -> Action:
+    return Action(
+        name=name,
+        description=description,
+        triggers=triggers,
+        op_factory=_make_confirm_op_factory(runner, cancel_progress_key),
+        parameters={
+            "confirm": {
+                "type": "string",
+                "description": (
+                    "Explicit confirmation word. Required because this "
+                    "action is destructive. Accepted: 'yes' / 'tak' / "
+                    "'confirm' / 'potwierdzam' to fire; 'no' / 'nie' / "
+                    "'cancel' / 'anuluj' to back out. Fill this when "
+                    "the user confirms in the same utterance ('shutdown "
+                    "yes', 'wyłącz komputer tak'); leave empty otherwise "
+                    "and Korder will ask separately."
+                ),
+            },
+        },
+    )
+
+
+def _do_shutdown() -> None:
+    emit_progress(t("progress_shutting_down"))
+    try:
+        subprocess.run(["systemctl", "poweroff"], check=False, capture_output=True, timeout=5)
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+        emit_progress(tf("progress_power_failed", action=t("progress_shutting_down"), error=str(e)))
+        print(f"[korder] shutdown: systemctl poweroff failed: {e}", flush=True)
+
+
+def _do_reboot() -> None:
+    emit_progress(t("progress_rebooting"))
+    try:
+        subprocess.run(["systemctl", "reboot"], check=False, capture_output=True, timeout=5)
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+        emit_progress(tf("progress_power_failed", action=t("progress_rebooting"), error=str(e)))
+        print(f"[korder] reboot: systemctl reboot failed: {e}", flush=True)
+
+
+def _do_suspend() -> None:
+    emit_progress(t("progress_suspending"))
+    try:
+        subprocess.run(["systemctl", "suspend"], check=False, capture_output=True, timeout=5)
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+        emit_progress(tf("progress_power_failed", action=t("progress_suspending"), error=str(e)))
+        print(f"[korder] sleep: systemctl suspend failed: {e}", flush=True)
+
+
+register(_confirmable_action(
+    name="shutdown",
+    description=(
+        "Power off the computer. Routes through `systemctl poweroff`. "
+        "Use ONLY when the user explicitly asks to shut down / power "
+        "off / turn off the computer. Do NOT fire on phrases like 'I'll "
+        "shut down later' or 'shut down the meeting' — those are "
+        "dictation, not commands. Distinct from reboot (restart) and "
+        "sleep (suspend). REQUIRES the confirm parameter (see params)."
+    ),
+    triggers={
+        "en": [
+            "shutdown computer",
+            "shut down computer",
+            "shut down the computer",
+            "power off computer",
+            "power off the computer",
+        ],
+        "pl": [
+            "wyłącz komputer",
+            "zamknij system",
+            "wyłącz system",
+        ],
+    },
+    runner=_do_shutdown,
+    cancel_progress_key="progress_shutdown_cancelled",
+))
+
+
+register(_confirmable_action(
+    name="reboot",
+    description=(
+        "Restart the computer. Routes through `systemctl reboot`. Use "
+        "ONLY when the user explicitly asks to restart / reboot the "
+        "computer. Do NOT fire on dictation like 'reboot the meeting'. "
+        "Distinct from shutdown (full power-off) and sleep (suspend). "
+        "REQUIRES the confirm parameter."
+    ),
+    triggers={
+        "en": [
+            "reboot computer",
+            "reboot the computer",
+            "restart computer",
+            "restart the computer",
+            "restart system",
+        ],
+        "pl": [
+            "uruchom ponownie komputer",
+            "zrestartuj komputer",
+            "zrestartuj system",
+        ],
+    },
+    runner=_do_reboot,
+    cancel_progress_key="progress_reboot_cancelled",
+))
+
+
+register(_confirmable_action(
+    name="sleep",
+    description=(
+        "Suspend the computer to RAM. Routes through `systemctl "
+        "suspend`. Use when the user asks to put the computer to "
+        "sleep / suspend it. Distinct from shutdown (full power-off) "
+        "and reboot (restart). REQUIRES the confirm parameter."
+    ),
+    triggers={
+        "en": [
+            "suspend computer",
+            "suspend the computer",
+            "sleep computer",
+            "put computer to sleep",
+            "put the computer to sleep",
+        ],
+        "pl": [
+            "uśpij komputer",
+            "wstrzymaj komputer",
+            "wstrzymaj system",
+        ],
+    },
+    runner=_do_suspend,
+    cancel_progress_key="progress_suspend_cancelled",
 ))
 
 

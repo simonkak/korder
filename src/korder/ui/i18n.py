@@ -40,6 +40,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         # declares a known parameter name (query / kind / address / …).
         "say_the_param_query": "powiedz zapytanie…",
         "say_the_param_kind": "powiedz rodzaj…",
+        # Action-specific confirmation prompts for destructive power
+        # actions. Resolved as `pending_prompt_<action_name>` in
+        # _on_pending_action, ahead of the per-parameter fallback.
+        "pending_prompt_shutdown": "Wyłączyć komputer? powiedz „tak”",
+        "pending_prompt_reboot": "Zrestartować komputer? powiedz „tak”",
+        "pending_prompt_sleep": "Uśpić komputer? powiedz „tak”",
         # Spotify "kind" labels — used in progress narration like
         # "Found album: Linkin Park"
         "kind_album": "album",
@@ -67,6 +73,15 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_locking_screen": "Blokuję ekran…",
         "progress_lock_failed": "Blokada nieudana: {error}",
         "progress_xdg_failed": "xdg-open nie powiódł się: {error}",
+        # Power-state actions (shutdown / reboot / sleep) — confirmation
+        # required via the pending_action flow before they fire.
+        "progress_shutting_down": "Wyłączam komputer…",
+        "progress_rebooting": "Restartuję komputer…",
+        "progress_suspending": "Usypiam komputer…",
+        "progress_shutdown_cancelled": "Anulowano wyłączanie",
+        "progress_reboot_cancelled": "Anulowano restart",
+        "progress_suspend_cancelled": "Anulowano usypianie",
+        "progress_power_failed": "{action} nieudane: {error}",
         # Tray icon tooltip (Plasma system tray hover label).
         "tray_tooltip_idle": "Korder — transkrypcja głosu",
         "tray_tooltip_wake_listening": "Korder — nasłuchuję słowa aktywującego",
@@ -99,6 +114,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "press_to_cancel": "Press ESC to cancel",
         "say_the_param_query": "say the query…",
         "say_the_param_kind": "say the kind…",
+        "pending_prompt_shutdown": "Shut down the computer? say 'yes' to confirm",
+        "pending_prompt_reboot": "Restart the computer? say 'yes' to confirm",
+        "pending_prompt_sleep": "Suspend the computer? say 'yes' to confirm",
         "kind_album": "album",
         "kind_track": "track",
         "kind_artist": "artist",
@@ -120,6 +138,13 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_locking_screen": "Locking screen…",
         "progress_lock_failed": "Lock failed: {error}",
         "progress_xdg_failed": "xdg-open failed: {error}",
+        "progress_shutting_down": "Shutting down…",
+        "progress_rebooting": "Rebooting…",
+        "progress_suspending": "Suspending…",
+        "progress_shutdown_cancelled": "Shutdown cancelled",
+        "progress_reboot_cancelled": "Reboot cancelled",
+        "progress_suspend_cancelled": "Sleep cancelled",
+        "progress_power_failed": "{action} failed: {error}",
         "tray_tooltip_idle": "Korder — voice transcription",
         "tray_tooltip_wake_listening": "Korder — listening for wake word",
         "tray_tooltip_dictating": "Korder — recording…",
