@@ -63,7 +63,7 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
     - System: lock screen via `xdg-screensaver lock`
 - **Pending parameter handling** — say *"Spotify play"* … pause to think … *"Linkin Park"* and the second utterance becomes the search query for the first action
 - **Multilingual intent** — regex mode ships hardcoded PL + EN trigger phrases for every action; LLM mode (Gemma) understands intent across any language it speaks (so Whisper can transcribe German/Spanish/French/etc. and the right action still fires)
-- **Optional Gemma thinking step** — slower (~1–2 s vs ~500 ms) but resolves ambiguous phrasings without hand-coded triggers; toggle via `[intent] thinking_mode`
+- **Optional Gemma thinking step** — off by default. Slower (~1.9 s vs ~600 ms on E4B; ~3.9 s on E2B) and on the current 21-case benchmark it never improved accuracy, so it's kept as an opt-in for ambiguous phrasings the regex/prompt path doesn't cover. Toggle via `[intent] thinking_mode`. See *Picking your Gemma model* below for measured numbers.
 - **Auto-stop after a command** — fires once an action lands so you don't have to hit the hotkey twice; pure dictation and mode toggles keep the session open
 - **Auto-duck system volume while listening** (default on) — drops the default PipeWire sink to 30 % when the mic opens and restores the original level on stop, so speaker bleed stops confusing Whisper. Skipped if you're already quieter than the target; restored on crash via `atexit`. Requires `wpctl`.
 
@@ -103,7 +103,8 @@ systemctl --user enable --now ydotool
 
 # 3. Start ollama (only if you want LLM action parsing)
 sudo systemctl enable --now ollama
-ollama pull gemma4:e4b   # or gemma4:e2b — smaller/faster but lower accuracy
+ollama pull gemma4:e4b   # default; gemma4:e2b is a smaller, lower-accuracy
+                         # alternative — see "Picking your Gemma model" below
 
 # 4. Sync Python deps
 uv sync
@@ -153,7 +154,9 @@ duck_volume_pct = 30            # target volume (% of full) while ducked; no-op 
 
 [inject]
 action_parser = regex   # "regex" (fast, deterministic) or "llm" (smarter, slower)
-llm_model = gemma4:e4b  # which ollama tag to use when action_parser = llm
+llm_model = gemma4:e4b  # ollama tag used when action_parser = llm. E4B is the
+                        # measured default; E2B is faster but drops short Polish
+                        # utterances. See "Picking your Gemma model" below.
 paste_mode = auto       # auto | always | never — clipboard-paste vs direct type
 
 # LLM intent-parser tuning (only applies when inject.action_parser = "llm").
@@ -182,6 +185,57 @@ client_secret =
 [web]
 search_engine = duckduckgo
 ```
+
+## Picking your Gemma model
+
+Two ollama tags work out of the box. **E4B is the default and the
+recommendation** unless you have a strong reason to pick otherwise.
+
+|              | gemma4:e2b | gemma4:e4b |
+|--------------|------------|------------|
+| Effective params | 2.3 B  | 4.5 B      |
+| GGUF on disk     | 7.2 GB | 9.6 GB     |
+
+Measured on the 21-case headless `intent_bench` suite (AMD 7800 XT, ROCm,
+ollama with flash attention, no warm-up):
+
+| Config              | Pass rate     | Latency (avg / median) | Notes                              |
+|---------------------|---------------|------------------------|------------------------------------|
+| **E4B, thinking off** | **21/21 (100%)** | **631 / 630 ms**     | recommended default                |
+| E2B, thinking off   | 17/21 (81%)   | 513 / 556 ms           | ~120 ms median win, drops 4 cases  |
+| E4B, thinking on    | 20/21 (95%)   | 1,909 / 826 ms        | thinking buys nothing here, costs latency |
+| E2B, thinking on    | 10/21 (48%)   | 3,872 / 3,911 ms      | thinking *hurts* the small model   |
+
+Reproduce: `uv run python -m korder.intent_bench --model gemma4:e2b [--thinking] --json > out.json`. Raw JSON for all four runs lives under [`bench-results/`](bench-results/).
+
+### What E2B specifically gets wrong
+
+Always-failing utterances on E2B that E4B handles cleanly:
+
+- *"Wznów"* — Polish "resume" (synonym of play_pause, no hardcoded trigger)
+- *"Pisz"* / *"Przestań"* — single-word Polish mode toggles
+- *"Znów odstwarzanie"* — Whisper-corrupted variant of "wznów odtwarzanie"
+
+These are short, oblique, Polish phrasings — exactly the regime where the
+extra parameters in E4B carry their weight. English commands and explicit
+Polish triggers (*"naciśnij Enter"*, *"Spotify zagraj …"*) work on both.
+
+### Why thinking mode misbehaves on E2B
+
+Counter-intuitive, but reproducible: enabling `[intent] thinking_mode = true`
+on the small model collapses pass rate to 48% (vs 81% without thinking).
+Small models under chain-of-thought tend to talk themselves out of the right
+answer — capacity that should be classifying gets spent on a meandering
+reasoning trace, and the final JSON often comes back empty. E4B has the
+headroom to absorb the same prompt without regressing.
+
+If you want thinking, use E4B. If you want speed and have the VRAM headroom,
+use E4B with thinking off — it's both more accurate (100% vs 81%) and not
+meaningfully slower than E2B at the median (630 ms vs 556 ms).
+
+**Pick E2B only if** you're VRAM-constrained (~2.4 GB savings on disk and a
+similar VRAM win) or running on a machine where every 100 ms of latency
+matters more than getting Polish synonyms right.
 
 ## Voice commands (when LLM mode is on)
 

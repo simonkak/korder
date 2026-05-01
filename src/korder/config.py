@@ -36,8 +36,10 @@ DEFAULTS: dict[str, dict[str, str]] = {
     # inject.action_parser = "llm".
     "intent": {
         # Enable Gemma's "thinking" reasoning step before answering.
-        # Slower (~1-2s vs ~300-500ms) but resolves ambiguous phrasings
-        # without explicit trigger lists.
+        # Off by default: on the headless intent benchmark thinking adds
+        # ~1.3s of latency on E4B and didn't improve pass rate; on E2B it
+        # collapses pass rate to 48%. Kept as an opt-in for phrasings the
+        # default path can't disambiguate.
         "thinking_mode": "false",
         # Show every trigger phrase per action in the LLM prompt. When
         # false (default), only the action name + a semantic description

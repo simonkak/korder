@@ -276,12 +276,14 @@ class SettingsDialog(QDialog):
         f.addRow("LLM model (ollama tag):", self._llm_model)
 
         self._intent_thinking_mode = QCheckBox(
-            "Use Gemma's thinking mode (slower but reasons better)"
+            "Use Gemma's thinking mode (off by default — slower, no measured accuracy win)"
         )
         self._intent_thinking_mode.setToolTip(
-            "Enables Gemma's 'think before answering' step. Adds ~1-2s of "
-            "latency per command but resolves ambiguous phrasings without "
-            "hand-coded triggers. Only affects LLM action parser."
+            "Enables Gemma's 'think before answering' step. Adds ~1.3s of "
+            "latency per command on E4B (and ~3.4s on E2B). On the current "
+            "intent benchmark it does not improve pass rate, so it's off by "
+            "default; turn on only if you've identified a phrasing the "
+            "default path mishandles. Only affects LLM action parser."
         )
         f.addRow("", self._intent_thinking_mode)
 
