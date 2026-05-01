@@ -26,7 +26,7 @@ from korder.audio.vad import SpeechDetector
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import YdotoolBackend, InjectError
 from korder.ui.osd import OSDWindow
-from korder.ui.i18n import current_locale, t
+from korder.ui.i18n import t
 from korder.ui.progress import progress_signal
 
 
@@ -62,6 +62,7 @@ class _InjectWorker(QThread):
     loading_started = Signal()  # LLM model not resident — cold load + parse
     parse_done = Signal()  # parse finished, executing now
     cancel_requested = Signal()  # user said 'cancel'/'nevermind' — abort it all
+    parse_response = Signal(str)  # LLM's free-form reply from the parse JSON
 
     def __init__(
         self,
@@ -100,6 +101,17 @@ class _InjectWorker(QThread):
                     self.parse_started.emit()
                 t0 = time.perf_counter()
                 ops = self._injector.parse_ops(self._payload)
+                # Snapshot the LLM's response field BEFORE any other
+                # parse can race with us. Empty string when the LLM
+                # didn't include a response or we're on the regex path.
+                response = ""
+                last_response_fn = getattr(
+                    self._injector, "last_op_parser_response", None
+                )
+                if callable(last_response_fn):
+                    response = last_response_fn() or ""
+                if response:
+                    self.parse_response.emit(response)
                 if self._injector.is_slow_parser:
                     print(
                         f"[korder] parse: completed in {(time.perf_counter()-t0)*1000:.0f} ms",
@@ -176,7 +188,6 @@ class MainWindow(QMainWindow):
         ducker: VolumeDucker | None = None,
         wake_detector=None,
         wake_idle_timeout_s: float = 5.0,
-        confirm_prompt_generator=None,
     ):
         super().__init__()
         self.setWindowTitle("Korder — transcript history")
@@ -195,14 +206,12 @@ class MainWindow(QMainWindow):
         # Wake-word activation (issue #1). Optional — None means hotkey-only.
         self._wake_detector = wake_detector
         self._wake_idle_timeout_s = float(wake_idle_timeout_s)
-        # Optional callable: (action_name, locale) -> str | None.
-        # When set, the pending-prompt resolver consults it before
-        # falling back to the i18n template chain. The actual
-        # generator is IntentParser.generate_confirm_prompt, which
-        # caches results so the call is instant after the first time
-        # (or after the warm_feedback_cache pre-generation finishes
-        # in the background at startup).
-        self._confirm_prompt_generator = confirm_prompt_generator
+        # LLM's free-form response from the most recent parse, if any.
+        # Captured by the inject worker right after parse_ops returns
+        # (so it can't be raced by a later parse) and emitted to the
+        # main thread for use as a pending-action hint, future TTS,
+        # etc. Cleared on each transition out of pending.
+        self._last_llm_response: str = ""
         # True for the dictation session that began via a wake event.
         # Resets to False on every dictation end. Used to gate the
         # idle-timeout timer that returns accidental wakes to wake-mode.
@@ -723,6 +732,7 @@ class MainWindow(QMainWindow):
             worker.loading_started.connect(lambda t=text: self._on_loading_started(t))
             worker.parse_done.connect(self._on_parse_done)
             worker.cancel_requested.connect(self._on_cancel_requested)
+            worker.parse_response.connect(self._on_parse_response)
             worker.finished.connect(lambda w=worker: self._reap_inject(w))
             self._inject_workers.add(worker)
             worker.start()
@@ -826,6 +836,14 @@ class MainWindow(QMainWindow):
         if self._injector and self._injector.is_slow_parser:
             self._osd.set_executing(self._osd._state.prompt or "")
 
+    def _on_parse_response(self, response: str) -> None:
+        """The LLM populated the JSON `response` field. Stash it so
+        downstream slots (currently only _on_pending_action) can use it
+        as a contextual prompt. Cleared on the next round's
+        _on_pending_action and on cancel/error paths so a stale
+        response doesn't leak into a different turn."""
+        self._last_llm_response = response or ""
+
     def _on_cancel_requested(self) -> None:
         """User said 'cancel' / 'nevermind' mid-recording. The worker
         already aborted the inject batch (no text typed, no actions
@@ -888,31 +906,22 @@ class MainWindow(QMainWindow):
             param_label = next(iter(action.parameters.keys()))
         prompt_so_far = self._osd._state.prompt or action_name
         # Hint resolution chain, highest-priority first:
-        #   1. LLM-generated confirmation prompt — when the action is
-        #      destructive (has a 'confirm' parameter) and the
-        #      generator is wired, ask Gemma for a contextual phrase
-        #      in the current locale. Cached, so this is instant after
-        #      warm_feedback_cache populates at startup.
+        #   1. LLM-supplied `response` from the just-finished parse —
+        #      Gemma writes a contextual confirmation in the user's
+        #      input language as part of the same JSON it returns
+        #      actions in. Free of extra round-trips.
         #   2. Action-specific pending_prompt_<name> i18n key — static
-        #      hand-written fallback for when the LLM is unavailable
-        #      or off.
+        #      hand-written fallback when the LLM omitted `response`
+        #      (model variance) or we're on the regex path (no LLM).
         #   3. Per-parameter say_the_param_<label> — generic param
-        #      extraction (Spotify search, etc.).
+        #      extraction prompt (Spotify search query, etc.).
         #   4. The bare pending_param_hint — last-resort placeholder.
         # i18n's t() returns the key itself on miss, so a
         # key-equals-result comparison detects the fall-through.
-        hint: str | None = None
-        if self._confirm_prompt_generator is not None and "confirm" in (
-            (action.parameters if action else {}) or {}
-        ):
-            try:
-                hint = self._confirm_prompt_generator(action_name, current_locale())
-            except Exception as e:
-                print(
-                    f"[korder] confirm prompt generation failed: {e}",
-                    flush=True, file=sys.stderr,
-                )
-                hint = None
+        hint: str = self._last_llm_response
+        # Consume the response so a subsequent non-pending parse can't
+        # leak this turn's text into a later turn's hint.
+        self._last_llm_response = ""
         if not hint:
             action_key = f"pending_prompt_{action_name}"
             action_hint = t(action_key)
@@ -955,6 +964,7 @@ class MainWindow(QMainWindow):
         worker.parse_started.connect(lambda t=param_text: self._on_parse_started(t))
         worker.parse_done.connect(self._on_parse_done)
         worker.cancel_requested.connect(self._on_cancel_requested)
+        worker.parse_response.connect(self._on_parse_response)
         worker.finished.connect(lambda w=worker: self._reap_inject(w))
         self._inject_workers.add(worker)
         worker.start()

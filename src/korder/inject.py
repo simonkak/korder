@@ -59,6 +59,7 @@ class YdotoolBackend:
         op_parser=None,
         op_parser_is_warm=None,
         op_parser_warm_up=None,
+        op_parser_last_response=None,
     ):
         if shutil.which("ydotool") is None:
             raise InjectError(
@@ -70,8 +71,25 @@ class YdotoolBackend:
         self._op_parser = op_parser or _split_into_ops
         self._op_parser_is_warm = op_parser_is_warm
         self._op_parser_warm_up = op_parser_warm_up
+        # Optional callable -> str. Called AFTER parse_ops to read the
+        # LLM's natural-language response from the same parse call.
+        # Used for confirmation prompts today; future home for
+        # conversational replies and TTS-spoken progress.
+        self._op_parser_last_response = op_parser_last_response
         self._lock = threading.Lock()
         self.is_slow_parser = op_parser is not None
+
+    def last_op_parser_response(self) -> str:
+        """Return the LLM's response for the most recent parse_ops call,
+        or empty string if none. Caller is responsible for calling this
+        immediately after parse_ops to avoid races with subsequent
+        parses."""
+        if self._op_parser_last_response is None:
+            return ""
+        try:
+            return self._op_parser_last_response() or ""
+        except Exception:
+            return ""
 
     def warm_up_op_parser(self) -> None:
         """Opportunistic preload (fire-and-forget). Called when the mic
@@ -269,10 +287,12 @@ def make_backend(
     op_parser=None,
     op_parser_is_warm=None,
     op_parser_warm_up=None,
+    op_parser_last_response=None,
 ) -> YdotoolBackend:
     return YdotoolBackend(
         paste_mode=paste_mode,
         op_parser=op_parser,
         op_parser_is_warm=op_parser_is_warm,
         op_parser_warm_up=op_parser_warm_up,
+        op_parser_last_response=op_parser_last_response,
     )
