@@ -31,6 +31,13 @@
   <br><em>Awaiting — pending parameter, waiting for your follow-up utterance</em>
 </p>
 
+<p align="center">
+  <a href="assets/screens/video_spotify.mp4">
+    <img src="assets/screens/video_spotify_poster.png" alt="Voice command demo — click to play" width="720" />
+  </a>
+  <br><em>End-to-end Spotify command — click to play (8 s, ~90 KB)</em>
+</p>
+
 Built for one user — me — on KDE Plasma 6 / Wayland. Nothing here is
 production-grade, but everything works on a quiet desk mic with a 7800 XT.
 
