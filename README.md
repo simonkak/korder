@@ -18,6 +18,7 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
     - Keys: Enter, Tab, Escape, Backspace
     - Shortcuts: Ctrl+Backspace (delete word), Ctrl+A (select all), Ctrl+Z (undo), Shift+Home/End (select line)
     - Media: volume up/down/mute, play/pause, stop, next/previous track (via kernel media keycodes — KDE routes to MPRIS + PipeWire automatically)
+    - Now playing: ask *"what's playing"* / *"co teraz gra"* and Korder reads MPRIS metadata from the active player (Spotify, Firefox, mpv, …) and pops a desktop notification with track + artist
     - Spotify: search and play albums, tracks, artists, or playlists via the Web API (free Client Credentials flow, no Premium required for search). When you don't say what kind ("Spotify play *Pink Floyd*"), one request fans out across all four types and the closest name match wins — artist > album > track > playlist within each match tier.
 - **Pending parameter handling** — say *"Spotify play"* … pause to think … *"Linkin Park"* and the second utterance becomes the search query for the first action
 - **Polish + English** trigger phrases for every action
@@ -142,6 +143,7 @@ intent.
 | Play/pause        | "play music", "pause"             | "puść muzykę", "pauza", "wznów"       |
 | Stop playback     | "stop playback"                   | "zatrzymaj odtwarzanie"               |
 | Next/prev track   | "next song" / "previous song"     | "następna piosenka" / "poprzednia"    |
+| Now playing       | "what's playing", "what song is this" | "co gra", "co teraz leci"           |
 | Spotify (any)     | "spotify play Pink Floyd"         | "spotify zagraj Pink Floyd"           |
 | Spotify album     | "spotify play album Meteora"      | "spotify zagraj album Meteora"        |
 | Spotify track     | "spotify play track Numb"         | "spotify zagraj utwór Numb"           |
@@ -153,7 +155,7 @@ intent.
 ## Development
 
 ```bash
-uv run pytest                                    # 119 tests, no external services required
+uv run pytest                                    # 141 tests, no external services required
 uv run pytest -m ollama                          # +39 integration tests against a live Gemma
 uv run python -m korder.intent_bench             # 21-case headless benchmark vs the current model
 uv run python -m korder.intent_bench --thinking  # …with Gemma's thinking step engaged
