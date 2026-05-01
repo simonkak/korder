@@ -32,6 +32,8 @@ class _OSDState(QObject):
     visibleChanged = Signal()
     showCursorChanged = Signal()
     placeholderModeChanged = Signal()
+    stateLabelChanged = Signal()
+    stateKindChanged = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -41,6 +43,14 @@ class _OSDState(QObject):
         self._visible = False
         self._show_cursor = False
         self._placeholder_mode = False
+        # Leading-section state. `state_label` is the user-visible word
+        # ("Listening", "Thinking", …); `state_kind` is the compact tag the
+        # QML uses to pick icon + accent (one of: idle, listening, thinking,
+        # executing, pending, committed).
+        self._state_label = ""
+        self._state_kind = "idle"
+        # Localized "Press ESC to cancel" hint, set once at startup.
+        self._esc_hint = t("press_to_cancel")
 
     def _get_prompt(self) -> str:
         return self._prompt
@@ -102,6 +112,32 @@ class _OSDState(QObject):
 
     placeholderMode = Property(bool, _get_placeholder_mode, _set_placeholder_mode, notify=placeholderModeChanged)
 
+    def _get_state_label(self) -> str:
+        return self._state_label
+
+    def _set_state_label(self, value: str) -> None:
+        if self._state_label != value:
+            self._state_label = value
+            self.stateLabelChanged.emit()
+
+    stateLabel = Property(str, _get_state_label, _set_state_label, notify=stateLabelChanged)
+
+    def _get_state_kind(self) -> str:
+        return self._state_kind
+
+    def _set_state_kind(self, value: str) -> None:
+        if self._state_kind != value:
+            self._state_kind = value
+            self.stateKindChanged.emit()
+
+    stateKind = Property(str, _get_state_kind, _set_state_kind, notify=stateKindChanged)
+
+    def _get_esc_hint(self) -> str:
+        return self._esc_hint
+
+    # Constant after startup — no notify signal needed; QML reads it once.
+    escHint = Property(str, _get_esc_hint, constant=True)
+
 
 class OSDWindow(QObject):
     """Multi-state OSD over the layer-shell QML scene."""
@@ -135,6 +171,8 @@ class OSDWindow(QObject):
         self._state.prompt = t("listening_placeholder")
         self._state.flux = ""
         self._state.status = t("write_mode_on") if write_mode else ""
+        self._state.state_label = t("state_listening")
+        self._state.state_kind = "listening"
         self._state.show_cursor = True
         self._state.placeholder_mode = True
         self._state.visible = True
@@ -155,6 +193,8 @@ class OSDWindow(QObject):
         self._state.prompt = text or ""
         self._state.flux = flux or ""
         self._state.status = t("write_mode_on") if write_mode else ""
+        self._state.state_label = t("state_listening")
+        self._state.state_kind = "listening"
         self._state.show_cursor = False
         self._state.placeholder_mode = False
         self._state.visible = True
@@ -166,6 +206,8 @@ class OSDWindow(QObject):
         self._state.prompt = prompt or ""
         self._state.flux = ""
         self._state.status = hint or t("thinking")
+        self._state.state_label = t("state_thinking")
+        self._state.state_kind = "thinking"
         self._state.show_cursor = False
         self._state.placeholder_mode = False
         self._state.visible = True
@@ -179,6 +221,8 @@ class OSDWindow(QObject):
             self._state.status = f"{t('executing')}: {what}"
         else:
             self._state.status = t("executing")
+        self._state.state_label = t("state_executing")
+        self._state.state_kind = "executing"
         self._state.show_cursor = False
         self._state.placeholder_mode = False
         self._state.visible = True
@@ -190,6 +234,8 @@ class OSDWindow(QObject):
         self._state.prompt = prompt_so_far or ""
         self._state.flux = ""
         self._state.status = hint or t("pending_param_hint")
+        self._state.state_label = t("state_pending")
+        self._state.state_kind = "pending"
         self._state.show_cursor = True
         self._state.placeholder_mode = False
         self._state.visible = True
@@ -200,6 +246,8 @@ class OSDWindow(QObject):
         self._state.prompt = text or ""
         self._state.flux = ""
         self._state.status = ""
+        self._state.state_label = t("state_committed")
+        self._state.state_kind = "committed"
         self._state.show_cursor = False
         self._state.placeholder_mode = False
         self._state.visible = True

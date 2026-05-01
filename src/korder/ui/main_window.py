@@ -205,6 +205,32 @@ class MainWindow(QMainWindow):
             self._start_recording()
         self._sync_button()
 
+    def cancel_recording(self) -> None:
+        """Abort the current recording without transcribing or injecting.
+
+        Called from the IPC server when the user binds a global hotkey
+        (typically Esc) to ``korder cancel``. Discards the audio buffer,
+        stops timers, hides the OSD. No-op if not currently recording.
+        """
+        if not self._recorder.is_recording:
+            return
+        self._partial_timer.stop()
+        self._osd_throttle_timer.stop()
+        self._pending_partial_text = None
+        # Drain and drop the recorder's buffer (sounddevice closes its stream
+        # in stop()); we ignore the returned array.
+        try:
+            self._recorder.stop()
+        except Exception:
+            pass
+        try:
+            self._ducker.unduck()
+        except Exception:
+            pass
+        self._status.setText("Cancelled.")
+        self._osd.hide_after(150)
+        self._sync_button()
+
     PAUSE_MS = 3500
     MIN_COMMIT_MS = 500
     MAX_SEGMENT_MS = 18000

@@ -23,7 +23,7 @@ from korder.ui.settings_dialog import SettingsDialog
 
 SOCKET_NAME = f"korder-{os.getuid()}"
 SOCKET_PATH = os.path.join(tempfile.gettempdir(), SOCKET_NAME)
-VALID_COMMANDS = {"toggle", "show"}
+VALID_COMMANDS = {"toggle", "show", "cancel"}
 
 
 def _bool(s: str) -> bool:
@@ -257,6 +257,8 @@ def _on_ready_read(sock: QLocalSocket, window: MainWindow) -> None:
         elif line == "show":
             window.show()
             window.raise_()
+        elif line == "cancel":
+            window.cancel_recording()
 
 
 if __name__ == "__main__":

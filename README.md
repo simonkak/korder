@@ -85,6 +85,12 @@ For a global hotkey, bind `/home/YOU/priv/korder/.venv/bin/korder toggle` in
 **System Settings → Shortcuts → Custom Shortcuts → Edit → New → Global
 Shortcut → Command/URL**. Common pick: `Ctrl+Space`.
 
+To cancel a recording mid-flight without committing what you've said, bind
+`/home/YOU/priv/korder/.venv/bin/korder cancel` to a second hotkey (the
+OSD shows a "Press ESC to cancel" hint while listening — common pick is
+`Esc`, though it has to go through KGlobalAccel since the OSD is a
+focusless overlay).
+
 ## Configuration
 
 The tray menu's **Settings…** entry exposes every key in a tabbed dialog —

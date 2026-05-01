@@ -12,6 +12,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "pending_param_hint": "powiedz parametr…",
         "write_mode_on": "tryb pisania",
         "preview_mode": "tryb podglądu",
+        "state_listening": "Słucham",
+        "state_thinking": "Myślę",
+        "state_executing": "Wykonuję",
+        "state_pending": "Czekam",
+        "state_committed": "Gotowe",
+        "press_to_cancel": "Naciśnij ESC by anulować",
     },
     "en": {
         "listening_placeholder": "Say a command…",
@@ -20,6 +26,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "pending_param_hint": "say the parameter…",
         "write_mode_on": "write mode",
         "preview_mode": "preview mode",
+        "state_listening": "Listening",
+        "state_thinking": "Thinking",
+        "state_executing": "Executing",
+        "state_pending": "Awaiting",
+        "state_committed": "Done",
+        "press_to_cancel": "Press ESC to cancel",
     },
 }
 
