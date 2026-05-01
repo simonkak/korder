@@ -144,6 +144,12 @@ class IntentParser:
         # when thinking_mode is on. Surfaced for diagnostics (logged to
         # stderr in _call_ollama; readable by the benchmark dialog).
         self.last_thinking: str = ""
+        # Cache of LLM-generated user-facing strings, keyed on
+        # (kind, action_name, locale). Each entry is generated once
+        # per app session via _call_ollama_completion; subsequent
+        # lookups hit instantly. Sized small (≤20 actions × 2 locales
+        # × handful of kinds) so no eviction logic needed.
+        self._feedback_cache: dict[tuple[str, str, str], str] = {}
 
     def warm_up(self) -> None:
         """Fire-and-forget: tell ollama to page the model into VRAM,
@@ -215,6 +221,115 @@ class IntentParser:
             if m.get("name") == self.model or m.get("model") == self.model:
                 return True
         return False
+
+    def warm_feedback_cache(self, locale: str = "en") -> None:
+        """Pre-generate confirmation prompts for every action that has a
+        'confirm' parameter, in the given locale, on a background
+        thread. Idempotent — skips cached entries. Called once at app
+        boot so the first time the user triggers a confirmable action,
+        the cached prompt is already there and the OSD update is
+        instant.
+
+        Generation is serial (not parallel) so we don't overload the
+        ollama queue — each completion is ~300-500ms and there are
+        only a handful of confirmable actions, so total is ~1-2s
+        running alongside whatever else happens at startup.
+        """
+        confirmable = [a for a in all_actions() if "confirm" in a.parameters]
+        if not confirmable:
+            return
+        def _populate() -> None:
+            for action in confirmable:
+                if ("confirm", action.name, locale) in self._feedback_cache:
+                    continue
+                # Side-effect of generate_confirm_prompt is to populate
+                # the cache; we ignore the return.
+                self.generate_confirm_prompt(action.name, locale)
+        threading.Thread(target=_populate, daemon=True).start()
+
+    def generate_confirm_prompt(
+        self,
+        action_name: str,
+        locale: str = "en",
+    ) -> str | None:
+        """Ask the LLM to phrase a natural confirmation question for a
+        destructive action, in the user's locale. Returns None if the
+        LLM call fails or the action isn't registered — caller should
+        fall back to the i18n template chain.
+
+        Cached per (action, locale) for the lifetime of the parser.
+        First call ~300-500ms, subsequent calls instant.
+        """
+        cached = self._feedback_cache.get(("confirm", action_name, locale))
+        if cached is not None:
+            return cached
+
+        action = get_action(action_name)
+        if action is None:
+            return None
+
+        prompt = (
+            "You are Korder, a voice assistant. The user just asked you "
+            "to perform an action that is irreversible or disruptive — "
+            "you must confirm before running it.\n\n"
+            f"Action description: {action.description}\n\n"
+            f"Locale: {locale} ({'Polish' if locale == 'pl' else 'English'})\n\n"
+            "Generate a brief confirmation question (max 12 words) in the "
+            "user's locale. Phrase it naturally and clearly — make it "
+            "obvious what is about to happen. End with a hint that the "
+            "user should say 'yes' or 'no' (or the locale equivalent).\n\n"
+            "Output ONLY the question, no explanation, no quotes, no prefix."
+        )
+        text = self._call_ollama_completion(prompt, max_tokens=40)
+        if not text:
+            return None
+        # Trim quotes/punctuation noise the model sometimes adds.
+        text = text.strip().strip('"').strip("'").strip()
+        if not text:
+            return None
+        self._feedback_cache[("confirm", action_name, locale)] = text
+        print(
+            f"[korder] feedback: confirm/{action_name}/{locale} → {text!r}",
+            flush=True, file=sys.stderr,
+        )
+        return text
+
+    def _call_ollama_completion(self, prompt: str, max_tokens: int = 80) -> str | None:
+        """Free-form text completion (no JSON mode, no structured
+        output). Used for generating user-facing strings on the fly.
+        Returns None on any error so callers can fall back gracefully.
+
+        ``think: false`` is critical: gemma4 is a thinking-capable
+        model and defaults to emitting reasoning tokens before the
+        actual answer. With our short num_predict budget, the
+        response field comes back empty (whole budget eaten by
+        thinking tokens that go to a separate field). Setting
+        ``think: false`` bypasses the reasoning step and writes
+        directly to the response field.
+        """
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "think": False,
+            "keep_alive": self.keep_alive_s,
+            "options": {
+                "temperature": 0.3,
+                "num_predict": max_tokens,
+            },
+        }
+        try:
+            req = urllib.request.Request(
+                _OLLAMA_URL,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            print(f"[korder] feedback completion failed: {e}", flush=True, file=sys.stderr)
+            return None
+        return (body.get("response") or "").strip() or None
 
     def parse(self, transcript: str) -> list[tuple]:
         if not transcript:

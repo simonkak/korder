@@ -158,9 +158,17 @@ _STRINGS: dict[str, dict[str, str]] = {
 }
 
 
+def current_locale() -> str:
+    """Best-guess two-letter locale tag for the running session.
+    Returns the prefix of QLocale.system().name() (e.g., 'pl' for
+    'pl_PL', 'en' for 'en_US'). Used by callers that need to feed
+    locale to non-i18n consumers (e.g. an LLM generating user-facing
+    text)."""
+    return QLocale.system().name().split("_")[0].lower() or "en"
+
+
 def _bundle() -> dict[str, str]:
-    lang = QLocale.system().name().split("_")[0].lower()
-    return _STRINGS.get(lang) or _STRINGS["en"]
+    return _STRINGS.get(current_locale()) or _STRINGS["en"]
 
 
 def t(key: str) -> str:
