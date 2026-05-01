@@ -14,11 +14,40 @@ Window {
     readonly property int minW: 320
     readonly property int maxW: Math.max(minW, Screen.width - 120)
 
-    // Two text colors:
-    //  - prompt: bright (palette.windowText)  — user's words
-    //  - status: faded (palette.placeholderText) — hints, thinking, etc.
+    // Three text colors:
+    //  - prompt: bright (palette.windowText)  — locked partial + final text
+    //  - status: faded (palette.placeholderText) — hints, thinking
+    //  - flux:   blended toward window bg     — in-flux partial tail; needs to
+    //            be obviously dimmer than prompt regardless of theme, so we
+    //            blend the text color toward the background rather than relying
+    //            on the theme's placeholderText (which can be subtle).
     readonly property color promptColor: palette.windowText
     readonly property color statusColor: palette.placeholderText
+    readonly property color fluxColor: _blend(promptColor, palette.window, 0.45)
+
+    // Cached hex strings for the colors (Text.RichText needs CSS-style hex
+    // codes inside <font color>; recomputed when the palette changes).
+    readonly property string promptHex: _toHex(promptColor)
+    readonly property string fluxHex: _toHex(fluxColor)
+
+    function _toHex(c) {
+        function pad(n) { return ('0' + Math.round(n * 255).toString(16)).slice(-2); }
+        return '#' + pad(c.r) + pad(c.g) + pad(c.b);
+    }
+
+    // Linear blend: alpha=0 returns bg, alpha=1 returns fg.
+    function _blend(fg, bg, alpha) {
+        return Qt.rgba(
+            fg.r * alpha + bg.r * (1 - alpha),
+            fg.g * alpha + bg.g * (1 - alpha),
+            fg.b * alpha + bg.b * (1 - alpha),
+            1.0
+        );
+    }
+
+    function _escHtml(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
 
     width: Math.max(minW, Math.min(maxW, contentColumn.implicitWidth + hPad * 2))
     height: contentColumn.implicitHeight + vPad * 2
@@ -73,7 +102,22 @@ Window {
 
                 Text {
                     id: promptText
-                    text: osdState ? osdState.prompt : ""
+                    // Two render modes:
+                    //  - PlainText: placeholder, committed text, or partial
+                    //    with no flux (single-color, italic if placeholder).
+                    //  - RichText: streaming partial with a locked-prefix +
+                    //    flux-tail split — render the locked region in
+                    //    promptColor and the flux tail in statusColor so
+                    //    the eye can ignore the still-revising tail.
+                    readonly property bool _useRich:
+                        osdState && !osdState.placeholderMode &&
+                        osdState.flux !== undefined && osdState.flux.length > 0
+
+                    text: _useRich
+                        ? '<font color="' + root.promptHex + '">' + root._escHtml(osdState.prompt) + '</font>' +
+                          '<font color="' + root.fluxHex + '">' + root._escHtml(osdState.flux) + '</font>'
+                        : (osdState ? osdState.prompt : "")
+                    textFormat: _useRich ? Text.RichText : Text.PlainText
                     color: osdState && osdState.placeholderMode
                         ? root.statusColor
                         : root.promptColor

@@ -27,6 +27,7 @@ class _OSDState(QObject):
     """Plain-data QObject exposed to the QML scene as `osdState`."""
 
     promptChanged = Signal()
+    fluxChanged = Signal()
     statusChanged = Signal()
     visibleChanged = Signal()
     showCursorChanged = Signal()
@@ -35,6 +36,7 @@ class _OSDState(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._prompt = ""
+        self._flux = ""
         self._status = ""
         self._visible = False
         self._show_cursor = False
@@ -49,6 +51,16 @@ class _OSDState(QObject):
             self.promptChanged.emit()
 
     prompt = Property(str, _get_prompt, _set_prompt, notify=promptChanged)
+
+    def _get_flux(self) -> str:
+        return self._flux
+
+    def _set_flux(self, value: str) -> None:
+        if self._flux != value:
+            self._flux = value
+            self.fluxChanged.emit()
+
+    flux = Property(str, _get_flux, _set_flux, notify=fluxChanged)
 
     def _get_status(self) -> str:
         return self._status
@@ -121,15 +133,27 @@ class OSDWindow(QObject):
         """Mic just opened, no speech yet. Show localized placeholder
         with a blinking cursor."""
         self._state.prompt = t("listening_placeholder")
+        self._state.flux = ""
         self._state.status = t("write_mode_on") if write_mode else ""
         self._state.show_cursor = True
         self._state.placeholder_mode = True
         self._state.visible = True
         self._hide_timer.stop()
 
-    def set_partial(self, text: str, write_mode: bool = False) -> None:
-        """Streaming partial transcript — show user's words bright."""
+    def set_partial(self, text: str, *, flux: str = "", write_mode: bool = False) -> None:
+        """Streaming partial transcript.
+
+        ``text`` is the locked-prefix region — words that have stayed
+        identical across recent partials and are unlikely to be revised.
+        ``flux`` is the still-changing tail of the same partial; the QML
+        renders it at a faded color so the eye knows what's settled.
+
+        Pass ``flux=""`` (the default) to render a single bright line —
+        useful for the very first partial or when nothing has been
+        locked yet.
+        """
         self._state.prompt = text or ""
+        self._state.flux = flux or ""
         self._state.status = t("write_mode_on") if write_mode else ""
         self._state.show_cursor = False
         self._state.placeholder_mode = False
@@ -140,6 +164,7 @@ class OSDWindow(QObject):
         """LLM is reasoning. Keep the user's prompt visible; show a faded
         thinking hint below."""
         self._state.prompt = prompt or ""
+        self._state.flux = ""
         self._state.status = hint or t("thinking")
         self._state.show_cursor = False
         self._state.placeholder_mode = False
@@ -149,6 +174,7 @@ class OSDWindow(QObject):
     def set_executing(self, prompt: str, what: str = "") -> None:
         """Action is firing. Show a faded execution hint below the prompt."""
         self._state.prompt = prompt or ""
+        self._state.flux = ""
         if what:
             self._state.status = f"{t('executing')}: {what}"
         else:
@@ -162,6 +188,7 @@ class OSDWindow(QObject):
         """Pending parameterized action — show what was said + a hint
         for the missing parameter, with a blinking cursor."""
         self._state.prompt = prompt_so_far or ""
+        self._state.flux = ""
         self._state.status = hint or t("pending_param_hint")
         self._state.show_cursor = True
         self._state.placeholder_mode = False
@@ -171,6 +198,7 @@ class OSDWindow(QObject):
     def set_committed(self, text: str, *, transient_ms: int = 0) -> None:
         """Final committed text. Status line clears."""
         self._state.prompt = text or ""
+        self._state.flux = ""
         self._state.status = ""
         self._state.show_cursor = False
         self._state.placeholder_mode = False

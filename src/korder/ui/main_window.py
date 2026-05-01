@@ -1,5 +1,7 @@
 from __future__ import annotations
+import os
 import re
+import sys
 import numpy as np
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QCloseEvent
@@ -149,6 +151,19 @@ class MainWindow(QMainWindow):
         self._partial_timer.setInterval(100)
         self._partial_timer.timeout.connect(self._on_partial_tick)
 
+        # OSD update throttle for streaming partials. Whisper sometimes
+        # produces several partials per second; rendering each one makes
+        # the prompt text dance. We rate-limit OSD updates to one per
+        # OSD_PARTIAL_THROTTLE_MS, deferring the latest text until the
+        # window opens. Stability detection still runs every partial —
+        # this only smooths the visual.
+        self._last_displayed_partial = ""        # for locked-prefix diff
+        self._pending_partial_text: str | None = None
+        self._last_osd_partial_t = 0.0           # monotonic seconds
+        self._osd_throttle_timer = QTimer(self)
+        self._osd_throttle_timer.setSingleShot(True)
+        self._osd_throttle_timer.timeout.connect(self._flush_pending_partial)
+
         central = QWidget()
         layout = QVBoxLayout(central)
 
@@ -191,6 +206,7 @@ class MainWindow(QMainWindow):
     MAX_SEGMENT_MS = 18000
     MIN_SPEECH_FOR_PARTIAL_MS = 90
     STABILITY_REPEATS = 8  # commit after this many identical-content partials in a row
+    OSD_PARTIAL_THROTTLE_MS = 250  # max OSD update rate for streaming partials
 
     def _start_recording(self) -> None:
         if self._recorder.is_recording:
@@ -206,12 +222,15 @@ class MainWindow(QMainWindow):
         self._committed_samples = 0
         self._last_partial_norm = ""
         self._stability_count = 0
+        self._reset_partial_render_state()
         self._partial_timer.start()
 
     def _stop_recording(self) -> None:
         if not self._recorder.is_recording:
             return
         self._partial_timer.stop()
+        self._osd_throttle_timer.stop()
+        self._pending_partial_text = None
         full = self._recorder.stop()
         sr = self._recorder.sample_rate
         remaining = full[self._committed_samples:]
@@ -243,6 +262,7 @@ class MainWindow(QMainWindow):
             self._committed_samples += speech_end
             self._last_partial_norm = ""
             self._stability_count = 0
+            self._reset_partial_render_state()
             self._submit_transcribe(segment, kind="commit")
             return
 
@@ -271,7 +291,10 @@ class MainWindow(QMainWindow):
         text = text.strip()
         if not text:
             return
-        self._osd.set_partial(text, write_mode=self._write_mode)
+
+        # OSD update — rate-limited so the prompt doesn't dance every
+        # 100 ms. Stability detection below runs unthrottled.
+        self._maybe_render_partial(text)
 
         # Stability-based commit: if the model returns the same content twice
         # in a row, the audio buffer's content has converged — user paused.
@@ -283,6 +306,49 @@ class MainWindow(QMainWindow):
         else:
             self._stability_count = 1
             self._last_partial_norm = norm
+
+    def _maybe_render_partial(self, text: str) -> None:
+        """Throttled OSD update for streaming partials. If the throttle
+        window is open we render now; otherwise we stash the text and arm
+        a one-shot timer to flush when the window opens."""
+        self._pending_partial_text = text
+        elapsed_ms = (time.monotonic() - self._last_osd_partial_t) * 1000
+        if elapsed_ms >= self.OSD_PARTIAL_THROTTLE_MS:
+            self._flush_pending_partial()
+        elif not self._osd_throttle_timer.isActive():
+            delay_ms = max(0, int(self.OSD_PARTIAL_THROTTLE_MS - elapsed_ms))
+            self._osd_throttle_timer.start(delay_ms)
+
+    def _flush_pending_partial(self) -> None:
+        text = self._pending_partial_text
+        self._pending_partial_text = None
+        if text is None or not self._recorder.is_recording:
+            return
+        locked, flux = _split_at_locked_prefix(self._last_displayed_partial, text)
+        if os.environ.get("KORDER_DEBUG_OSD") == "1":
+            print(
+                f"[korder.osd] locked={locked!r} flux={flux!r} "
+                f"(prev={self._last_displayed_partial!r}, curr={text!r})",
+                file=sys.stderr,
+                flush=True,
+            )
+        # No usable lock yet (first partial of the segment, or revision):
+        # fall back to single-color render.
+        if locked:
+            self._osd.set_partial(locked, flux=flux, write_mode=self._write_mode)
+        else:
+            self._osd.set_partial(text, write_mode=self._write_mode)
+        self._last_displayed_partial = text
+        self._last_osd_partial_t = time.monotonic()
+
+    def _reset_partial_render_state(self) -> None:
+        """Clear the locked-prefix tracker. Called when starting a new
+        recording or after every commit so the next partial isn't compared
+        against text from a now-flushed segment."""
+        self._last_displayed_partial = ""
+        self._pending_partial_text = None
+        self._last_osd_partial_t = 0.0
+        self._osd_throttle_timer.stop()
 
     def _commit_via_stability(self) -> None:
         if not self._recorder.is_recording:
@@ -300,6 +366,7 @@ class MainWindow(QMainWindow):
         self._committed_samples += speech_end
         self._last_partial_norm = ""
         self._stability_count = 0
+        self._reset_partial_render_state()
         self._submit_transcribe(segment, kind="commit")
 
     def _on_partial_fail(self, _msg: str) -> None:
@@ -520,6 +587,42 @@ class MainWindow(QMainWindow):
 
     def _on_fail(self, msg: str) -> None:
         self._status.setText(f"Transcription failed: {msg}")
+
+
+def _split_at_locked_prefix(prev: str, curr: str) -> tuple[str, str]:
+    """Split ``curr`` into (locked, flux) at the longest word-aligned
+    common prefix with ``prev``.
+
+    "Locked" means: same characters appear in both, AND the boundary lands
+    on a word edge in *both* prev and curr — so we never split a word in
+    half. Whisper's incremental output sometimes ends a partial mid-word
+    ("what is th"), then revises it ("what is the time"); we keep "th"
+    in the flux zone in that case rather than locking it.
+
+    Returns ``("", curr)`` when there's no usable common prefix (Whisper
+    revised the whole thing).
+    """
+    if not prev:
+        return "", curr
+    n = min(len(prev), len(curr))
+    common_len = 0
+    while common_len < n and prev[common_len] == curr[common_len]:
+        common_len += 1
+    if common_len == 0:
+        return "", curr
+
+    def _is_boundary(s: str, p: int) -> bool:
+        # End-of-string or a whitespace at position p.
+        return p >= len(s) or s[p] == " "
+
+    p = common_len
+    while p > 0 and not (_is_boundary(prev, p) and _is_boundary(curr, p)):
+        p -= 1
+    if p == 0:
+        return "", curr
+    locked = curr[:p].rstrip()
+    flux = curr[len(locked):]
+    return locked, flux
 
 
 def _normalize_for_compare(text: str) -> str:
