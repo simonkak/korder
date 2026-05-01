@@ -244,15 +244,15 @@ Reproduce: `uv run python -m korder.intent_bench --model gemma4:e2b [--thinking]
 
 ### What E2B specifically gets wrong
 
-Always-failing utterances on E2B that E4B handles cleanly:
-
-- *"Wznów"* — Polish "resume" (synonym of play_pause, no hardcoded trigger)
-- *"Pisz"* / *"Przestań"* — single-word Polish mode toggles
-- *"Znów odstwarzanie"* — Whisper-corrupted variant of "wznów odtwarzanie"
-
-These are short, oblique, Polish phrasings — exactly the regime where the
-extra parameters in E4B carry their weight. English commands and explicit
-Polish triggers (*"naciśnij Enter"*, *"Spotify zagraj …"*) work on both.
+E2B drops short, oblique non-English phrasings that E4B handles
+cleanly — synonym variants of play_pause that don't appear in the
+prompt's hardcoded triggers, single-word write-mode toggles, and
+Whisper-corrupted variants where a missing or duplicated character
+defeats trigger-string matching but should still be recoverable
+from intent. That's exactly the regime where E4B's extra parameters
+carry their weight. English commands and explicit triggers in any
+locale ("press enter", the Polish equivalents, etc.) work on both
+models.
 
 ### Why thinking mode misbehaves on E2B
 
@@ -273,32 +273,35 @@ matters more than getting Polish synonyms right.
 
 ## Voice commands (when LLM mode is on)
 
-Say these in normal speech; phrasing variations work because Gemma understands
-intent.
+Say these in normal speech; phrasing variations work because Gemma
+understands intent. Triggers in other locales exist for every command
+(see `src/korder/actions/`), and the LLM parser extracts intent
+across whichever language Whisper transcribes.
 
-| Action            | English                          | Polish                                |
-|-------------------|----------------------------------|---------------------------------------|
-| Press Enter       | "press enter", "submit"           | "naciśnij enter", "wyślij"            |
-| Delete word       | "delete word"                     | "usuń słowo", "skasuj słowo"          |
-| Select line       | "select line"                     | "zaznacz linię"                       |
-| Volume up/down    | "louder" / "quieter"              | "głośniej" / "ciszej"                 |
-| …with magnitude   | "much louder", "louder by 20%"    | "znacznie głośniej", "głośniej o 20%" |
-| Play/pause        | "play music", "pause"             | "puść muzykę", "pauza", "wznów"       |
-| Stop playback     | "stop playback"                   | "zatrzymaj odtwarzanie"               |
-| Next/prev track   | "next song" / "previous song"     | "następna piosenka" / "poprzednia"    |
-| Now playing       | "what's playing", "what song is this" | "co gra", "co teraz leci"           |
-| Spotify (any)     | "spotify play Pink Floyd"         | "spotify zagraj Pink Floyd"           |
-| Spotify album     | "spotify play album Meteora"      | "spotify zagraj album Meteora"        |
-| Spotify track     | "spotify play track Numb"         | "spotify zagraj utwór Numb"           |
-| Spotify artist    | "spotify play artist Pink Floyd"  | "spotify zagraj wykonawcę Pink Floyd" |
-| Spotify playlist  | "spotify play playlist workout"   | "spotify zagraj playlistę workout"    |
-| Web search        | "search for X", "google X"        | "wyszukaj X", "wygoogluj X"           |
-| YouTube           | "play X on YouTube"               | "puść X na YouTube"                   |
-| Wikipedia         | "wikipedia X", "tell me about X"  | "co to jest X", "kim jest X"          |
-| Maps              | "navigate to X", "where is X"     | "nawiguj do X", "gdzie jest X"        |
-| Lock screen       | "lock screen"                     | "zablokuj ekran"                      |
-| Write mode on     | "start writing"                   | "pisz"                                |
-| Write mode off    | "stop writing"                    | "przestań"                            |
+| Action            | Example phrasing                                 |
+|-------------------|--------------------------------------------------|
+| Press Enter       | "press enter", "submit"                           |
+| Delete word       | "delete word"                                     |
+| Select line       | "select line"                                     |
+| Volume up/down    | "louder" / "quieter"                              |
+| …with magnitude   | "much louder", "louder by 20%", "a bit quieter"   |
+| Mute              | "mute audio", "toggle mute"                       |
+| Play/pause        | "play music", "pause", "resume"                   |
+| Stop playback     | "stop playback"                                   |
+| Next/prev track   | "next song" / "previous song"                     |
+| Now playing       | "what's playing", "what song is this"             |
+| Spotify (any)     | "spotify play Pink Floyd"                         |
+| Spotify album     | "spotify play album Meteora"                      |
+| Spotify track     | "spotify play track Numb"                         |
+| Spotify artist    | "spotify play artist Pink Floyd"                  |
+| Spotify playlist  | "spotify play playlist workout"                   |
+| Web search        | "search for X", "google X"                        |
+| YouTube           | "play X on YouTube"                               |
+| Wikipedia         | "wikipedia X", "tell me about X"                  |
+| Maps              | "navigate to X", "where is X"                     |
+| Lock screen       | "lock screen"                                     |
+| Write mode on     | "start writing"                                   |
+| Write mode off    | "stop writing"                                    |
 
 ## Development
 
@@ -318,8 +321,9 @@ register(Action(
     name="my_action",
     description="Short English description for the LLM prompt",
     triggers={
-        "en": ["do the thing"],
-        "pl": ["zrób to"],
+        "en": ["do the thing", "do that"],
+        # Add other locales here for the regex parser; the LLM parser
+        # works across whichever language Whisper transcribed.
     },
     op_factory=lambda _args: ("subprocess", ["my-cli", "--flag"]),
 ))
