@@ -12,22 +12,22 @@
 </p>
 
 <p align="center">
-  <img src="assets/screens/command_invocation_centered.png" alt="Listening — your spoken command" width="720" />
+  <img src="assets/screens/command_invocation.png" alt="Listening — your spoken command" width="720" />
   <br><em>Listening — your spoken command, with locked-prefix highlighting</em>
 </p>
 
 <p align="center">
-  <img src="assets/screens/command_thinking_centered.png" alt="Thinking — Gemma parses the command" width="720" />
+  <img src="assets/screens/command_thinking.png" alt="Thinking — Gemma parses the command" width="720" />
   <br><em>Thinking — Gemma parses the command into structured ops</em>
 </p>
 
 <p align="center">
-  <img src="assets/screens/command_execution_feedback_centered.png" alt="Executing — action narrates progress" width="720" />
+  <img src="assets/screens/command_execution_feedback.png" alt="Executing — action narrates progress" width="720" />
   <br><em>Executing — action narrates its progress in the Plasma accent color</em>
 </p>
 
 <p align="center">
-  <img src="assets/screens/command_pending_action_centered.png" alt="Awaiting — waiting for follow-up parameter" width="720" />
+  <img src="assets/screens/command_pending_action.png" alt="Awaiting — waiting for follow-up parameter" width="720" />
   <br><em>Awaiting — pending parameter, waiting for your follow-up utterance</em>
 </p>
 
