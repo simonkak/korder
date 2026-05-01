@@ -201,11 +201,12 @@ class OSDWindow(QObject):
         self._hide_timer.stop()
 
     def set_thinking(self, prompt: str, hint: str = "") -> None:
-        """LLM is reasoning. Keep the user's prompt visible; show a faded
-        thinking hint below."""
+        """LLM is reasoning. Keep the user's prompt visible; show the
+        explicit hint (if any) in the trailing chip — the leading state
+        label already says "Thinking" so the default would be redundant."""
         self._state.prompt = prompt or ""
         self._state.flux = ""
-        self._state.status = hint or t("thinking")
+        self._state.status = hint  # only render trailing if caller passed something concrete
         self._state.stateLabel = t("state_thinking")
         self._state.stateKind = "thinking"
         self._state.showCursor = False
@@ -214,13 +215,12 @@ class OSDWindow(QObject):
         self._hide_timer.stop()
 
     def set_executing(self, prompt: str, what: str = "") -> None:
-        """Action is firing. Show a faded execution hint below the prompt."""
+        """Action is firing. The trailing chip shows the action name when
+        passed (e.g. 'spotify_play'); empty otherwise — the leading state
+        label already says "Executing" so the bare default is redundant."""
         self._state.prompt = prompt or ""
         self._state.flux = ""
-        if what:
-            self._state.status = f"{t('executing')}: {what}"
-        else:
-            self._state.status = t("executing")
+        self._state.status = what  # action name or nothing — never the bare verb
         self._state.stateLabel = t("state_executing")
         self._state.stateKind = "executing"
         self._state.showCursor = False

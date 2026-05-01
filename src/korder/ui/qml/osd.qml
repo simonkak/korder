@@ -19,10 +19,16 @@ Window {
 
     readonly property int hPad: 14
     readonly property int vPad: 8
-    readonly property int leadingW: 132
+    readonly property int leadingW: 140
     readonly property int trailingMinW: 80
-    readonly property int minW: 360
-    readonly property int maxW: Math.min(900, Screen.width - 64)
+    // Wider default so most utterances render on a single line. Cap at the
+    // screen width minus margins so the pill never spans the whole display.
+    readonly property int minW: 720
+    readonly property int maxW: Math.min(1200, Screen.width - 80)
+    // Target preferred width for the center transcription text — used as
+    // a hint to RowLayout so the window grows to a comfortable size before
+    // wrapping kicks in.
+    readonly property int centerTargetW: 480
 
     // ---- Colors ----
     // Bright (locked partial, committed text), faded-toward-bg (flux), and
@@ -106,17 +112,21 @@ Window {
                 Layout.alignment: Qt.AlignVCenter
                 spacing: 0
 
-                // Leading: animated dot + state label
+                // Leading: animated dot + state label.
+                // fillHeight=true → leading section matches the row's height,
+                // which grows with the center text when it wraps. The divider
+                // inside is 8 px shorter than the section so it doesn't crowd
+                // the rounded corners.
                 Item {
                     id: leading
                     Layout.preferredWidth: root.leadingW
-                    Layout.preferredHeight: 36
+                    Layout.fillHeight: true
                     Layout.alignment: Qt.AlignVCenter
 
                     Rectangle {
                         id: divider1
                         width: 1
-                        height: parent.height - 8
+                        height: parent.height - 12
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.12)
@@ -191,11 +201,14 @@ Window {
                     }
                 }
 
-                // Center: transcription with locked/flux highlighting + optional cursor
+                // Center: transcription with locked/flux highlighting + optional cursor.
+                // preferredWidth seeds the natural pill width; fillWidth lets it
+                // expand if there's room. preferredHeight grows with wrapped text.
                 Item {
                     Layout.fillWidth: true
+                    Layout.preferredWidth: root.centerTargetW
                     Layout.alignment: Qt.AlignVCenter
-                    Layout.preferredHeight: Math.max(36, promptText.implicitHeight + 12)
+                    Layout.preferredHeight: Math.max(40, promptText.implicitHeight + 16)
 
                     RowLayout {
                         anchors.fill: parent
@@ -249,17 +262,20 @@ Window {
                     }
                 }
 
-                // Trailing: status hint (Thinking / Executing description / pending param hint)
+                // Trailing: status hint (action name during Executing,
+                // pending param hint, transcribing label, etc.). Empty
+                // when the state label alone is sufficient — section
+                // collapses to width 0 in that case.
                 Item {
                     visible: osdState && osdState.status.length > 0
                     Layout.preferredWidth: visible ? Math.min(220, statusChipText.implicitWidth + 28) : 0
-                    Layout.preferredHeight: 36
+                    Layout.fillHeight: true
                     Layout.alignment: Qt.AlignVCenter
 
                     Rectangle {
                         id: divider2
                         width: 1
-                        height: parent.height - 8
+                        height: parent.height - 12
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
                         color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.12)
