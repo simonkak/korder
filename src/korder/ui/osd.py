@@ -181,10 +181,18 @@ class OSDWindow(QObject):
         # API parity with the previous QWidget OSD.
         pass
 
-    def set_listening(self, write_mode: bool = False) -> None:
+    def set_listening(
+        self,
+        write_mode: bool = False,
+        *,
+        placeholder_key: str = "listening_placeholder",
+    ) -> None:
         """Mic just opened, no speech yet. Show localized placeholder
-        with a blinking cursor."""
-        self._state.prompt = t("listening_placeholder")
+        with a blinking cursor. Override ``placeholder_key`` to surface
+        a different hint — e.g. 'didnt_get_that' after the LLM produced
+        no actions on the previous commit, so the user knows the round
+        was a miss and the recorder is ready for another try."""
+        self._state.prompt = t(placeholder_key)
         self._state.flux = ""
         self._state.status = t("write_mode_on") if write_mode else ""
         self._state.stateLabel = t("state_listening")

@@ -429,7 +429,17 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _stop_recording(self) -> None:
+    def _stop_recording(self, *, transcribe_tail: bool = True) -> None:
+        """Close the mic and (by default) transcribe any audio captured
+        since the last commit as one final 'tail' commit.
+
+        Set ``transcribe_tail=False`` when the stop is triggered by the
+        system (auto-stop after a command, idle-timeout, etc.) rather
+        than by the user. In those cases the user wasn't meant to be
+        speaking — anything on the buffer is noise or stray follow-up
+        the user didn't intend as a new command, and forcing a final
+        Whisper pass on it produces spurious transcriptions like the
+        "I teraz co myślisz?" the user reported."""
         if not self._recorder.is_recording:
             return
         self._partial_timer.stop()
@@ -443,6 +453,10 @@ class MainWindow(QMainWindow):
         # off-thread; we don't want playback held down for the duration.
         self._end_dictation_lifecycle()
         self._emit_tray_state()
+        if not transcribe_tail:
+            self._status.setText(t("status_idle"))
+            self._osd.hide_after(300)
+            return
         sr = self._recorder.sample_rate
         remaining = full[self._committed_samples:]
         if remaining.size < int(0.2 * sr) or not self._detector.has_speech(remaining):
@@ -453,8 +467,26 @@ class MainWindow(QMainWindow):
         self._osd.set_thinking(self._osd._state.prompt or "", t("transcribing"))
         self._submit_transcribe(remaining, kind="commit")
 
+    # OSD states during which Whisper should actively transcribe new
+    # audio. The "system is busy" states — loading / thinking /
+    # executing — are excluded so we don't waste CPU on noise the user
+    # isn't meant to be producing and don't race partials against OSD
+    # transitions. "committed" stays IN the active set on purpose:
+    # it's how the OSD looks after a pure-text commit (no action
+    # fired) when the user is still recording and may continue
+    # dictating; without this, post-text dictation would freeze with
+    # no way back to listening short of toggling the hotkey. For the
+    # command-flow committed (auto-stop scheduled in ~150 ms),
+    # _stop_recording's transcribe_tail=False drops anything Whisper
+    # captures during the brief window, so allowing it here doesn't
+    # leak spurious commits.
+    _WHISPER_ACTIVE_STATES = frozenset({"listening", "pending", "committed"})
+
     def _on_partial_tick(self) -> None:
         if not self._recorder.is_recording:
+            return
+        # Gate on OSD state — see _WHISPER_ACTIVE_STATES above.
+        if self._osd._state.stateKind not in self._WHISPER_ACTIVE_STATES:
             return
         sr = self._recorder.sample_rate
         full = self._recorder.snapshot()
@@ -710,12 +742,60 @@ class MainWindow(QMainWindow):
             else:
                 self._osd.set_committed(original_text, transient_ms=1500)
 
-        # Auto-stop if a command-style action just ran. Deferred so the
-        # OSD's post-execution frame renders before recording stops.
-        if self._auto_stop_pending and self._auto_stop_after_action:
-            self._auto_stop_pending = False
+        # Capture "did a command fire this round?" before mutating the
+        # flag below. _auto_stop_pending is True iff command_executed
+        # fired during this inject worker's run.
+        command_fired = self._auto_stop_pending
+        self._auto_stop_pending = False  # always reset, never leak
+
+        # Auto-stop if a command-style action just ran AND auto-stop is
+        # configured. Deferred so the OSD's post-execution frame renders
+        # before recording stops.
+        if command_fired and self._auto_stop_after_action:
             if self._recorder.is_recording:
                 QTimer.singleShot(150, self._auto_stop)
+            return
+
+        # Pure-dictation path: the LLM produced no command actions this
+        # round (or auto-stop is off). If the recorder is still open and
+        # there's no pending parameter expected, give the user a fresh
+        # listening state with a "didn't get that" hint after a brief
+        # pause — long enough that a quick follow-up utterance starts
+        # transcribing first (set_partial transitions us to listening
+        # naturally and the reset becomes a no-op), short enough that a
+        # silent user sees the hint instead of a stale committed frame.
+        if (
+            not command_fired
+            and self._pending_action is None
+            and self._recorder.is_recording
+        ):
+            QTimer.singleShot(700, self._reset_to_listening_after_miss)
+
+    def _reset_to_listening_after_miss(self) -> None:
+        """Transition from 'committed' to a fresh 'listening' with a
+        'didn't get that' placeholder, so the user sees the LLM didn't
+        recognize a command and the recorder is ready for another try.
+        No-op if the user already started talking (set_partial moved us
+        to listening), entered pending mode, or stopped recording in
+        the interim."""
+        if not self._recorder.is_recording:
+            return
+        if self._pending_action is not None:
+            return
+        if self._osd._state.stateKind != "committed":
+            return
+        # Skip past the audio captured during Thinking/Executing/Done
+        # so the next partial-tick starts fresh — anything spoken
+        # during the system-busy window was unintended (the LLM just
+        # told us this round produced no command).
+        self._committed_samples = self._recorder.snapshot().shape[0]
+        self._reset_partial_render_state()
+        self._last_partial_norm = ""
+        self._stability_count = 0
+        self._osd.set_listening(
+            write_mode=self._write_mode,
+            placeholder_key="didnt_get_that",
+        )
 
     def _on_parse_started(self, prompt: str) -> None:
         """LLM parse is starting (only fires for the slow LLM parser)."""
@@ -769,10 +849,14 @@ class MainWindow(QMainWindow):
         self._osd.set_executing_progress(text)
 
     def _auto_stop(self) -> None:
-        """Quietly stop recording — used after a command finishes."""
+        """Quietly stop recording — used after a command finishes.
+        transcribe_tail=False so the buffer captured during
+        Thinking/Executing (which the user wasn't meant to dictate
+        into) doesn't get flushed through Whisper as a spurious final
+        commit when the mic closes."""
         if self._recorder.is_recording:
             print("[korder] auto-stop after command", flush=True)
-            self._stop_recording()
+            self._stop_recording(transcribe_tail=False)
             self._sync_button()
 
     def _on_mode_changed(self, write_mode: bool) -> None:
