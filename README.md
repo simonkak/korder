@@ -1,9 +1,35 @@
-# Korder
+<p align="center">
+  <img src="assets/icon.svg" width="96" alt="Korder" />
+</p>
 
-Voice transcription + voice-controlled actions for KDE Plasma (Wayland).
-Push a hotkey, dictate Polish or English, and have your speech either typed
-into the focused app or interpreted as commands (media control, Spotify,
-keyboard shortcuts) routed through a small local Gemma model.
+<h1 align="center">Korder</h1>
+
+<p align="center">
+  Voice transcription + voice-controlled actions for KDE Plasma (Wayland).<br>
+  Push a hotkey, dictate Polish or English, and have your speech either typed<br>
+  into the focused app or interpreted as commands (media control, Spotify,<br>
+  keyboard shortcuts) routed through a small local Gemma model.
+</p>
+
+<p align="center">
+  <img src="assets/screens/command_invocation_centered.png" alt="Listening — your spoken command" width="720" />
+  <br><em>Listening — your spoken command, with locked-prefix highlighting</em>
+</p>
+
+<p align="center">
+  <img src="assets/screens/command_thinking_centered.png" alt="Thinking — Gemma parses the command" width="720" />
+  <br><em>Thinking — Gemma parses the command into structured ops</em>
+</p>
+
+<p align="center">
+  <img src="assets/screens/command_execution_feedback_centered.png" alt="Executing — action narrates progress" width="720" />
+  <br><em>Executing — action narrates its progress in the Plasma accent color</em>
+</p>
+
+<p align="center">
+  <img src="assets/screens/command_pending_action_centered.png" alt="Awaiting — waiting for follow-up parameter" width="720" />
+  <br><em>Awaiting — pending parameter, waiting for your follow-up utterance</em>
+</p>
 
 Built for one user — me — on KDE Plasma 6 / Wayland. Nothing here is
 production-grade, but everything works on a quiet desk mic with a 7800 XT.
