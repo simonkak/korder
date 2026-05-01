@@ -12,6 +12,7 @@ from __future__ import annotations
 import subprocess
 
 from korder.actions.base import Action, register
+from korder.ui.i18n import t, tf
 from korder.ui.progress import emit_progress
 
 
@@ -20,7 +21,7 @@ def _do_lock_screen() -> None:
     delegates to the running screen locker (xss-lock, ksmserver,
     gnome-screensaver, etc.) — works on any DE without us needing to
     know which one."""
-    emit_progress("Locking screen…")
+    emit_progress(t("progress_locking_screen"))
     try:
         subprocess.run(
             ["xdg-screensaver", "lock"],
@@ -29,7 +30,7 @@ def _do_lock_screen() -> None:
             timeout=3,
         )
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-        emit_progress(f"Lock failed: {e}")
+        emit_progress(tf("progress_lock_failed", error=str(e)))
         print(f"[korder] lock_screen: xdg-screensaver failed: {e}", flush=True)
 
 

@@ -36,6 +36,7 @@ from urllib.parse import quote
 from korder import config
 from korder.actions.base import Action, register
 from korder.spotify_client import SpotifyClient
+from korder.ui.i18n import t, tf
 from korder.ui.progress import emit_progress
 
 # Each progress narration line gets at least this long on screen before the
@@ -77,12 +78,10 @@ def _open_uri_via_dbus_or_xdg(uri: str) -> None:
     subprocess.run(["sh", "-c", cmd], check=False, capture_output=True, timeout=10)
 
 
-_KIND_LABEL = {
-    "album": "album",
-    "track": "track",
-    "artist": "artist",
-    "playlist": "playlist",
-}
+def _kind_label(kind: str) -> str:
+    """Localize the Spotify result kind for inline narration. Falls back
+    to the generic 'result' label when the kind is empty or unknown."""
+    return t(f"kind_{kind}") if kind else t("kind_result")
 
 
 def _spotify_play_query(query: str, kind: str) -> None:
@@ -95,25 +94,28 @@ def _spotify_play_query(query: str, kind: str) -> None:
     action is doing during the Executing state.
     """
     if not query:
-        emit_progress("Opening Spotify…")
+        emit_progress(t("progress_opening_spotify"))
         _open_uri_via_dbus_or_xdg("spotify:")
         return
     client = _get_client()
     if client is not None:
-        emit_progress(f"Searching Spotify for {query}…")
+        emit_progress(tf("progress_searching_spotify", query=query))
         result = client.search_full(query, kind=kind)
         if result and result.get("uri"):
-            label = _KIND_LABEL.get(result.get("kind", ""), "result")
             name = result.get("name") or query
-            emit_progress(f"Found {label}: {name}")
+            emit_progress(tf(
+                "progress_found",
+                kind=_kind_label(result.get("kind", "")),
+                name=name,
+            ))
             time.sleep(_PROGRESS_DWELL_S)
-            emit_progress(f"Playing {name}")
+            emit_progress(tf("progress_playing", name=name))
             print(f"[korder] Spotify: playing {result['uri']} (kind={result.get('kind')}) for query {query!r}", flush=True)
             _open_uri_via_dbus_or_xdg(result["uri"])
             return
     # Fallback: open search UI, user clicks
     fallback_uri = f"spotify:search:{quote(query)}"
-    emit_progress(f"No match — opening Spotify search for {query}")
+    emit_progress(tf("progress_no_match", query=query))
     print(f"[korder] Spotify: no API result; opening search {fallback_uri}", flush=True)
     _open_uri_via_dbus_or_xdg(fallback_uri)
 

@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 from korder import config
 from korder.actions.base import Action, register
+from korder.ui.i18n import tf
 from korder.ui.progress import emit_progress
 
 
@@ -60,10 +61,10 @@ def _engine_label() -> str:
 
 
 def _xdg_open(url: str, *, narrate_label: str, query: str) -> None:
-    """Shared xdg-open helper for all URL actions. Emits "Searching X
-    for query…" before, "Opened X" after. Failures narrate the error
-    instead of silently dropping."""
-    emit_progress(f"Searching {narrate_label} for {query}…")
+    """Shared xdg-open helper for all URL actions. Emits localized
+    "searching X for query…" before, "opened X" after. Failures narrate
+    the error instead of silently dropping."""
+    emit_progress(tf("progress_searching", engine=narrate_label, query=query))
     try:
         subprocess.run(
             ["xdg-open", url],
@@ -72,10 +73,10 @@ def _xdg_open(url: str, *, narrate_label: str, query: str) -> None:
             timeout=5,
         )
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-        emit_progress(f"xdg-open failed: {e}")
+        emit_progress(tf("progress_xdg_failed", error=str(e)))
         print(f"[korder] web action: xdg-open failed: {e}", flush=True)
         return
-    emit_progress(f"Opened {narrate_label}")
+    emit_progress(tf("progress_opened_search", engine=narrate_label))
 
 
 def _do_web_search(query: str) -> None:

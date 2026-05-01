@@ -26,6 +26,7 @@ from korder.audio.vad import SpeechDetector
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import YdotoolBackend, InjectError
 from korder.ui.osd import OSDWindow
+from korder.ui.i18n import t
 from korder.ui.progress import progress_signal
 
 
@@ -177,7 +178,7 @@ class MainWindow(QMainWindow):
         central = QWidget()
         layout = QVBoxLayout(central)
 
-        self._status = QLabel("Idle. Use the tray icon or hotkey to dictate.")
+        self._status = QLabel(t("status_idle"))
         layout.addWidget(self._status)
 
         self._transcript = QPlainTextEdit()
@@ -233,7 +234,7 @@ class MainWindow(QMainWindow):
             self._ducker.unduck()
         except Exception:
             pass
-        self._status.setText("Cancelled.")
+        self._status.setText(t("status_cancelled"))
         self._osd.hide_after(150)
         self._sync_button()
 
@@ -253,7 +254,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Mic error: {e}", 6000)
             return
         self._ducker.duck()
-        self._status.setText("Listening...")
+        self._status.setText(t("status_listening"))
         self._osd.set_listening(write_mode=self._write_mode)
         self._partial_in_flight = False
         self._committed_samples = 0
@@ -276,11 +277,11 @@ class MainWindow(QMainWindow):
         sr = self._recorder.sample_rate
         remaining = full[self._committed_samples:]
         if remaining.size < int(0.2 * sr) or not self._detector.has_speech(remaining):
-            self._status.setText("Idle.")
+            self._status.setText(t("status_idle"))
             self._osd.hide_after(300)
             return
-        self._status.setText("Transcribing...")
-        self._osd.set_thinking(self._osd._state.prompt or "", "transcribing…")
+        self._status.setText(t("status_transcribing"))
+        self._osd.set_thinking(self._osd._state.prompt or "", t("transcribing"))
         self._submit_transcribe(remaining, kind="commit")
 
     def _on_partial_tick(self) -> None:
@@ -444,7 +445,7 @@ class MainWindow(QMainWindow):
         text = text.strip()
         if not text:
             if not self._recorder.is_recording:
-                self._status.setText("Idle.")
+                self._status.setText(t("status_idle"))
                 self._osd.hide_after(300)
             return
 
@@ -503,14 +504,14 @@ class MainWindow(QMainWindow):
             worker.start()
         else:
             if self._recorder.is_recording:
-                self._status.setText("Listening...")
+                self._status.setText(t("status_listening"))
                 self._osd.set_partial(text, write_mode=self._write_mode)
             else:
-                self._status.setText("Idle.")
+                self._status.setText(t("status_idle"))
                 self._osd.set_committed(text, transient_ms=1500)
 
         if self._recorder.is_recording:
-            self._status.setText("Listening...")
+            self._status.setText(t("status_listening"))
         else:
             self._status.setText("Idle.")
 
@@ -576,7 +577,7 @@ class MainWindow(QMainWindow):
         """Worker reports the user toggled write mode mid-commit."""
         self._write_mode = write_mode
         self.statusBar().showMessage(
-            "Write mode ON" if write_mode else "Write mode OFF (preview only)",
+            t("status_write_mode_on") if write_mode else t("status_write_mode_off"),
             3000,
         )
 
@@ -591,7 +592,15 @@ class MainWindow(QMainWindow):
         if action and action.parameters:
             param_label = next(iter(action.parameters.keys()))
         prompt_so_far = self._osd._state.prompt or action_name
-        hint = f"say the {param_label}…" if param_label else ""
+        # Look up a per-parameter hint; if the action's param name doesn't
+        # have a dedicated localized string (we ship "query" and "kind"),
+        # fall back to the generic pending-parameter hint.
+        if param_label:
+            specific_key = f"say_the_param_{param_label}"
+            specific = t(specific_key)
+            hint = specific if specific != specific_key else t("pending_param_hint")
+        else:
+            hint = t("pending_param_hint")
         self._osd.set_pending(prompt_so_far, hint)
         self.statusBar().showMessage(
             f"Pending: {action_name} waiting for parameter",
