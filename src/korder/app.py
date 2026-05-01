@@ -40,17 +40,28 @@ except ImportError:
 #   SPA-JSON format.
 # - PULSE_PROP: covers users on plain PulseAudio (libpulse format —
 #   space-separated key=value, no braces).
-os.environ.setdefault(
-    "PIPEWIRE_PROPS",
-    "{ application.name = Korder, application.icon_name = korder }",
+#
+# `application.id` and `application.process.binary` are how Plasma's
+# volume mixer looks up the matching .desktop file (installed below
+# in _install_desktop_entry). Without them — even with application.name
+# set — some mixer versions display the auto-derived "ALSA plug-in
+# [python3.12]" instead, because they prefer the .desktop-resolved
+# label over the raw stream property when neither application.id nor
+# process.binary point at a registered application.
+_PW_PROPS = (
+    "application.name = Korder, "
+    "application.icon_name = korder, "
+    "application.id = korder, "
+    "application.process.binary = korder"
 )
-os.environ.setdefault(
-    "PIPEWIRE_ALSA",
-    "{ application.name = Korder, application.icon_name = korder, node.name = Korder }",
-)
+os.environ.setdefault("PIPEWIRE_PROPS", "{ " + _PW_PROPS + " }")
+os.environ.setdefault("PIPEWIRE_ALSA", "{ " + _PW_PROPS + ", node.name = Korder }")
 os.environ.setdefault(
     "PULSE_PROP",
-    "application.name=Korder application.icon_name=korder",
+    "application.name=Korder "
+    "application.icon_name=korder "
+    "application.id=korder "
+    "application.process.binary=korder",
 )
 
 from PySide6.QtCore import QByteArray, QRectF, Qt
@@ -119,9 +130,12 @@ def _run_app() -> int:
 
     # Audio-server identity env vars are set at module-import time
     # (see top of this file — they have to land before sounddevice
-    # imports). Here we only install the icon file so the icon_name
-    # in those env vars resolves visually.
+    # imports). Here we install the side artifacts the env vars
+    # reference: an icon file (so application.icon_name resolves) and
+    # a .desktop entry (so application.id resolves to a real
+    # registered app, which is what the mixer's lookup actually wants).
     _install_tray_icon_in_theme()
+    _install_desktop_entry()
 
     app = QApplication(sys.argv)
     app.setApplicationName("Korder")
@@ -351,11 +365,16 @@ def _show_settings(parent: MainWindow) -> None:
 
 
 _TRAY_SVG = Path(__file__).resolve().parent / "ui" / "icons" / "tray.svg"
+_DESKTOP_SRC = Path(__file__).resolve().parent / "ui" / "icons" / "korder.desktop"
 
 # Where freedesktop's icon spec wants per-user app icons. Plasma's
 # volume mixer (and most GTK/Qt apps) look here when resolving an
 # `application.icon_name` like the one we set in PULSE_PROP below.
 _USER_ICON_PATH = Path.home() / ".local" / "share" / "icons" / "hicolor" / "scalable" / "apps" / "korder.svg"
+# Where the freedesktop spec wants per-user .desktop entries. The
+# volume mixer matches a stream's application.id against the basename
+# of files here (without ".desktop") to find display name + icon.
+_USER_DESKTOP_PATH = Path.home() / ".local" / "share" / "applications" / "korder.desktop"
 
 
 def _install_tray_icon_in_theme() -> None:
@@ -370,6 +389,31 @@ def _install_tray_icon_in_theme() -> None:
             _USER_ICON_PATH.write_bytes(_TRAY_SVG.read_bytes())
     except OSError as e:
         print(f"[korder] couldn't install tray icon: {e}", file=sys.stderr)
+
+
+def _install_desktop_entry() -> None:
+    """Install ~/.local/share/applications/korder.desktop so KDE's
+    volume mixer + app launcher + window-grouping logic can match
+    application.id=korder (set in PIPEWIRE_PROPS et al.) to a real
+    application metadata entry. The file is the canonical answer to
+    "what is this stream and how should I render it?" — without it,
+    the mixer falls back to its auto-generated label.
+
+    Idempotent on every launch — only writes if the destination is
+    missing, never overwrites a user customization. Always rewrites
+    when the bundled source has changed (different bytes), so package
+    updates with edited metadata land on next launch."""
+    try:
+        if not _DESKTOP_SRC.exists():
+            return
+        src_bytes = _DESKTOP_SRC.read_bytes()
+        if _USER_DESKTOP_PATH.exists():
+            if _USER_DESKTOP_PATH.read_bytes() == src_bytes:
+                return
+        _USER_DESKTOP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _USER_DESKTOP_PATH.write_bytes(src_bytes)
+    except OSError as e:
+        print(f"[korder] couldn't install desktop entry: {e}", file=sys.stderr)
 _TRAY_RENDER_SIZES = (16, 22, 24, 32, 48, 64)
 # Per-state foreground colors. idle uses the theme; the other two are
 # fixed accents so the user gets a consistent visual cue regardless of
