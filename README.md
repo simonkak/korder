@@ -37,7 +37,7 @@
 </p>
 
 <p align="center" width="100%">
-  <video src="https://github.com/simonkak/korder/raw/main/assets/screens/video_spotify.mp4" poster="assets/screens/video_spotify_poster.png" width="80%" controls></video>
+  <video src="https://github.com/user-attachments/assets/1553b06a-2d5d-4912-96bf-b685b0691098" width="80%" controls></video>
   <br><em>End-to-end Spotify command — Listening → Thinking → Executing (with action narration) → Done</em>
 </p>
 
