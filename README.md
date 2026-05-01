@@ -11,16 +11,18 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
 ## Features
 
 - **Live transcription** via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with the Vulkan backend (GPU-accelerated on AMD/Nvidia/Intel)
-- **Layer-shell OSD** (org.kde.layershell) — overlay never steals focus, stays above all windows
-- **System tray app** with global hotkey (KGlobalAccel via the IPC `korder toggle` command)
+- **Multi-state layer-shell OSD** (org.kde.layershell) — overlay never steals focus, stays above all windows; shows a status hint ("listening", "thinking", pending-parameter prompt) with a blinking cursor while you're mid-utterance
+- **System tray app** with global hotkey (KGlobalAccel via the IPC `korder toggle` command) and a Settings… dialog covering every config key — no hand-editing required
 - **Write mode toggle** — say *"Pisz"* to start typing into the focused app, *"Przestań"* to stop. Default is preview-only.
 - **Action vocabulary** dispatched via either a regex parser or a local LLM (Gemma via ollama):
     - Keys: Enter, Tab, Escape, Backspace
     - Shortcuts: Ctrl+Backspace (delete word), Ctrl+A (select all), Ctrl+Z (undo), Shift+Home/End (select line)
-    - Media: volume up/down/mute, play/pause, next/previous track (via kernel media keycodes — KDE routes to MPRIS + PipeWire automatically)
+    - Media: volume up/down/mute, play/pause, stop, next/previous track (via kernel media keycodes — KDE routes to MPRIS + PipeWire automatically)
     - Spotify: search and play albums or tracks via the Web API (free Client Credentials flow, no Premium required for search)
 - **Pending parameter handling** — say *"Spotify play"* … pause to think … *"Linkin Park"* and the second utterance becomes the search query for the first action
 - **Polish + English** trigger phrases for every action
+- **Optional Gemma thinking step** — slower (~1–2 s vs ~500 ms) but resolves ambiguous phrasings without hand-coded triggers; toggle via `[intent] thinking_mode`
+- **Auto-stop after a command** — fires once an action lands so you don't have to hit the hotkey twice; pure dictation and mode toggles keep the session open
 
 ## OS dependencies
 
@@ -83,12 +85,14 @@ Shortcut → Command/URL**. Common pick: `Ctrl+Space`.
 
 ## Configuration
 
-`~/.config/korderrc` is auto-created on first run with reasonable defaults.
-Some interesting knobs:
+The tray menu's **Settings…** entry exposes every key in a tabbed dialog —
+that's the recommended path. The underlying file is `~/.config/korderrc`,
+auto-created on first run with reasonable defaults; edit by hand if you
+prefer. Some interesting knobs:
 
 ```ini
 [whisper]
-model = medium          # tiny | base | small | medium | large-v3
+model = medium          # tiny | base | small | medium | large-v3 | large-v3-turbo
 language = pl           # whisper language hint; "pl"/"en"/etc. or empty for auto
 n_threads = 4
 
@@ -99,6 +103,18 @@ gain = 0.7              # software gain on captured audio; lower if mic too hot
 action_parser = regex   # "regex" (fast, deterministic) or "llm" (smarter, slower)
 llm_model = gemma4:e4b  # which ollama tag to use when action_parser = llm
 paste_mode = auto       # auto | always | never — clipboard-paste vs direct type
+
+# LLM intent-parser tuning (only applies when inject.action_parser = "llm").
+[intent]
+thinking_mode = false           # engage Gemma's reasoning loop before answering
+show_triggers_in_prompt = false # include trigger phrases in the prompt catalog
+timeout_s = 20                  # per-call timeout; generous so a slow think
+                                # doesn't trip the regex fallback
+
+[ui]
+show_history_on_start = false
+auto_stop_after_action = true   # stop recording once a command-style action
+                                # fires (dictation/mode toggles keep going)
 
 # Optional — Spotify Web API credentials. Without these, Spotify actions
 # fall back to opening search results (user clicks). Get them at
@@ -119,7 +135,8 @@ intent.
 | Delete word       | "delete word"                     | "usuń słowo", "skasuj słowo"          |
 | Select line       | "select line"                     | "zaznacz linię"                       |
 | Volume up/down    | "louder" / "quieter"              | "głośniej" / "ciszej"                 |
-| Play/pause        | "play music", "pause"             | "puść muzykę", "pauza"                |
+| Play/pause        | "play music", "pause"             | "puść muzykę", "pauza", "wznów"       |
+| Stop playback     | "stop playback"                   | "zatrzymaj odtwarzanie"               |
 | Next/prev track   | "next song" / "previous song"     | "następna piosenka" / "poprzednia"    |
 | Spotify album     | "spotify play Pink Floyd"         | "spotify zagraj Pink Floyd"           |
 | Spotify track     | "spotify play track Numb"         | "spotify zagraj utwór Numb"           |
