@@ -9,6 +9,12 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "sample_rate": "16000",
         "device": "",
         "gain": "0.7",
+        # Lower the system playback volume while Korder is recording, so
+        # speaker bleed doesn't confuse Whisper. Restored on stop and on
+        # crash via atexit. Only fires when ducking would actually lower
+        # the level (no-op if you're already below the target).
+        "duck_during_recording": "true",
+        "duck_volume_pct": "30",
     },
     "whisper": {
         "model": "medium",

@@ -23,6 +23,7 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
 - **Polish + English** trigger phrases for every action
 - **Optional Gemma thinking step** — slower (~1–2 s vs ~500 ms) but resolves ambiguous phrasings without hand-coded triggers; toggle via `[intent] thinking_mode`
 - **Auto-stop after a command** — fires once an action lands so you don't have to hit the hotkey twice; pure dictation and mode toggles keep the session open
+- **Auto-duck system volume while listening** (default on) — drops the default PipeWire sink to 30 % when the mic opens and restores the original level on stop, so speaker bleed stops confusing Whisper. Skipped if you're already quieter than the target; restored on crash via `atexit`. Requires `wpctl`.
 
 ## OS dependencies
 
@@ -97,7 +98,10 @@ language = pl           # whisper language hint; "pl"/"en"/etc. or empty for aut
 n_threads = 4
 
 [audio]
-gain = 0.7              # software gain on captured audio; lower if mic too hot
+gain = 0.7                      # software gain on captured audio; lower if mic too hot
+duck_during_recording = true    # lower system playback volume while listening
+duck_volume_pct = 30            # target volume (% of full) while ducked; no-op if
+                                # you're already quieter than this. Requires wpctl.
 
 [inject]
 action_parser = regex   # "regex" (fast, deterministic) or "llm" (smarter, slower)
@@ -149,7 +153,7 @@ intent.
 ## Development
 
 ```bash
-uv run pytest                                    # 110 tests, no external services required
+uv run pytest                                    # 119 tests, no external services required
 uv run pytest -m ollama                          # +39 integration tests against a live Gemma
 uv run python -m korder.intent_bench             # 21-case headless benchmark vs the current model
 uv run python -m korder.intent_bench --thinking  # …with Gemma's thinking step engaged

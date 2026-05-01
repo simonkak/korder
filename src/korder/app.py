@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from korder import config
 from korder.audio.capture import MicRecorder
+from korder.audio.ducker import VolumeDucker
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import InjectError, make_backend
 from korder.ui.main_window import MainWindow
@@ -121,6 +122,15 @@ def _run_app() -> int:
     osd = OSDWindow()
     osd.map_offscreen()
 
+    try:
+        duck_pct = int(cfg["audio"]["duck_volume_pct"])
+    except (KeyError, ValueError):
+        duck_pct = 30
+    ducker = VolumeDucker(
+        enabled=_bool(cfg["audio"]["duck_during_recording"]),
+        target_pct=duck_pct,
+    )
+
     window = MainWindow(
         engine=engine,
         recorder=recorder,
@@ -128,6 +138,7 @@ def _run_app() -> int:
         osd=osd,
         trailing_space=_bool(cfg["inject"]["trailing_space"]),
         auto_stop_after_action=_bool(cfg["ui"]["auto_stop_after_action"]),
+        ducker=ducker,
     )
 
     tray = _make_tray(window)

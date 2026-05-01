@@ -21,6 +21,7 @@ import time
 
 from korder.actions.base import get_action
 from korder.audio.capture import MicRecorder
+from korder.audio.ducker import VolumeDucker
 from korder.audio.vad import SpeechDetector
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import YdotoolBackend, InjectError
@@ -120,6 +121,7 @@ class MainWindow(QMainWindow):
         osd: OSDWindow,
         trailing_space: bool = True,
         auto_stop_after_action: bool = True,
+        ducker: VolumeDucker | None = None,
     ):
         super().__init__()
         self.setWindowTitle("Korder — transcript history")
@@ -131,6 +133,8 @@ class MainWindow(QMainWindow):
         self._osd = osd
         self._trailing_space = trailing_space
         self._auto_stop_after_action = auto_stop_after_action
+        # Always-present so call sites stay clean; defaults to disabled.
+        self._ducker = ducker if ducker is not None else VolumeDucker(False, 30)
         self._auto_stop_pending = False
         self._detector = SpeechDetector(sample_rate=recorder.sample_rate, aggressiveness=3)
         self._workers: set[_TranscribeWorker] = set()
@@ -216,6 +220,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.statusBar().showMessage(f"Mic error: {e}", 6000)
             return
+        self._ducker.duck()
         self._status.setText("Listening...")
         self._osd.set_listening(write_mode=self._write_mode)
         self._partial_in_flight = False
@@ -232,6 +237,10 @@ class MainWindow(QMainWindow):
         self._osd_throttle_timer.stop()
         self._pending_partial_text = None
         full = self._recorder.stop()
+        # Restore volume the moment the mic closes, regardless of whether
+        # transcription proceeds or short-circuits below. Whisper runs
+        # off-thread; we don't want playback held down for the duration.
+        self._ducker.restore()
         sr = self._recorder.sample_rate
         remaining = full[self._committed_samples:]
         if remaining.size < int(0.2 * sr) or not self._detector.has_speech(remaining):
@@ -391,6 +400,9 @@ class MainWindow(QMainWindow):
 
     def shutdown(self) -> None:
         """Called from app shutdown to flush in-flight workers."""
+        # Belt-and-braces: if quit fires while still recording, restore
+        # the volume before workers wind down. atexit catches the rest.
+        self._ducker.restore()
         for w in list(self._workers):
             w.wait(2000)
         for w in list(self._inject_workers):

@@ -193,6 +193,25 @@ class SettingsDialog(QDialog):
         self._device.addItem("(system default)", "")
         self._populate_audio_devices()
         af.addRow("Input device:", self._device)
+
+        self._duck_during_recording = QCheckBox(
+            "Lower system volume while listening"
+        )
+        self._duck_during_recording.setToolTip(
+            "Ducks the default PipeWire sink while recording so speaker "
+            "bleed doesn't confuse Whisper. Original level is restored "
+            "on stop (and on crash via atexit). Requires wpctl."
+        )
+        af.addRow("", self._duck_during_recording)
+
+        self._duck_volume_pct = QSpinBox()
+        self._duck_volume_pct.setRange(0, 100)
+        self._duck_volume_pct.setSuffix(" %")
+        self._duck_volume_pct.setToolTip(
+            "Target volume while listening, as a percentage of full. "
+            "30 % is usually enough to prevent bleed without going silent."
+        )
+        af.addRow("Duck to:", self._duck_volume_pct)
         outer.addWidget(audio)
 
         # Whisper group
@@ -400,6 +419,13 @@ class SettingsDialog(QDialog):
         if di < 0:
             di = self._device.findText(device_name)
         self._device.setCurrentIndex(di if di >= 0 else 0)
+        self._duck_during_recording.setChecked(
+            _truthy(c["audio"].get("duck_during_recording", "false"))
+        )
+        try:
+            self._duck_volume_pct.setValue(int(c["audio"].get("duck_volume_pct", "30")))
+        except (KeyError, ValueError):
+            self._duck_volume_pct.setValue(30)
 
         # Whisper
         self._model.setCurrentText(c["whisper"]["model"])
@@ -439,6 +465,10 @@ class SettingsDialog(QDialog):
         c["audio"]["gain"] = f"{self._gain.value():.2f}"
         c["audio"]["sample_rate"] = self._sample_rate.currentText()
         c["audio"]["device"] = self._device.currentData() or ""
+        c["audio"]["duck_during_recording"] = (
+            "true" if self._duck_during_recording.isChecked() else "false"
+        )
+        c["audio"]["duck_volume_pct"] = str(self._duck_volume_pct.value())
 
         c["whisper"]["model"] = self._model.currentText().strip()
         c["whisper"]["language"] = (self._language.currentData() or self._language.currentText()).strip()
