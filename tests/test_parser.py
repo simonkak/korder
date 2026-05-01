@@ -146,6 +146,35 @@ def test_reboot_and_sleep_also_go_pending():
     assert split_into_ops("suspend computer") == [("pending_action", "sleep")]
 
 
+def test_confirmation_tolerates_whisper_repetition_artifacts():
+    """Whisper sometimes emits the same word repeatedly with
+    punctuation between ('Nie. Nie. Nie. Nie. Nie. Nie.' for Polish
+    'no'). The op_factory's _is_word check must match the leading
+    token after stripping punctuation, not require a clean single
+    word."""
+    from korder.actions.base import get_action
+
+    sleep_action = get_action("sleep")
+    assert sleep_action is not None
+
+    # Whisper-repeated Polish "no" — should resolve as cancellation.
+    op = sleep_action.op_factory({"confirm": "Nie. Nie. Nie. Nie. Nie. Nie."})
+    assert op is not None and op[0] == "callable"
+
+    # Same shape for English "no" with trailing punctuation.
+    op = sleep_action.op_factory({"confirm": "No.   "})
+    assert op is not None and op[0] == "callable"
+
+    # Bare "tak" with punctuation still triggers the yes path.
+    op = sleep_action.op_factory({"confirm": "Tak!"})
+    assert op is not None and op[0] == "callable"
+
+    # A sentence that contains a no-word but doesn't START with it
+    # should fall through (NOT a false-positive cancel).
+    op = sleep_action.op_factory({"confirm": "I had to stop my car"})
+    assert op is None
+
+
 def test_shutdown_op_factory_yes_word_returns_callable():
     """The op_factory's tri-state behaviour: yes-words fire, no-words
     narrate cancellation, anything else returns None for fall-through."""

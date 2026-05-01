@@ -74,7 +74,8 @@ _SYSTEM_PROMPT = (
     "speak in any language Whisper transcribed — match meaning, not surface form.\n"
     "\n"
     "Return a single JSON object with this exact shape:\n"
-    '  {"actions": [{"phrase": "<exact substring of input>", "name": "<action_name>", "params": {...}}]}\n'
+    '  {"actions": [{"phrase": "<exact substring of input>", "name": "<action_name>", "params": {...}}],\n'
+    '   "response": "<optional natural-language reply to the user>"}\n'
     "\n"
     "Rules you must always follow:\n"
     "- If the transcript is plain dictation (description, prose, narrative, no imperative command), "
@@ -84,7 +85,12 @@ _SYSTEM_PROMPT = (
     "- Multiple actions in one input are allowed; return them in the order they appear.\n"
     "- Descriptive prose about a command (e.g., 'she pressed enter on the keyboard') is NOT an action.\n"
     "- For parameterized actions, extract relevant fields into `params`. If a required parameter "
-    "is not present in the input, leave `params` empty or omit it — do NOT invent values."
+    "is not present in the input, leave `params` empty or omit it — do NOT invent values.\n"
+    "\n"
+    "Optionally include `response` — a brief 'are you sure?' question — "
+    "ONLY when the action has a `confirm` parameter and the user did not "
+    "supply it. Write `response` in the same language as the input transcript. "
+    "Otherwise omit `response`."
 )
 
 
@@ -119,6 +125,9 @@ def _build_user_prompt(transcript: str, *, show_triggers: bool) -> str:
         '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_search", "params": {"query": "Linkin Park", "kind": "album"}}]}\n'
         '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
         '  "she pressed enter on the keyboard" → {"actions": []}\n'
+        '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
+        '  "uśpij komputer" → {"actions": [{"phrase": "uśpij komputer", "name": "sleep"}], "response": "Czy uśpić komputer? Powiedz tak lub nie."}\n'
+        '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
         "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
@@ -144,12 +153,12 @@ class IntentParser:
         # when thinking_mode is on. Surfaced for diagnostics (logged to
         # stderr in _call_ollama; readable by the benchmark dialog).
         self.last_thinking: str = ""
-        # Cache of LLM-generated user-facing strings, keyed on
-        # (kind, action_name, locale). Each entry is generated once
-        # per app session via _call_ollama_completion; subsequent
-        # lookups hit instantly. Sized small (≤20 actions × 2 locales
-        # × handful of kinds) so no eviction logic needed.
-        self._feedback_cache: dict[tuple[str, str, str], str] = {}
+        # Free-form natural-language reply from the LLM for the most
+        # recent parse, extracted from the JSON `response` field.
+        # Used today for confirmation prompts on destructive actions;
+        # ground for future conversational/TTS features. Empty string
+        # when the LLM didn't include a response (the common case).
+        self.last_response: str = ""
 
     def warm_up(self) -> None:
         """Fire-and-forget: tell ollama to page the model into VRAM,
@@ -222,115 +231,6 @@ class IntentParser:
                 return True
         return False
 
-    def warm_feedback_cache(self, locale: str = "en") -> None:
-        """Pre-generate confirmation prompts for every action that has a
-        'confirm' parameter, in the given locale, on a background
-        thread. Idempotent — skips cached entries. Called once at app
-        boot so the first time the user triggers a confirmable action,
-        the cached prompt is already there and the OSD update is
-        instant.
-
-        Generation is serial (not parallel) so we don't overload the
-        ollama queue — each completion is ~300-500ms and there are
-        only a handful of confirmable actions, so total is ~1-2s
-        running alongside whatever else happens at startup.
-        """
-        confirmable = [a for a in all_actions() if "confirm" in a.parameters]
-        if not confirmable:
-            return
-        def _populate() -> None:
-            for action in confirmable:
-                if ("confirm", action.name, locale) in self._feedback_cache:
-                    continue
-                # Side-effect of generate_confirm_prompt is to populate
-                # the cache; we ignore the return.
-                self.generate_confirm_prompt(action.name, locale)
-        threading.Thread(target=_populate, daemon=True).start()
-
-    def generate_confirm_prompt(
-        self,
-        action_name: str,
-        locale: str = "en",
-    ) -> str | None:
-        """Ask the LLM to phrase a natural confirmation question for a
-        destructive action, in the user's locale. Returns None if the
-        LLM call fails or the action isn't registered — caller should
-        fall back to the i18n template chain.
-
-        Cached per (action, locale) for the lifetime of the parser.
-        First call ~300-500ms, subsequent calls instant.
-        """
-        cached = self._feedback_cache.get(("confirm", action_name, locale))
-        if cached is not None:
-            return cached
-
-        action = get_action(action_name)
-        if action is None:
-            return None
-
-        prompt = (
-            "You are Korder, a voice assistant. The user just asked you "
-            "to perform an action that is irreversible or disruptive — "
-            "you must confirm before running it.\n\n"
-            f"Action description: {action.description}\n\n"
-            f"Locale: {locale} ({'Polish' if locale == 'pl' else 'English'})\n\n"
-            "Generate a brief confirmation question (max 12 words) in the "
-            "user's locale. Phrase it naturally and clearly — make it "
-            "obvious what is about to happen. End with a hint that the "
-            "user should say 'yes' or 'no' (or the locale equivalent).\n\n"
-            "Output ONLY the question, no explanation, no quotes, no prefix."
-        )
-        text = self._call_ollama_completion(prompt, max_tokens=40)
-        if not text:
-            return None
-        # Trim quotes/punctuation noise the model sometimes adds.
-        text = text.strip().strip('"').strip("'").strip()
-        if not text:
-            return None
-        self._feedback_cache[("confirm", action_name, locale)] = text
-        print(
-            f"[korder] feedback: confirm/{action_name}/{locale} → {text!r}",
-            flush=True, file=sys.stderr,
-        )
-        return text
-
-    def _call_ollama_completion(self, prompt: str, max_tokens: int = 80) -> str | None:
-        """Free-form text completion (no JSON mode, no structured
-        output). Used for generating user-facing strings on the fly.
-        Returns None on any error so callers can fall back gracefully.
-
-        ``think: false`` is critical: gemma4 is a thinking-capable
-        model and defaults to emitting reasoning tokens before the
-        actual answer. With our short num_predict budget, the
-        response field comes back empty (whole budget eaten by
-        thinking tokens that go to a separate field). Setting
-        ``think: false`` bypasses the reasoning step and writes
-        directly to the response field.
-        """
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "think": False,
-            "keep_alive": self.keep_alive_s,
-            "options": {
-                "temperature": 0.3,
-                "num_predict": max_tokens,
-            },
-        }
-        try:
-            req = urllib.request.Request(
-                _OLLAMA_URL,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except Exception as e:
-            print(f"[korder] feedback completion failed: {e}", flush=True, file=sys.stderr)
-            return None
-        return (body.get("response") or "").strip() or None
-
     def parse(self, transcript: str) -> list[tuple]:
         if not transcript:
             return []
@@ -339,6 +239,17 @@ class IntentParser:
         except Exception as e:
             print(f"[korder] intent LLM failed, falling back to regex: {e}", flush=True, file=sys.stderr)
             return split_into_ops(transcript)
+
+        # Safety net: clear hallucinated `confirm` params. Smaller
+        # models (e2b) sometimes invent a confirm value even when the
+        # user didn't say a confirmation word in the transcript — the
+        # most likely failure mode is also the most dangerous (LLM
+        # writes confirm="yes" → systemctl poweroff fires without
+        # actual user consent). The rule: the confirm value must
+        # appear literally in the input. Anything else is rejected
+        # and the action goes pending so the user has a real chance
+        # to confirm or cancel.
+        _scrub_hallucinated_confirm(transcript, actions)
 
         print(f"[korder] LLM actions for {transcript!r}: {actions!r}", flush=True, file=sys.stderr)
 
@@ -407,13 +318,50 @@ class IntentParser:
             )
         raw = body.get("response", "").strip()
         parsed = _extract_json_object(raw)
-        if isinstance(parsed, dict) and isinstance(parsed.get("actions"), list):
-            return parsed["actions"]
+        # Reset last_response — if the new parse omits it, we don't
+        # want to surface a stale message from the previous turn.
+        self.last_response = ""
+        if isinstance(parsed, dict):
+            response_field = parsed.get("response")
+            if isinstance(response_field, str) and response_field.strip():
+                self.last_response = response_field.strip()
+                print(
+                    f"[korder] LLM response for {transcript!r}: {self.last_response!r}",
+                    flush=True, file=sys.stderr,
+                )
+            if isinstance(parsed.get("actions"), list):
+                return parsed["actions"]
         if isinstance(parsed, list):
             return parsed
         if isinstance(parsed, dict) and "phrase" in parsed:
             return [parsed]
         raise ValueError(f"unexpected LLM output shape: {type(parsed).__name__}: {parsed!r}")
+
+
+def _scrub_hallucinated_confirm(transcript: str, actions: list) -> None:
+    """Clear `confirm` params whose value doesn't actually appear in the
+    transcript. Safety net against LLM-side hallucinations on
+    destructive actions (shutdown / reboot / sleep etc.) — the model
+    sometimes invents a confirm value mid-parse even when the user
+    didn't say a yes/no word, which would fire the action without
+    real consent. Mutates the actions list in place."""
+    lower = transcript.lower()
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        params = action.get("params")
+        if not isinstance(params, dict):
+            continue
+        confirm = params.get("confirm")
+        if not confirm or not isinstance(confirm, str):
+            continue
+        if confirm.strip().lower() not in lower:
+            print(
+                f"[korder] cleared hallucinated confirm={confirm!r} for "
+                f"action {action.get('name')!r} — not present in transcript",
+                flush=True, file=sys.stderr,
+            )
+            params["confirm"] = ""
 
 
 def segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | None:
