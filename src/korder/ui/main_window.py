@@ -429,7 +429,17 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _stop_recording(self) -> None:
+    def _stop_recording(self, *, transcribe_tail: bool = True) -> None:
+        """Close the mic and (by default) transcribe any audio captured
+        since the last commit as one final 'tail' commit.
+
+        Set ``transcribe_tail=False`` when the stop is triggered by the
+        system (auto-stop after a command, idle-timeout, etc.) rather
+        than by the user. In those cases the user wasn't meant to be
+        speaking — anything on the buffer is noise or stray follow-up
+        the user didn't intend as a new command, and forcing a final
+        Whisper pass on it produces spurious transcriptions like the
+        "I teraz co myślisz?" the user reported."""
         if not self._recorder.is_recording:
             return
         self._partial_timer.stop()
@@ -443,6 +453,10 @@ class MainWindow(QMainWindow):
         # off-thread; we don't want playback held down for the duration.
         self._end_dictation_lifecycle()
         self._emit_tray_state()
+        if not transcribe_tail:
+            self._status.setText(t("status_idle"))
+            self._osd.hide_after(300)
+            return
         sr = self._recorder.sample_rate
         remaining = full[self._committed_samples:]
         if remaining.size < int(0.2 * sr) or not self._detector.has_speech(remaining):
@@ -781,10 +795,14 @@ class MainWindow(QMainWindow):
         self._osd.set_executing_progress(text)
 
     def _auto_stop(self) -> None:
-        """Quietly stop recording — used after a command finishes."""
+        """Quietly stop recording — used after a command finishes.
+        transcribe_tail=False so the buffer captured during
+        Thinking/Executing (which the user wasn't meant to dictate
+        into) doesn't get flushed through Whisper as a spurious final
+        commit when the mic closes."""
         if self._recorder.is_recording:
             print("[korder] auto-stop after command", flush=True)
-            self._stop_recording()
+            self._stop_recording(transcribe_tail=False)
             self._sync_button()
 
     def _on_mode_changed(self, write_mode: bool) -> None:
