@@ -102,10 +102,12 @@ def test_consecutive_actions_no_text_between():
     ]
 
 
-def test_volume_up_uses_media_keycode():
-    """KDE listens for KEY_VOLUMEUP at the kernel layer; no external CLI."""
+def test_volume_up_uses_wpctl_op():
+    """Volume actions emit the system_volume op kind; the inject backend
+    runs wpctl directly. KEY_VOLUMEUP keycode path was removed because
+    KDE's media-key handler raced with the ducker."""
     ops = split_into_ops("głośniej")
-    assert ops == [("key", 115)]  # KEY_VOLUMEUP
+    assert ops == [("system_volume", "up")]
 
 
 def test_play_music_uses_media_keycode():
@@ -122,7 +124,7 @@ def test_text_then_volume_action():
     ops = split_into_ops("write this then volume down")
     assert ops == [
         ("text", "write this then"),
-        ("key", 114),  # KEY_VOLUMEDOWN
+        ("system_volume", "down"),
     ]
 
 

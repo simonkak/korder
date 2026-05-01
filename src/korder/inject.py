@@ -136,6 +136,8 @@ class YdotoolBackend:
                 self._run_subprocess(op[1])
             elif kind == "callable":
                 self._run_callable(op[1])
+            elif kind == "system_volume":
+                self._run_system_volume(op[1])
             # write_mode ops are advisory — caller filters them before
             # passing to execute_ops; if any slip through, no-op.
             if i < len(ops) - 1:
@@ -149,6 +151,28 @@ class YdotoolBackend:
             fn()
         except Exception as e:
             print(f"[korder] callable action failed: {e}", flush=True)
+
+    def _run_system_volume(self, kind: str) -> None:
+        """Adjust the default audio sink directly via wpctl. Replaces the
+        old KEY_VOLUMEUP/DOWN/MUTE keycode path: routing through KDE's
+        media-key handler raced with the ducker (the keycode arrived at
+        plasma-pa before our wpctl-set 'restore' value had propagated
+        there), so 'louder' would land on the still-ducked level. Going
+        through wpctl matches the ducker's own write path — same IPC
+        channel, no synchronization surprises."""
+        if kind == "up":
+            args = ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"]
+        elif kind == "down":
+            args = ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"]
+        elif kind == "mute_toggle":
+            args = ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]
+        else:
+            print(f"[korder] system_volume: unknown kind {kind!r}", flush=True)
+            return
+        try:
+            subprocess.run(args, check=False, capture_output=True, timeout=2.0)
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            print(f"[korder] system_volume {kind} failed: {e}", flush=True)
 
     def _run_subprocess(self, args: list[str]) -> None:
         """Issue a system command (volume, media, etc.) — fire and forget.

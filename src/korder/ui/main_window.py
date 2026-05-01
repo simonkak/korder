@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
 import time
 
 from korder.actions.base import get_action
-from korder.actions.codes import KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP
 from korder.audio.capture import MicRecorder
 from korder.audio.ducker import VolumeDucker
 from korder.audio.vad import SpeechDetector
@@ -29,12 +28,6 @@ from korder.inject import YdotoolBackend, InjectError
 from korder.ui.osd import OSDWindow
 from korder.ui.i18n import t
 from korder.ui.progress import progress_signal
-
-
-# Keycodes whose effect on the system mixer would conflict with the ducker's
-# saved level — when the user issues one of these, restore the duck snapshot
-# *before* the keypress fires so the action sees the user's true volume.
-_VOLUME_KEY_CODES = frozenset({KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP})
 
 
 class _TranscribeWorker(QThread):
@@ -135,12 +128,12 @@ class _InjectWorker(QThread):
                     had_command_action = True
             # If the user asked to change volume, the duck-while-listening
             # snapshot is no longer authoritative — they've issued an
-            # explicit volume command. Restore now so the keypress lands
-            # on the user's true level (otherwise "louder" goes from 30%
-            # ducked to 35% and the post-action restore-to-50% silently
-            # undoes the increase).
+            # explicit volume command. Restore now so the wpctl step
+            # lands on the user's true level (otherwise "louder" goes
+            # from 30% ducked to 35% and the post-action restore-to-50%
+            # silently undoes the increase).
             if self._ducker is not None and any(
-                op[0] == "key" and op[1] in _VOLUME_KEY_CODES for op in filtered
+                op[0] == "system_volume" for op in filtered
             ):
                 self._ducker.restore()
             self._injector.execute_ops(filtered)

@@ -1,20 +1,23 @@
 """Audio and media control actions.
 
-Uses standard kernel media keycodes injected via /dev/uinput. KDE Plasma's
-media-key handler picks these up and routes them: volume keys to PipeWire,
-play/skip keys to whichever MPRIS player is currently active. No
-playerctl, wpctl, or D-Bus glue required — same mechanism a hardware
-keyboard's media buttons use.
+Play/skip uses standard kernel media keycodes injected via /dev/uinput —
+KDE Plasma's media-key handler picks these up and routes them to whichever
+MPRIS player is currently active.
+
+Volume actions go through wpctl directly rather than KEY_VOLUMEUP/DOWN/
+MUTE keycodes. KDE's media-key path uses a separate volume cache that
+takes a moment to catch up to wpctl writes from the ducker, so a keycode
+arriving while the ducker had just restored to the user's true level
+would race against an out-of-date cache and step from the still-displayed
+ducked volume. Routing through wpctl puts ducker and volume-action writes
+on the same IPC, eliminating the race.
 """
 from korder.actions.base import Action, register
 from korder.actions.codes import (
-    KEY_MUTE,
     KEY_NEXTSONG,
     KEY_PLAYPAUSE,
     KEY_PREVIOUSSONG,
     KEY_STOPCD,
-    KEY_VOLUMEDOWN,
-    KEY_VOLUMEUP,
 )
 
 
@@ -28,7 +31,7 @@ register(Action(
         "en": ["louder", "volume up"],
         "pl": ["głośniej", "zwiększ głośność"],
     },
-    op_factory=lambda _args: ("key", KEY_VOLUMEUP),
+    op_factory=lambda _args: ("system_volume", "up"),
 ))
 
 register(Action(
@@ -41,7 +44,7 @@ register(Action(
         "en": ["quieter", "volume down"],
         "pl": ["ciszej", "zmniejsz głośność"],
     },
-    op_factory=lambda _args: ("key", KEY_VOLUMEDOWN),
+    op_factory=lambda _args: ("system_volume", "down"),
 ))
 
 register(Action(
@@ -51,7 +54,7 @@ register(Action(
         "en": ["mute audio", "toggle mute"],
         "pl": ["wycisz", "wycisz dźwięk"],
     },
-    op_factory=lambda _args: ("key", KEY_MUTE),
+    op_factory=lambda _args: ("system_volume", "mute_toggle"),
 ))
 
 register(Action(

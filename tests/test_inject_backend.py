@@ -96,13 +96,18 @@ def test_empty_text_is_noop(fake_backend):
     assert calls == []
 
 
-def test_volume_up_emits_media_keycode(fake_backend):
-    """Audio actions emit media keys (KDE/Plasma routes them automatically)."""
+def test_volume_up_routes_through_wpctl(fake_backend):
+    """Volume actions go through wpctl directly so they can't race with
+    the ducker's wpctl writes (an old keycode path lost increments)."""
     backend, calls = fake_backend
     backend.type("głośniej")
-    # KEY_VOLUMEUP = 115
-    key_call = next(c for c in calls if c[0] == "ydotool" and c[1] == "key")
-    assert "115:1" in key_call and "115:0" in key_call
+    wpctl_call = next(c for c in calls if c[0] == "wpctl")
+    assert wpctl_call == [
+        "wpctl",
+        "set-volume",
+        "@DEFAULT_AUDIO_SINK@",
+        "5%+",
+    ]
 
 
 def test_play_music_emits_play_pause_keycode(fake_backend):

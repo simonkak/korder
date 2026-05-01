@@ -19,8 +19,6 @@ from korder.actions.codes import (
     KEY_LCTRL,
     KEY_PLAYPAUSE,
     KEY_STOPCD,
-    KEY_VOLUMEDOWN,
-    KEY_VOLUMEUP,
 )
 from korder.intent import IntentParser
 
@@ -80,16 +78,16 @@ def test_stop_playback_distinct_from_play_pause(parser):
 
 # ---- Volume control ------------------------------------------------------
 
-@pytest.mark.parametrize("phrase, expected_key", [
-    ("głośniej", KEY_VOLUMEUP),
-    ("louder", KEY_VOLUMEUP),
-    ("ciszej", KEY_VOLUMEDOWN),
-    ("quieter", KEY_VOLUMEDOWN),
+@pytest.mark.parametrize("phrase, expected_kind", [
+    ("głośniej", "up"),
+    ("louder", "up"),
+    ("ciszej", "down"),
+    ("quieter", "down"),
 ])
-def test_volume_commands(parser, phrase, expected_key):
+def test_volume_commands(parser, phrase, expected_kind):
     ops = parser.parse(phrase)
-    assert any(op == ("key", expected_key) for op in ops), \
-        f"{phrase!r} expected ({expected_key}); got {ops!r}"
+    assert any(op == ("system_volume", expected_kind) for op in ops), \
+        f"{phrase!r} expected system_volume {expected_kind}; got {ops!r}"
 
 
 # ---- False positive avoidance --------------------------------------------
@@ -256,14 +254,14 @@ def test_spotify_search_no_kind_cue_leaves_kind_unset(parser, phrase, expected_q
 def test_multiple_actions_preserved_in_order(parser):
     """Two distinct actions in one utterance should both fire, in order."""
     ops = parser.parse("press enter and turn it down")
-    action_ops = [op for op in ops if op[0] in ("key", "combo", "callable")]
+    action_ops = [op for op in ops if op[0] in ("key", "combo", "callable", "system_volume")]
     assert any(op == ("key", KEY_ENTER) for op in action_ops), \
         f"Expected press_enter; got {ops!r}"
-    assert any(op == ("key", KEY_VOLUMEDOWN) for op in action_ops), \
+    assert any(op == ("system_volume", "down") for op in action_ops), \
         f"Expected volume_down; got {ops!r}"
     # Ordering: enter before volume_down (matches utterance order)
     enter_idx = next(i for i, op in enumerate(action_ops) if op == ("key", KEY_ENTER))
-    voldown_idx = next(i for i, op in enumerate(action_ops) if op == ("key", KEY_VOLUMEDOWN))
+    voldown_idx = next(i for i, op in enumerate(action_ops) if op == ("system_volume", "down"))
     assert enter_idx < voldown_idx, f"action order wrong: {action_ops!r}"
 
 
