@@ -68,6 +68,7 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
 - **Auto-stop after a command** — fires once an action lands so you don't have to hit the hotkey twice; pure dictation and mode toggles keep the session open
 - **Opportunistic LLM preload** — when the hotkey opens the mic, Korder fires a fire-and-forget load request to ollama in parallel with your speech + Whisper. By the time the transcript is ready the model is usually resident, so the LLM call jumps straight to *Thinking* even when `keep_alive_s` had expired. Cold-load logging on stderr shows whether warm-up beat Whisper to the finish.
 - **Auto-duck system volume while listening** (default on) — drops the default PipeWire sink to 30 % when the mic opens and restores the original level on stop, so speaker bleed stops confusing Whisper. Skipped if you're already quieter than the target; restored on crash via `atexit`. Volume commands ("louder", "quieter", "mute") restore the duck snapshot *before* the wpctl step lands, so an increment isn't silently overwritten by the post-action restore. Requires `wpctl`.
+- **Wake-word activation** (off by default, opt-in via the **Wake word** Settings tab) — when enabled, the mic stays open and the configured phrase ("hey jarvis", "alexa", "hey mycroft", or "ok nabu" from openWakeWord's pretrained catalog) fires a dictation session as if you'd pressed the hotkey. Hotkey path keeps working alongside. Tray icon flips to a soft-blue waveform while wake-listening, warm accent while dictating; tooltip changes too so you always know whether the mic is open and why. Auto-cancels back to wake-listening on accidental wakes (configurable idle-timeout). Requires the optional dep — install with `uv sync --extra wake`. Detector runs on CPU via ONNX, ~5 % of one core when idle.
 
 ## OS dependencies
 
@@ -135,6 +136,17 @@ OSD shows a "Press ESC to cancel" hint while listening — common pick is
 `Esc`, though it has to go through KGlobalAccel since the OSD is a
 focusless overlay).
 
+For wake-word activation, install the extra and enable it in the Settings
+dialog's **Wake word** tab:
+
+```bash
+uv sync --extra wake
+```
+
+The IPC accepts `wake-toggle`, `wake-on`, and `wake-off` if you want a
+hotkey to flip wake-mode without opening the dialog (or you'd rather the
+mic isn't listening 24/7 and only enable it on demand).
+
 ## Configuration
 
 The tray menu's **Settings…** entry exposes every key in a tabbed dialog —
@@ -189,6 +201,22 @@ client_secret =
 # canonical URL.
 [web]
 search_engine = duckduckgo
+
+# Optional — wake-word activation. Off by default. When enabled, the mic
+# stays open and the configured phrase opens a dictation session as if
+# the hotkey had fired. Requires `uv sync --extra wake`.
+[wake]
+enabled = false
+engine = openwakeword             # only option today
+phrase = hey_jarvis               # openwakeword catalog: hey_jarvis,
+                                  # alexa, hey_mycroft, ok_nabu (or your
+                                  # own model name if you trained one)
+sensitivity = 0.5                 # 0.0–1.0; lower = more triggers,
+                                  # higher = fewer false positives
+idle_timeout_s = 5                # cancel dictation back to wake-listening
+                                  # if no speech arrives within this many
+                                  # seconds (catches accidental wakes); 0
+                                  # disables the auto-cancel
 ```
 
 ## Picking your Gemma model
