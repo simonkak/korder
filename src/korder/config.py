@@ -67,6 +67,12 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "client_id": "",
         "client_secret": "",
     },
+    # Web-search action — picks the engine that "search for X" / "google X" /
+    # "wyszukaj X" voice commands route to. Supported: duckduckgo (default),
+    # google, bing, startpage, ecosia. Unknown values fall back to duckduckgo.
+    "web": {
+        "search_engine": "duckduckgo",
+    },
 }
 
 
