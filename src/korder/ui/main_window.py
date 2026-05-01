@@ -88,10 +88,20 @@ class _InjectWorker(QThread):
                 # a separate Loading state so the user understands the
                 # extra second isn't reasoning, it's paging the model in.
                 if self._injector.is_slow_parser and not self._injector.is_op_parser_warm():
+                    print(
+                        "[korder] parse: model not resident — cold start, showing Loading",
+                        flush=True, file=sys.stderr,
+                    )
                     self.loading_started.emit()
                 else:
                     self.parse_started.emit()
+                t0 = time.perf_counter()
                 ops = self._injector.parse_ops(self._payload)
+                if self._injector.is_slow_parser:
+                    print(
+                        f"[korder] parse: completed in {(time.perf_counter()-t0)*1000:.0f} ms",
+                        flush=True, file=sys.stderr,
+                    )
                 self.parse_done.emit()
             filtered: list[tuple] = []
             had_command_action = False

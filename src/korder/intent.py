@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -152,6 +153,19 @@ class IntentParser:
         call repeatedly — an already-resident model just bumps its
         keep_alive timer. Returns immediately; the actual HTTP call
         runs on a daemon thread."""
+        already_loaded = self.is_model_loaded()
+        if already_loaded:
+            print(
+                f"[korder] warm-up: {self.model} already resident — "
+                f"keep_alive bumped",
+                flush=True, file=sys.stderr,
+            )
+        else:
+            print(
+                f"[korder] warm-up: {self.model} not resident — "
+                f"kicking off background load",
+                flush=True, file=sys.stderr,
+            )
         payload = {
             "model": self.model,
             "prompt": "",
@@ -159,6 +173,7 @@ class IntentParser:
             "keep_alive": self.keep_alive_s,
         }
         def _send() -> None:
+            t0 = time.perf_counter()
             try:
                 req = urllib.request.Request(
                     _OLLAMA_URL,
@@ -170,7 +185,17 @@ class IntentParser:
             except Exception as e:
                 # Warm-up is opportunistic; failure here is fine —
                 # the actual parse call will surface a real error.
-                print(f"[korder] warm-up failed: {e}", file=sys.stderr)
+                print(
+                    f"[korder] warm-up of {self.model} failed: {e}",
+                    flush=True, file=sys.stderr,
+                )
+                return
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            verb = "bumped" if already_loaded else "loaded"
+            print(
+                f"[korder] warm-up: {self.model} {verb} in {elapsed_ms:.0f} ms",
+                flush=True, file=sys.stderr,
+            )
         threading.Thread(target=_send, daemon=True).start()
 
     def is_model_loaded(self) -> bool:
