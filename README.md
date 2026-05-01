@@ -52,7 +52,7 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
     - Web actions (xdg-routed, opens default browser): web search (DuckDuckGo / Google / Bing / Startpage / Ecosia), YouTube search, Wikipedia (auto-picks language from system locale), Maps
     - System: lock screen via `xdg-screensaver lock`
 - **Pending parameter handling** — say *"Spotify play"* … pause to think … *"Linkin Park"* and the second utterance becomes the search query for the first action
-- **Polish + English** trigger phrases for every action
+- **Multilingual intent** — regex mode ships hardcoded PL + EN trigger phrases for every action; LLM mode (Gemma) understands intent across any language it speaks (so Whisper can transcribe German/Spanish/French/etc. and the right action still fires)
 - **Optional Gemma thinking step** — slower (~1–2 s vs ~500 ms) but resolves ambiguous phrasings without hand-coded triggers; toggle via `[intent] thinking_mode`
 - **Auto-stop after a command** — fires once an action lands so you don't have to hit the hotkey twice; pure dictation and mode toggles keep the session open
 - **Auto-duck system volume while listening** (default on) — drops the default PipeWire sink to 30 % when the mic opens and restores the original level on stop, so speaker bleed stops confusing Whisper. Skipped if you're already quieter than the target; restored on crash via `atexit`. Requires `wpctl`.
