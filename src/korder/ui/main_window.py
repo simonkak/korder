@@ -261,10 +261,7 @@ class MainWindow(QMainWindow):
             self._recorder.stop()
         except Exception:
             pass
-        try:
-            self._ducker.restore()
-        except Exception:
-            pass
+        self._end_dictation_lifecycle()
         self._status.setText(t("status_cancelled"))
         self._osd.hide_after(150)
         self._sync_button()
@@ -284,7 +281,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.statusBar().showMessage(f"Mic error: {e}", 6000)
             return
-        self._ducker.duck()
+        self._begin_dictation_lifecycle()
         self._status.setText(t("status_listening"))
         self._osd.set_listening(write_mode=self._write_mode)
         # Opportunistic preload — kick the model load now (fire-and-
@@ -300,6 +297,23 @@ class MainWindow(QMainWindow):
         self._reset_partial_render_state()
         self._partial_timer.start()
 
+    def _begin_dictation_lifecycle(self) -> None:
+        """Resources to acquire for the duration of a dictation session,
+        as opposed to merely 'mic is open'. Today the two events
+        coincide; once wake-word activation lands, the mic may already
+        be open (for the wake listener) when dictation begins, and the
+        duck has to fire on dictation start, not mic open."""
+        self._ducker.duck()
+
+    def _end_dictation_lifecycle(self) -> None:
+        """Mirror of _begin_dictation_lifecycle. Called from every exit
+        path (auto-stop, manual stop, cancel, error) so the duck snapshot
+        is always restored exactly once per dictation."""
+        try:
+            self._ducker.restore()
+        except Exception:
+            pass
+
     def _stop_recording(self) -> None:
         if not self._recorder.is_recording:
             return
@@ -310,7 +324,7 @@ class MainWindow(QMainWindow):
         # Restore volume the moment the mic closes, regardless of whether
         # transcription proceeds or short-circuits below. Whisper runs
         # off-thread; we don't want playback held down for the duration.
-        self._ducker.restore()
+        self._end_dictation_lifecycle()
         sr = self._recorder.sample_rate
         remaining = full[self._committed_samples:]
         if remaining.size < int(0.2 * sr) or not self._detector.has_speech(remaining):
@@ -472,7 +486,7 @@ class MainWindow(QMainWindow):
         """Called from app shutdown to flush in-flight workers."""
         # Belt-and-braces: if quit fires while still recording, restore
         # the volume before workers wind down. atexit catches the rest.
-        self._ducker.restore()
+        self._end_dictation_lifecycle()
         for w in list(self._workers):
             w.wait(2000)
         for w in list(self._inject_workers):
