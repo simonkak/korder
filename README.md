@@ -165,6 +165,9 @@ thinking_mode = false           # engage Gemma's reasoning loop before answering
 show_triggers_in_prompt = false # include trigger phrases in the prompt catalog
 timeout_s = 20                  # per-call timeout; generous so a slow think
                                 # doesn't trip the regex fallback
+keep_alive_s = 300              # how long ollama keeps the model in VRAM after
+                                # a call. 0 unloads immediately (frees ~9.5 GB
+                                # on E4B but pays ~3s cold-load next call).
 
 [ui]
 show_history_on_start = false

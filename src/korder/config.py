@@ -53,6 +53,13 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # like Spotify search). Matches the pending-parameter window in
         # main_window so the timeouts compose coherently.
         "timeout_s": "20",
+        # How long ollama keeps the model resident in VRAM after a call.
+        # Default 300s matches ollama's own default and keeps follow-up
+        # calls warm (~0.2s each). Lower values free VRAM (~9.5 GB on
+        # E4B) sooner at the cost of a ~3s cold-load on the next call.
+        # 0 unloads immediately. Useful if you want VRAM back for other
+        # apps between dictation bursts.
+        "keep_alive_s": "300",
     },
     "ui": {
         "show_history_on_start": "false",

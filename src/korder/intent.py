@@ -130,11 +130,13 @@ class IntentParser:
         timeout_s: float = 8.0,
         thinking_mode: bool = False,
         show_triggers_in_prompt: bool = False,
+        keep_alive_s: float = 300.0,
     ):
         self.model = model
         self.timeout_s = timeout_s
         self.thinking_mode = thinking_mode
         self.show_triggers_in_prompt = show_triggers_in_prompt
+        self.keep_alive_s = keep_alive_s
         # Reasoning trace from the most recent _call_ollama. Populated only
         # when thinking_mode is on. Surfaced for diagnostics (logged to
         # stderr in _call_ollama; readable by the benchmark dialog).
@@ -184,6 +186,7 @@ class IntentParser:
             "prompt": user_prompt,
             "stream": False,
             "options": {"temperature": 0.0, "num_predict": 512},
+            "keep_alive": self.keep_alive_s,
         }
         if self.thinking_mode:
             # Ollama's /api/generate suppresses the "thinking" field

@@ -310,6 +310,19 @@ class SettingsDialog(QDialog):
         )
         f.addRow("LLM timeout:", self._intent_timeout)
 
+        self._intent_keep_alive = QSpinBox()
+        self._intent_keep_alive.setRange(0, 3600)
+        self._intent_keep_alive.setSuffix(" s")
+        self._intent_keep_alive.setSpecialValueText("0 — unload immediately")
+        self._intent_keep_alive.setToolTip(
+            "How long ollama keeps the model resident in VRAM after a "
+            "call. Default 300s keeps follow-up calls warm (~0.2s); 0 "
+            "unloads immediately and frees ~9.5 GB on E4B at the cost "
+            "of a ~3s cold-load on the next call. Lower this if you'd "
+            "rather have VRAM for other apps between dictation bursts."
+        )
+        f.addRow("LLM keep-alive:", self._intent_keep_alive)
+
         # Subtle separator + right-aligned benchmark action. Spanning the
         # form's full width (single-arg addRow) avoids the field-column
         # indent the empty-label form rows produce.
@@ -453,6 +466,10 @@ class SettingsDialog(QDialog):
             self._intent_timeout.setValue(int(float(c["intent"]["timeout_s"])))
         except (KeyError, ValueError):
             self._intent_timeout.setValue(20)
+        try:
+            self._intent_keep_alive.setValue(int(float(c["intent"]["keep_alive_s"])))
+        except (KeyError, ValueError):
+            self._intent_keep_alive.setValue(300)
 
         # Spotify
         self._spotify_client_id.setText(c["spotify"]["client_id"])
@@ -489,6 +506,7 @@ class SettingsDialog(QDialog):
             "true" if self._intent_show_triggers.isChecked() else "false"
         )
         c["intent"]["timeout_s"] = str(self._intent_timeout.value())
+        c["intent"]["keep_alive_s"] = str(self._intent_keep_alive.value())
 
         c["spotify"]["client_id"] = self._spotify_client_id.text().strip()
         c["spotify"]["client_secret"] = self._spotify_client_secret.text().strip()
