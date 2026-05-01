@@ -61,6 +61,7 @@ class _InjectWorker(QThread):
     parse_started = Signal()  # LLM parse is about to start (slow path)
     loading_started = Signal()  # LLM model not resident — cold load + parse
     parse_done = Signal()  # parse finished, executing now
+    cancel_requested = Signal()  # user said 'cancel'/'nevermind' — abort it all
 
     def __init__(
         self,
@@ -105,6 +106,19 @@ class _InjectWorker(QThread):
                         flush=True, file=sys.stderr,
                     )
                 self.parse_done.emit()
+            # Cancel takes priority over everything else in the batch.
+            # When the user said 'cancel' / 'nevermind', drop any pending
+            # text and any other actions in the same utterance — the
+            # whole transcript is discarded. parse_done already fired so
+            # the OSD has cleaned up its Thinking state; the main thread
+            # handles the rest via cancel_requested.
+            if any(op[0] == "cancel" for op in ops):
+                print(
+                    "[korder] cancel_session: aborting batch, signalling main thread",
+                    flush=True, file=sys.stderr,
+                )
+                self.cancel_requested.emit()
+                return
             filtered: list[tuple] = []
             had_command_action = False
             for op in ops:
@@ -667,6 +681,7 @@ class MainWindow(QMainWindow):
             worker.parse_started.connect(lambda t=text: self._on_parse_started(t))
             worker.loading_started.connect(lambda t=text: self._on_loading_started(t))
             worker.parse_done.connect(self._on_parse_done)
+            worker.cancel_requested.connect(self._on_cancel_requested)
             worker.finished.connect(lambda w=worker: self._reap_inject(w))
             self._inject_workers.add(worker)
             worker.start()
@@ -721,6 +736,17 @@ class MainWindow(QMainWindow):
         status. The real action description would need an extra signal."""
         if self._injector and self._injector.is_slow_parser:
             self._osd.set_executing(self._osd._state.prompt or "")
+
+    def _on_cancel_requested(self) -> None:
+        """User said 'cancel' / 'nevermind' mid-recording. The worker
+        already aborted the inject batch (no text typed, no actions
+        fired). Tear down the recorder + OSD the same way the ESC-key
+        cancel path does, and clear any pending-action / auto-stop
+        bookkeeping so the next session starts fresh."""
+        print("[korder] cancel_session: aborting recording on user request", flush=True)
+        self._auto_stop_pending = False
+        self._pending_action = None
+        self.cancel_recording()
 
     def _on_inject_failed(self, msg: str) -> None:
         self.statusBar().showMessage(f"Inject failed: {msg}", 8000)
@@ -807,6 +833,7 @@ class MainWindow(QMainWindow):
         worker.command_executed.connect(self._on_command_executed)
         worker.parse_started.connect(lambda t=param_text: self._on_parse_started(t))
         worker.parse_done.connect(self._on_parse_done)
+        worker.cancel_requested.connect(self._on_cancel_requested)
         worker.finished.connect(lambda w=worker: self._reap_inject(w))
         self._inject_workers.add(worker)
         worker.start()

@@ -132,6 +132,27 @@ def test_pisz_emits_write_mode_on():
     assert split_into_ops("Pisz") == [("write_mode", True)]
 
 
+def test_cancel_session_emits_cancel_op():
+    """cancel_session emits a ('cancel', None) op; the inject worker
+    detects it and aborts the whole batch rather than executing
+    anything. Trigger phrases stay multi-word ('nevermind', 'cancel
+    that') to avoid bare-'cancel' false positives in dictated speech."""
+    assert split_into_ops("nevermind") == [("cancel", None)]
+    assert split_into_ops("cancel that") == [("cancel", None)]
+
+
+def test_cancel_appears_alongside_dictation():
+    """When cancel appears mid-utterance the parser still emits the
+    text-before + cancel ops; the inject worker is responsible for
+    treating cancel as a destructive override that drops the text."""
+    ops = split_into_ops("hello world nevermind")
+    assert ("cancel", None) in ops
+    # Text before should also be present so the worker has the chance
+    # to discard it explicitly rather than the parser hiding it.
+    text_ops = [op for op in ops if op[0] == "text"]
+    assert any("hello world" in op[1] for op in text_ops)
+
+
 def test_przestań_emits_write_mode_off():
     assert split_into_ops("Przestań") == [("write_mode", False)]
 

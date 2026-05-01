@@ -302,6 +302,7 @@ across whichever language Whisper transcribes.
 | Lock screen       | "lock screen"                                     |
 | Write mode on     | "start writing"                                   |
 | Write mode off    | "stop writing"                                    |
+| Cancel session    | "cancel that", "nevermind", "forget it"           |
 
 ## Development
 
