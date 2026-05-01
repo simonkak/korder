@@ -228,6 +228,22 @@ class OSDWindow(QObject):
         self._state.visible = True
         self._hide_timer.stop()
 
+    def set_executing_progress(self, text: str) -> None:
+        """Update the center text mid-execution — narration like
+        "Searching for X" / "Found album Y" / "Playing Y". State stays
+        Executing; the leading label and pulse don't change. Caller is
+        responsible for the final transition (typically set_committed)
+        once the action completes."""
+        self._state.prompt = text or ""
+        self._state.flux = ""
+        self._state.status = ""
+        self._state.stateLabel = t("state_executing")
+        self._state.stateKind = "executing"
+        self._state.showCursor = False
+        self._state.placeholderMode = False
+        self._state.visible = True
+        self._hide_timer.stop()
+
     def set_pending(self, prompt_so_far: str, hint: str = "") -> None:
         """Pending parameterized action — show what was said + a hint
         for the missing parameter, with a blinking cursor."""

@@ -76,12 +76,24 @@ class SpotifyClient:
         When `kind` is None or unrecognized, search all four types in one
         request and pick by name-similarity to the query — artist > album
         > track > playlist within each match tier (exact, then substring)."""
+        result = self.search_full(query, kind)
+        return result["uri"] if result else None
+
+    def search_full(self, query: str, kind: str | None = None) -> dict | None:
+        """Like ``search`` but returns ``{uri, name, kind}`` for the chosen
+        result. Useful for callers that want to narrate "Found album X"
+        rather than just open a URI silently. Returns None if nothing
+        matched."""
         normalized_kind = (kind or "").lower().strip()
         if normalized_kind in _VALID_KINDS:
-            return self._search_one(query, normalized_kind)
-        return self._search_unspecified(query)
+            return self._search_one_full(query, normalized_kind)
+        return self._search_unspecified_full(query)
 
     def _search_one(self, query: str, kind: str) -> str | None:
+        result = self._search_one_full(query, kind)
+        return result["uri"] if result else None
+
+    def _search_one_full(self, query: str, kind: str) -> dict | None:
         if not query.strip():
             return None
         body = self._call_search(query, kind)
@@ -89,9 +101,15 @@ class SpotifyClient:
             return None
         items = body.get(f"{kind}s", {}).get("items") or []
         first = items[0] if items else None
-        return first.get("uri") if first else None
+        if not first or not first.get("uri"):
+            return None
+        return {"uri": first["uri"], "name": first.get("name") or "", "kind": kind}
 
     def _search_unspecified(self, query: str) -> str | None:
+        result = self._search_unspecified_full(query)
+        return result["uri"] if result else None
+
+    def _search_unspecified_full(self, query: str) -> dict | None:
         if not query.strip():
             return None
         body = self._call_search(query, ",".join(_TYPE_PRIORITY))
@@ -116,12 +134,12 @@ class SpotifyClient:
         for t in _TYPE_PRIORITY:
             cand = candidates.get(t)
             if cand and _normalize(cand["name"]) == nq:
-                return cand["uri"]
+                return {"uri": cand["uri"], "name": cand["name"], "kind": t}
         # Tier 2: query is a substring of the name.
         for t in _TYPE_PRIORITY:
             cand = candidates.get(t)
             if cand and nq in _normalize(cand["name"]):
-                return cand["uri"]
+                return {"uri": cand["uri"], "name": cand["name"], "kind": t}
         # Tier 3: nothing matched by name. Caller (action layer) will fall
         # back to the open-search-UI path.
         return None

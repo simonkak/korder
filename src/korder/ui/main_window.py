@@ -26,6 +26,7 @@ from korder.audio.vad import SpeechDetector
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import YdotoolBackend, InjectError
 from korder.ui.osd import OSDWindow
+from korder.ui.progress import progress_signal
 
 
 class _TranscribeWorker(QThread):
@@ -167,6 +168,11 @@ class MainWindow(QMainWindow):
         self._osd_throttle_timer = QTimer(self)
         self._osd_throttle_timer.setSingleShot(True)
         self._osd_throttle_timer.timeout.connect(self._flush_pending_partial)
+
+        # Cross-thread progress narration from action executors. Lets
+        # actions like spotify_search push "Searching for X" / "Found Y" /
+        # "Playing Y" into the OSD center text while we're in Executing.
+        progress_signal().connect(self._on_executing_progress)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -547,6 +553,17 @@ class MainWindow(QMainWindow):
         """Worker reports a non-text, non-mode-toggle action ran. Flag set
         so _on_inject_done can stop recording after the UI update lands."""
         self._auto_stop_pending = True
+
+    def _on_executing_progress(self, text: str) -> None:
+        """Narration from a running action (Spotify search, etc.). Only
+        applied when we're actually in Executing — otherwise a stray
+        progress event from a previous command would clobber whatever
+        state we've moved on to."""
+        if self._osd._state.stateKind != "executing":
+            return
+        if not text:
+            return
+        self._osd.set_executing_progress(text)
 
     def _auto_stop(self) -> None:
         """Quietly stop recording — used after a command finishes."""
