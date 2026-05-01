@@ -70,6 +70,12 @@ def main() -> int:
 def _run_app() -> int:
     cfg = config.load()
 
+    # Announce ourselves to PipeWire/PulseAudio before any audio code
+    # starts a stream — the volume mixer otherwise labels us
+    # "PipeWire ALSA [python3.12]" which is correct but unhelpful.
+    # Must happen before MicRecorder constructs its first InputStream.
+    _announce_pulse_identity()
+
     app = QApplication(sys.argv)
     app.setApplicationName("Korder")
     app.setOrganizationDomain("local.korder")
@@ -298,6 +304,41 @@ def _show_settings(parent: MainWindow) -> None:
 
 
 _TRAY_SVG = Path(__file__).resolve().parent / "ui" / "icons" / "tray.svg"
+
+# Where freedesktop's icon spec wants per-user app icons. Plasma's
+# volume mixer (and most GTK/Qt apps) look here when resolving an
+# `application.icon_name` like the one we set in PULSE_PROP below.
+_USER_ICON_PATH = Path.home() / ".local" / "share" / "icons" / "hicolor" / "scalable" / "apps" / "korder.svg"
+
+
+def _announce_pulse_identity() -> None:
+    """Set PULSE_PROP so PipeWire/PulseAudio labels our streams as
+    "Korder" with our icon, instead of the default "PipeWire ALSA
+    [python3.12]" derived from the binary name. Also installs the
+    bundled tray SVG into the user's hicolor icon theme so the
+    icon_name lookup resolves to something visual.
+
+    Both env var + icon install are no-ops if already in place
+    (idempotent on every launch). PULSE_PROP is read by the Pulse
+    client library when the audio app first connects, so this MUST
+    run before sounddevice opens any stream.
+    """
+    # Install our SVG into the user's icon theme if missing. Failure
+    # here is non-fatal — the stream still gets renamed, it just
+    # falls back to a default mic icon.
+    try:
+        if not _USER_ICON_PATH.exists() and _TRAY_SVG.exists():
+            _USER_ICON_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _USER_ICON_PATH.write_bytes(_TRAY_SVG.read_bytes())
+    except OSError as e:
+        print(f"[korder] couldn't install tray icon: {e}", file=sys.stderr)
+
+    # PULSE_PROP is space-separated key=value pairs. setdefault keeps
+    # any user override (e.g. testing with a custom name) intact.
+    os.environ.setdefault(
+        "PULSE_PROP",
+        "application.name=Korder application.icon_name=korder",
+    )
 _TRAY_RENDER_SIZES = (16, 22, 24, 32, 48, 64)
 # Per-state foreground colors. idle uses the theme; the other two are
 # fixed accents so the user gets a consistent visual cue regardless of
