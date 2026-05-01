@@ -55,6 +55,31 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "client_id": "",
         "client_secret": "",
     },
+    # Bluetooth headphone integration. Currently scoped to the Sennheiser
+    # PXC 550-II Alexa-button + HFP-mic switching. When enabled and the
+    # configured device is connected, korder uses its mic instead of the
+    # default ALSA/PA device, and pressing the Alexa button toggles
+    # recording.
+    "bluetooth": {
+        "enabled": "false",
+        # MAC of the headphones (find with `bluetoothctl devices`).
+        "device_mac": "",
+        # AMA RFCOMM channel. Default 19 confirmed for PXC 550-II firmware
+        # 1.6 (modalias bluetooth:v0492p600Dd0106). Other firmware versions
+        # may differ; the listener falls back to a brute-force scan of
+        # 14..30 if the default refuses the connection.
+        "ama_channel": "19",
+        # PipeWire/WirePlumber HFP profile name. The bare name is mSBC on
+        # PipeWire; PulseAudio uses "headset-head-unit-msbc". Override if
+        # mSBC isn't available and you want to force narrowband CVSD.
+        "hfp_profile": "headset-head-unit",
+        # When false, korder uses whatever profile is currently active
+        # (good for users who pin to HFP permanently). When true (default),
+        # korder switches to HFP at start_recording and restores the
+        # previous profile at stop_recording — keeps music quality between
+        # recordings.
+        "switch_profile_for_recording": "true",
+    },
 }
 
 

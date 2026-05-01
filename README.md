@@ -106,6 +106,17 @@ paste_mode = auto       # auto | always | never — clipboard-paste vs direct ty
 [spotify]
 client_id =
 client_secret =
+
+# Optional — Bluetooth headphone integration. Currently scoped to the
+# Sennheiser PXC 550-II: the Alexa button toggles recording, and the
+# headphone mic auto-replaces the desk mic while the headphones are
+# connected. See docs/headphone-recon.md for protocol notes.
+[bluetooth]
+enabled = false
+device_mac =                 # e.g. 00:1B:66:E8:90:10 — from `bluetoothctl devices`
+ama_channel = 19             # PXC 550-II firmware 1.6 confirmed; sweeps 14..30 on refusal
+hfp_profile = headset-head-unit  # PipeWire mSBC; PulseAudio uses headset-head-unit-msbc
+switch_profile_for_recording = true
 ```
 
 ## Voice commands (when LLM mode is on)

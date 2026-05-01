@@ -130,7 +130,14 @@ def _run_app() -> int:
 
     server = _start_ipc_server(window)
 
+    bt_workers = _start_bluetooth(cfg, window, recorder, tray)
+
     def _on_quit() -> None:
+        for w in bt_workers:
+            try:
+                w.stop()
+            except Exception:
+                pass
         server.close()
         window.shutdown()
         osd.hide_now()
@@ -139,6 +146,93 @@ def _run_app() -> int:
     app.aboutToQuit.connect(_on_quit)
 
     return app.exec()
+
+
+def _start_bluetooth(cfg, window: MainWindow, recorder: MicRecorder, tray: QSystemTrayIcon) -> list:
+    """Wire up the optional Bluetooth-headphone integration.
+
+    When `[bluetooth] enabled = true` and a `device_mac` is set, start two
+    background threads:
+
+      - BluezPresenceWatcher — toggles which mic the recorder uses based
+        on whether the configured headphones are connected.
+      - AmaButtonListener — connects to the AMA RFCOMM service whenever
+        the headphones are connected, fires `window.toggle_recording`
+        on each Alexa-button press.
+    """
+    bt = cfg["bluetooth"]
+    if not _bool(bt.get("enabled", "false")) or not bt.get("device_mac", ""):
+        return []
+
+    from korder.triggers.ama_button import AmaButtonListener
+    from korder.triggers.bt_presence import BluezPresenceWatcher
+    from korder.audio.source_router import (
+        bt_card_name,
+        bt_input_source_for,
+        get_active_profile,
+        set_profile,
+    )
+
+    mac = bt["device_mac"].strip()
+    channel = int(bt.get("ama_channel", "19"))
+    hfp_profile = bt.get("hfp_profile", "headset-head-unit")
+    switch_profile = _bool(bt.get("switch_profile_for_recording", "true"))
+    desk_device = recorder.device  # remember to fall back when BT goes away
+    card = bt_card_name(mac)
+
+    presence = BluezPresenceWatcher(mac)
+    ama = AmaButtonListener(mac, channel=channel)
+
+    # Profile-switch hooks: only attach while the headphones are connected.
+    # Stored on the recorder so MicRecorder.start()/stop() invokes them.
+    pre_state = {"original_profile": None}
+
+    def _pre_start() -> None:
+        if not switch_profile:
+            return
+        pre_state["original_profile"] = get_active_profile(card)
+        if pre_state["original_profile"] != hfp_profile:
+            set_profile(card, hfp_profile)
+
+    def _post_stop() -> None:
+        if not switch_profile:
+            return
+        orig = pre_state.get("original_profile")
+        if orig and orig != hfp_profile:
+            set_profile(card, orig)
+
+    def _on_connected() -> None:
+        try:
+            recorder.set_device(bt_input_source_for(mac))
+        except RuntimeError:
+            # Recording in progress — leave the device alone; next start() picks up.
+            pass
+        recorder.pre_start = _pre_start
+        recorder.post_stop = _post_stop
+        tray.setToolTip(f"Korder — using BT mic ({mac[-8:]})")
+        if not ama.isRunning():
+            ama.start()
+
+    def _on_disconnected() -> None:
+        ama.stop()
+        recorder.pre_start = None
+        recorder.post_stop = None
+        try:
+            recorder.set_device(desk_device)
+        except RuntimeError:
+            pass
+        tray.setToolTip("Korder — voice transcription")
+
+    presence.connected.connect(_on_connected)
+    presence.disconnected.connect(_on_disconnected)
+    ama.pressed.connect(window.toggle_recording)
+    presence.start()
+
+    print(
+        f"[korder] bluetooth integration on for {mac} (AMA ch {channel})",
+        file=sys.stderr,
+    )
+    return [presence, ama]
 
 
 def _make_tray(window: MainWindow) -> QSystemTrayIcon:
