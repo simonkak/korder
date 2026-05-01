@@ -12,6 +12,7 @@ _confirm_op_factory below for the tri-state semantics.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import Callable
 
@@ -71,12 +72,22 @@ _NO_WORDS = frozenset({
 })
 
 
+_WORD_RE = re.compile(r"[\w']+", re.UNICODE)
+
+
 def _is_word(raw: str, vocab: frozenset[str]) -> bool:
-    """Strip trailing punctuation + lowercase + match against ``vocab``."""
-    word = raw.strip().lower().rstrip(".!,?…").strip()
-    # Allow phrases like "tak, wyłącz" → first word is the answer.
-    head = word.split()[0] if word else ""
-    return word in vocab or head in vocab
+    """Match the FIRST alphabetic word in ``raw`` against ``vocab``.
+
+    Tolerates Whisper artifacts: trailing punctuation, repetition
+    ('Nie. Nie. Nie. Nie.' from Polish input), wrapping whitespace, and
+    leading interjections that the model occasionally inserts. Only
+    the first token is considered so a dictated sentence that happens
+    to contain a yes/no word later (e.g., 'I had to stop my car')
+    doesn't trigger a false confirm/cancel."""
+    tokens = _WORD_RE.findall(raw.lower())
+    if not tokens:
+        return False
+    return tokens[0] in vocab
 
 
 def _make_confirm_op_factory(
