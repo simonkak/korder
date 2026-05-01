@@ -22,6 +22,11 @@ Setup for path 1 (one-time):
 
 Parameter extraction is LLM-only — the regex parser can't pull
 free-form query strings out of a transcript.
+
+`kind` may be 'album', 'track', 'artist', or 'playlist'. When the LLM
+omits it (no explicit cue in the utterance), the client searches all
+four types in one request and picks the closest name match to the
+query — see SpotifyClient.search.
 """
 import shlex
 import subprocess
@@ -85,13 +90,15 @@ def _spotify_play_query(query: str, kind: str) -> None:
     _open_uri_via_dbus_or_xdg(fallback_uri)
 
 
+_VALID_KINDS = ("album", "track", "artist", "playlist")
+
+
 def _spotify_search_op(args: dict) -> tuple | None:
     if not isinstance(args, dict):
         args = {}
     query = args.get("query", "").strip()
-    kind = args.get("kind", "album").strip().lower()
-    if kind not in ("album", "track"):
-        kind = "album"
+    raw_kind = (args.get("kind") or "").strip().lower()
+    kind: str | None = raw_kind if raw_kind in _VALID_KINDS else None
     if not query:
         return None  # pending — wait for the next commit as query
     return ("callable", lambda q=query, k=kind: _spotify_play_query(q, k))
@@ -101,13 +108,17 @@ register(Action(
     name="spotify_search",
     description=(
         "Search Spotify and play the result. Use when the user invokes "
-        "Spotify by name and provides a query (album / artist / song). "
-        "Extract the search target (everything after the Spotify trigger word) "
-        "into params.query — do NOT include the word 'Spotify' itself or the "
-        "imperative verb in the query. Set params.kind to 'track' only when "
-        "the user explicitly indicates a single song (e.g., says 'track', "
-        "'song', 'utwór', 'piosenka'). Otherwise default kind='album' — most "
-        "queries by band or album name are about playing the body of work."
+        "Spotify by name and provides a query (album / artist / song / "
+        "playlist). Extract the search target (everything after the Spotify "
+        "trigger word) into params.query — do NOT include the word 'Spotify' "
+        "itself or the imperative verb in the query. Set params.kind only "
+        "when the user gives an explicit cue:\n"
+        "  - 'album' / 'płyta' / 'krążek' → kind='album'\n"
+        "  - 'track' / 'song' / 'utwór' / 'piosenka' → kind='track'\n"
+        "  - 'artist' / 'band' / 'wykonawca' / 'zespół' / 'grupa' → kind='artist'\n"
+        "  - 'playlist' / 'playlista' / 'lista odtwarzania' → kind='playlist'\n"
+        "Otherwise leave kind unset and Spotify will pick the best match "
+        "across all four types based on the query."
     ),
     triggers={
         "en": ["play on spotify", "spotify search", "spotify play"],
@@ -118,17 +129,19 @@ register(Action(
         # query is the primary param — pending-action follow-up text fills it
         "query": {
             "type": "string",
-            "description": "The song, album, or artist to search for",
+            "description": "The song, album, artist, or playlist to search for",
         },
-        # kind defaults to album when unspecified — most voice queries
-        # ("Linkin Park", "Meteora", "Pink Floyd Wish You Were Here") are
-        # about a body of work; single-track requests should set
-        # kind="track" explicitly via "track" / "utwór" / "piosenka"
+        # kind is optional — when unset, the client searches all four
+        # types in one request and picks by name-similarity to the query
+        # (artist > album > track > playlist within each match tier).
         "kind": {
             "type": "string",
-            "enum": ["album", "track"],
-            "default": "album",
-            "description": "What to play: 'album' (default) or 'track' (single song)",
+            "enum": list(_VALID_KINDS),
+            "description": (
+                "What to play. Set only when the user gives an explicit cue "
+                "(e.g. 'album', 'track', 'artist', 'playlist' or their "
+                "equivalents in the user's language). Otherwise omit."
+            ),
         },
     },
 ))

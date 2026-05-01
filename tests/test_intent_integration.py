@@ -204,16 +204,20 @@ def test_polish_text_passed_through_verbatim(parser):
 
 # ---- Spotify parameter extraction -- per-kind ----------------------------
 
+# `kind` should be set ONLY when the user gives an explicit cue (album/track/
+# artist/playlist or their language equivalents). Bare-name queries should
+# leave kind unset so the SpotifyClient picker decides across all four types.
 @pytest.mark.parametrize("phrase, expected_kind, expected_query_substring", [
     ("Spotify zagraj album Linkin Park", "album", "Linkin Park"),
     ("Spotify zagraj utwór Numb", "track", "Numb"),
-    ("Spotify play Pink Floyd", "album", "Pink Floyd"),  # default kind
+    ("Spotify zagraj wykonawcę Pink Floyd", "artist", "Pink Floyd"),
+    ("Spotify zagraj playlistę Workout", "playlist", "Workout"),
+    ("Spotify play album Hybrid Theory", "album", "Hybrid Theory"),
+    ("Spotify play artist Linkin Park", "artist", "Linkin Park"),
+    ("Spotify play playlist Today's Top Hits", "playlist", "Top Hits"),
 ])
-def test_spotify_search_kind_inference(parser, phrase, expected_kind, expected_query_substring):
-    """Gemma should infer kind=album/track from explicit cues and default to
-    album otherwise, with the bare query (no Spotify trigger word)."""
-    # We can't directly inspect the closure args from outside, so re-call
-    # _call_ollama and inspect the structured output.
+def test_spotify_search_explicit_kind_cue(parser, phrase, expected_kind, expected_query_substring):
+    """Gemma should infer kind from explicit cues in any supported language."""
     raw = parser._call_ollama(phrase)
     assert raw, f"LLM returned no actions for {phrase!r}"
     spotify = next((a for a in raw if a.get("name") == "spotify_search"), None)
@@ -225,6 +229,26 @@ def test_spotify_search_kind_inference(parser, phrase, expected_kind, expected_q
         f"{phrase!r}: query missing {expected_query_substring!r}, got {params!r}"
     # Trigger word should not leak into the query.
     assert "spotify" not in (params.get("query") or "").lower()
+
+
+@pytest.mark.parametrize("phrase, expected_query_substring", [
+    ("Spotify play Pink Floyd", "Pink Floyd"),
+    ("Spotify zagraj Małomiasteczkowy", "Małomiasteczkowy"),
+])
+def test_spotify_search_no_kind_cue_leaves_kind_unset(parser, phrase, expected_query_substring):
+    """When the user gives no explicit album/track/artist/playlist cue,
+    Gemma should leave `kind` unset (or omit it) so the SpotifyClient picker
+    matches across all four types. Either missing-key or empty-string is OK."""
+    raw = parser._call_ollama(phrase)
+    assert raw, f"LLM returned no actions for {phrase!r}"
+    spotify = next((a for a in raw if a.get("name") == "spotify_search"), None)
+    assert spotify is not None, f"No spotify_search in {raw!r}"
+    params = spotify.get("params") or {}
+    kind = params.get("kind")
+    assert not kind or kind == "", \
+        f"{phrase!r}: expected kind unset; got {params!r}"
+    assert expected_query_substring.lower() in (params.get("query") or "").lower(), \
+        f"{phrase!r}: query missing {expected_query_substring!r}, got {params!r}"
 
 
 # ---- Multi-action ordering ----------------------------------------------

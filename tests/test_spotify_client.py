@@ -141,43 +141,191 @@ def test_search_kind_track_returns_track_uri():
     assert uri == "spotify:track:numb"
 
 
-def test_search_album_falls_back_to_track_when_no_album_found():
-    """Album search empty → automatically retry as track."""
-    seen_types: list[str] = []
-
+def test_search_kind_artist_returns_artist_uri():
     def handler(req, *args, **kwargs):
         url = req.full_url
         if url.startswith("https://accounts.spotify.com/api/token"):
             return _mock_response({"access_token": "tok", "expires_in": 3600})
-        from urllib.parse import urlparse, parse_qs
-        q = parse_qs(urlparse(url).query)
-        kind = q.get("type", [""])[0]
-        seen_types.append(kind)
-        if kind == "album":
-            return _mock_response({"albums": {"items": []}})  # empty
-        return _mock_response({"tracks": {"items": [{"uri": "spotify:track:fallback"}]}})
+        return _mock_response({
+            "artists": {"items": [{"name": "Pink Floyd", "uri": "spotify:artist:pf"}]}
+        })
 
     with _patched_urlopen(handler):
         c = SpotifyClient("cid", "secret")
-        uri = c.search("ObscureSongName", kind="album")
-    assert uri == "spotify:track:fallback"
-    # Called album first, then track
-    assert seen_types == ["album", "track"]
+        assert c.search("Pink Floyd", kind="artist") == "spotify:artist:pf"
 
 
-def test_invalid_kind_defaults_to_album():
-    seen_types: list[str] = []
-
+def test_search_kind_playlist_returns_playlist_uri():
     def handler(req, *args, **kwargs):
         url = req.full_url
         if url.startswith("https://accounts.spotify.com/api/token"):
             return _mock_response({"access_token": "tok", "expires_in": 3600})
-        from urllib.parse import urlparse, parse_qs
-        q = parse_qs(urlparse(url).query)
-        seen_types.append(q.get("type", [""])[0])
-        return _mock_response({"albums": {"items": [{"uri": "spotify:album:x"}]}})
+        return _mock_response({
+            "playlists": {"items": [{"name": "Workout", "uri": "spotify:playlist:wo"}]}
+        })
 
     with _patched_urlopen(handler):
         c = SpotifyClient("cid", "secret")
-        c.search("hello", kind="garbage")
-    assert seen_types == ["album"]
+        assert c.search("Workout", kind="playlist") == "spotify:playlist:wo"
+
+
+# ---- Unspecified-kind picker (kind=None) --------------------------------
+
+def _all_types_handler(payload: dict, seen_types: list[str] | None = None):
+    """Build a urlopen handler that returns `payload` for any /v1/search
+    call, capturing the type= query param into seen_types if provided."""
+    def handler(req, *args, **kwargs):
+        url = req.full_url
+        if url.startswith("https://accounts.spotify.com/api/token"):
+            return _mock_response({"access_token": "tok", "expires_in": 3600})
+        if seen_types is not None:
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(url).query)
+            seen_types.append(q.get("type", [""])[0])
+        return _mock_response(payload)
+    return handler
+
+
+def test_unspecified_kind_uses_single_multi_type_request():
+    """kind=None → one call with type=artist,album,track,playlist."""
+    seen_types: list[str] = []
+    handler = _all_types_handler({
+        "artists": {"items": []},
+        "albums": {"items": []},
+        "tracks": {"items": [{"name": "X", "uri": "spotify:track:x"}]},
+        "playlists": {"items": []},
+    }, seen_types=seen_types)
+
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        c.search("X", kind=None)
+    assert seen_types == ["artist,album,track,playlist"], \
+        f"Expected one combined search call; got {seen_types!r}"
+
+
+def test_unspecified_kind_picks_artist_on_exact_name_match():
+    """Artist 'Linkin Park' exact-matches the query → pick artist, even
+    if albums/tracks substring-match it."""
+    handler = _all_types_handler({
+        "artists": {"items": [{"name": "Linkin Park", "uri": "spotify:artist:lp"}]},
+        "albums": {"items": [{"name": "Linkin Park: The Best", "uri": "spotify:album:lpb"}]},
+        "tracks": {"items": [{"name": "Linkin Park Tribute", "uri": "spotify:track:lpt"}]},
+        "playlists": {"items": []},
+    })
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        assert c.search("Linkin Park") == "spotify:artist:lp"
+
+
+def test_unspecified_kind_picks_album_when_album_exact_matches():
+    """No artist with that name; album exact-matches → album wins over track."""
+    handler = _all_types_handler({
+        "artists": {"items": [{"name": "Some Artist", "uri": "spotify:artist:sa"}]},
+        "albums": {"items": [{"name": "Meteora", "uri": "spotify:album:m"}]},
+        "tracks": {"items": [{"name": "Meteora", "uri": "spotify:track:m"}]},
+        "playlists": {"items": []},
+    })
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        assert c.search("Meteora") == "spotify:album:m"
+
+
+def test_unspecified_kind_picks_track_when_only_track_matches():
+    """No artist/album with the name; only track contains it → track."""
+    handler = _all_types_handler({
+        "artists": {"items": [{"name": "Dawid Podsiadło", "uri": "spotify:artist:dp"}]},
+        "albums": {"items": [{"name": "Małomiasteczkowy Tour Live", "uri": "spotify:album:mt"}]},
+        "tracks": {"items": [{"name": "Małomiasteczkowy", "uri": "spotify:track:m"}]},
+        "playlists": {"items": []},
+    })
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        # Tier 1 (exact): track "Małomiasteczkowy" wins; album name is
+        # longer ("Małomiasteczkowy Tour Live") so it only substring-matches.
+        assert c.search("Małomiasteczkowy") == "spotify:track:m"
+
+
+def test_unspecified_kind_picks_playlist_as_last_resort():
+    """Only playlist matches → playlist."""
+    handler = _all_types_handler({
+        "artists": {"items": []},
+        "albums": {"items": []},
+        "tracks": {"items": []},
+        "playlists": {"items": [{"name": "Today's Top Hits", "uri": "spotify:playlist:tth"}]},
+    })
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        assert c.search("Today's Top Hits") == "spotify:playlist:tth"
+
+
+def test_unspecified_kind_diacritic_insensitive_match():
+    """Query without diacritics matches name with diacritics, and vice versa."""
+    handler = _all_types_handler({
+        "artists": {"items": []},
+        "albums": {"items": []},
+        "tracks": {"items": [{"name": "Małomiasteczkowy", "uri": "spotify:track:m"}]},
+        "playlists": {"items": []},
+    })
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        # Whisper sometimes drops diacritics. Picker should still match.
+        assert c.search("Malomiasteczkowy") == "spotify:track:m"
+
+
+def test_unspecified_kind_substring_tier_priority():
+    """No exact matches anywhere; substring matches in album AND track →
+    album wins by priority order (artist > album > track > playlist)."""
+    handler = _all_types_handler({
+        "artists": {"items": [{"name": "Wholly Unrelated Band", "uri": "spotify:artist:x"}]},
+        "albums": {"items": [{"name": "Wish You Were Here Live 1975", "uri": "spotify:album:wywh"}]},
+        "tracks": {"items": [{"name": "Wish You Were Here (Live)", "uri": "spotify:track:wywh"}]},
+        "playlists": {"items": []},
+    })
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        assert c.search("Wish You Were Here") == "spotify:album:wywh"
+
+
+def test_unspecified_kind_returns_none_when_no_name_matches():
+    """Nothing's name contains the query → None (caller falls back to
+    open-search-UI behavior)."""
+    handler = _all_types_handler({
+        "artists": {"items": [{"name": "Wholly Unrelated", "uri": "spotify:artist:x"}]},
+        "albums": {"items": [{"name": "Different Title", "uri": "spotify:album:d"}]},
+        "tracks": {"items": [{"name": "Another Song", "uri": "spotify:track:a"}]},
+        "playlists": {"items": [{"name": "Mismatched Playlist", "uri": "spotify:playlist:m"}]},
+    })
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        assert c.search("xyz random unmatchable") is None
+
+
+def test_unspecified_kind_ignores_null_playlist_items():
+    """Spotify occasionally returns null playlist items (deactivated owners)
+    — picker should skip them and pick the next valid candidate."""
+    handler = _all_types_handler({
+        "artists": {"items": []},
+        "albums": {"items": []},
+        "tracks": {"items": [{"name": "Hello", "uri": "spotify:track:h"}]},
+        "playlists": {"items": [None, {"name": "Hello", "uri": "spotify:playlist:h"}]},
+    })
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        # Track "Hello" exact-matches and beats playlist by priority.
+        assert c.search("Hello") == "spotify:track:h"
+
+
+def test_invalid_kind_falls_through_to_unspecified():
+    """An unrecognized kind string is treated as unset → multi-type search."""
+    seen_types: list[str] = []
+    handler = _all_types_handler({
+        "artists": {"items": []},
+        "albums": {"items": [{"name": "hello", "uri": "spotify:album:h"}]},
+        "tracks": {"items": []},
+        "playlists": {"items": []},
+    }, seen_types=seen_types)
+
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        assert c.search("hello", kind="garbage") == "spotify:album:h"
+    assert seen_types == ["artist,album,track,playlist"]
