@@ -22,6 +22,7 @@ from __future__ import annotations
 import atexit
 import re
 import subprocess
+import threading
 
 
 _VOLUME_RE = re.compile(r"Volume:\s+([\d.]+)")
@@ -39,37 +40,45 @@ class VolumeDucker:
         # that a duplicate duck() call doesn't replace the original
         # level with the already-lowered one.
         self._saved: float | None = None
+        # restore() can be invoked from the inject worker thread (when a
+        # volume-altering action is about to fire and needs the original
+        # level back) and from the main thread (auto-stop after-action).
+        # The lock makes the read-modify-write of _saved + wpctl call
+        # safely interleavable.
+        self._lock = threading.Lock()
         if self._enabled:
             # Crash safety: if the process exits while ducked (uncaught
             # exception, SIGTERM via tray-quit, …), put the volume back.
             atexit.register(self._safe_restore)
 
     def duck(self) -> None:
-        if not self._enabled or self._saved is not None:
-            return
-        current = self._read_volume()
-        if current is None:
-            return
-        # Don't bother lowering if we're already at-or-below the target —
-        # would just create a confusing restore-up-to-target later.
-        if current <= self._target:
-            return
-        if self._set_volume(self._target):
-            self._saved = current
-            print(
-                f"[korder] ducker: {current:.2f} → {self._target:.2f}",
-                flush=True,
-            )
+        with self._lock:
+            if not self._enabled or self._saved is not None:
+                return
+            current = self._read_volume()
+            if current is None:
+                return
+            # Don't bother lowering if we're already at-or-below the target —
+            # would just create a confusing restore-up-to-target later.
+            if current <= self._target:
+                return
+            if self._set_volume(self._target):
+                self._saved = current
+                print(
+                    f"[korder] ducker: {current:.2f} → {self._target:.2f}",
+                    flush=True,
+                )
 
     def restore(self) -> None:
-        if self._saved is None:
-            return
-        if self._set_volume(self._saved):
-            print(f"[korder] ducker: restored {self._saved:.2f}", flush=True)
-        # Clear saved state regardless — a failed restore call shouldn't
-        # leave us pinned in "ducked" forever; the next duck() can re-read
-        # whatever the user left things at.
-        self._saved = None
+        with self._lock:
+            if self._saved is None:
+                return
+            if self._set_volume(self._saved):
+                print(f"[korder] ducker: restored {self._saved:.2f}", flush=True)
+            # Clear saved state regardless — a failed restore call shouldn't
+            # leave us pinned in "ducked" forever; the next duck() can re-read
+            # whatever the user left things at.
+            self._saved = None
 
     def _safe_restore(self) -> None:
         try:

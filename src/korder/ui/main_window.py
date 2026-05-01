@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 import time
 
 from korder.actions.base import get_action
+from korder.actions.codes import KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP
 from korder.audio.capture import MicRecorder
 from korder.audio.ducker import VolumeDucker
 from korder.audio.vad import SpeechDetector
@@ -28,6 +29,12 @@ from korder.inject import YdotoolBackend, InjectError
 from korder.ui.osd import OSDWindow
 from korder.ui.i18n import t
 from korder.ui.progress import progress_signal
+
+
+# Keycodes whose effect on the system mixer would conflict with the ducker's
+# saved level — when the user issues one of these, restore the duck snapshot
+# *before* the keypress fires so the action sees the user's true volume.
+_VOLUME_KEY_CODES = frozenset({KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP})
 
 
 class _TranscribeWorker(QThread):
@@ -69,6 +76,7 @@ class _InjectWorker(QThread):
         original: str,
         initial_write_mode: bool,
         prebuilt_ops: list | None = None,
+        ducker: VolumeDucker | None = None,
     ):
         super().__init__()
         self._injector = injector
@@ -76,6 +84,7 @@ class _InjectWorker(QThread):
         self._original = original
         self._write_mode = initial_write_mode
         self._prebuilt_ops = prebuilt_ops
+        self._ducker = ducker
 
     def run(self) -> None:
         try:
@@ -124,6 +133,16 @@ class _InjectWorker(QThread):
                     # and counts as a "command" for auto-stop purposes.
                     filtered.append(op)
                     had_command_action = True
+            # If the user asked to change volume, the duck-while-listening
+            # snapshot is no longer authoritative — they've issued an
+            # explicit volume command. Restore now so the keypress lands
+            # on the user's true level (otherwise "louder" goes from 30%
+            # ducked to 35% and the post-action restore-to-50% silently
+            # undoes the increase).
+            if self._ducker is not None and any(
+                op[0] == "key" and op[1] in _VOLUME_KEY_CODES for op in filtered
+            ):
+                self._ducker.restore()
             self._injector.execute_ops(filtered)
             if had_command_action:
                 self.command_executed.emit()
@@ -250,7 +269,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
-            self._ducker.unduck()
+            self._ducker.restore()
         except Exception:
             pass
         self._status.setText(t("status_cancelled"))
@@ -516,7 +535,10 @@ class MainWindow(QMainWindow):
             # status hint underneath ("thinking", "executing", etc.).
             self._osd.set_committed(text)
             payload = text + (" " if self._trailing_space else "")
-            worker = _InjectWorker(self._injector, payload, text, self._write_mode)
+            worker = _InjectWorker(
+                self._injector, payload, text, self._write_mode,
+                ducker=self._ducker,
+            )
             worker.done.connect(self._on_inject_done)
             worker.failed.connect(self._on_inject_failed)
             worker.mode_changed.connect(self._on_mode_changed)
@@ -656,7 +678,7 @@ class MainWindow(QMainWindow):
         self._osd.set_executing(param_text, action_name)
         worker = _InjectWorker(
             self._injector, "", param_text, self._write_mode,
-            prebuilt_ops=[op],
+            prebuilt_ops=[op], ducker=self._ducker,
         )
         worker.done.connect(self._on_inject_done)
         worker.failed.connect(self._on_inject_failed)
