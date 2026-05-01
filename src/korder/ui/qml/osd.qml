@@ -42,10 +42,18 @@ Window {
     // text Whisper hasn't settled on yet".
     readonly property color hintColor: _blend(promptColor, palette.window, 0.35)
 
-    // KDE Plasma blue for "active" states. Tied to palette.highlight when
+    // KDE Plasma accent for "active" states. Tied to palette.highlight when
     // available so themed users get their own accent; fallback to KDE blue.
     readonly property color accentColor:
         palette.highlight ? palette.highlight : Qt.rgba(0.24, 0.68, 0.91, 1.0)
+
+    // Feedback (action narration) variant of the accent — blended toward the
+    // theme's text color so it's legible as foreground text. palette.highlight
+    // is tuned for selection-background contrast and reads dim on dark themes
+    // when used as text. The blend keeps the accent's hue while lifting
+    // luminance to text-brightness on dark themes (and pulling it down on
+    // light themes), so it stays readable in both.
+    readonly property color feedbackColor: _blend(palette.windowText, accentColor, 0.55)
 
     readonly property color accentForState: {
         if (!osdState) return accentColor;
@@ -286,16 +294,15 @@ Window {
                             // Color resolution priority:
                             //  - placeholder: muted statusColor
                             //  - feedback (action narration): Plasma's
-                            //    palette.highlight (user-set accent color),
-                            //    NOT the per-state accent — feedback should
-                            //    feel like system text in any state, while
-                            //    the leading dot still varies by state for
-                            //    the activity-indicator role.
+                            //    accent — but the foreground-text variant
+                            //    (feedbackColor), which lifts luminance so
+                            //    palette.highlight doesn't read too dark on
+                            //    Breeze Dark. Stays accent-hue, theme-adapts.
                             //  - normal: bright promptColor
                             color: {
                                 if (!osdState) return root.promptColor;
                                 if (osdState.placeholderMode) return root.statusColor;
-                                if (_isFeedback) return root.accentColor;
+                                if (_isFeedback) return root.feedbackColor;
                                 return root.promptColor;
                             }
                             font.pixelSize: 16
