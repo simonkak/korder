@@ -265,6 +265,12 @@ class MainWindow(QMainWindow):
         self._ducker.duck()
         self._status.setText(t("status_listening"))
         self._osd.set_listening(write_mode=self._write_mode)
+        # Opportunistic preload — kick the model load now (fire-and-
+        # forget) so it runs in parallel with the user's speech +
+        # whisper. Hides the ~3s ollama cold-start behind dictation
+        # latency on the LLM path; no-op on regex.
+        if self._injector is not None:
+            self._injector.warm_up_op_parser()
         self._partial_in_flight = False
         self._committed_samples = 0
         self._last_partial_norm = ""

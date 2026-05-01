@@ -16,6 +16,7 @@ or any phrase isn't found in the input.
 from __future__ import annotations
 import json
 import sys
+import threading
 import urllib.error
 import urllib.request
 
@@ -142,6 +143,35 @@ class IntentParser:
         # when thinking_mode is on. Surfaced for diagnostics (logged to
         # stderr in _call_ollama; readable by the benchmark dialog).
         self.last_thinking: str = ""
+
+    def warm_up(self) -> None:
+        """Fire-and-forget: tell ollama to page the model into VRAM,
+        without generating anything. Used by the UI to start the cold
+        load while the user is still dictating, so the actual intent
+        call doesn't pay the load cost on the critical path. Safe to
+        call repeatedly — an already-resident model just bumps its
+        keep_alive timer. Returns immediately; the actual HTTP call
+        runs on a daemon thread."""
+        payload = {
+            "model": self.model,
+            "prompt": "",
+            "stream": False,
+            "keep_alive": self.keep_alive_s,
+        }
+        def _send() -> None:
+            try:
+                req = urllib.request.Request(
+                    _OLLAMA_URL,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=30.0) as resp:
+                    resp.read()
+            except Exception as e:
+                # Warm-up is opportunistic; failure here is fine —
+                # the actual parse call will surface a real error.
+                print(f"[korder] warm-up failed: {e}", file=sys.stderr)
+        threading.Thread(target=_send, daemon=True).start()
 
     def is_model_loaded(self) -> bool:
         """Quick check (≈20 ms) of whether ollama already has self.model

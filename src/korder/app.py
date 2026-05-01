@@ -89,6 +89,7 @@ def _run_app() -> int:
 
     op_parser = None
     op_parser_is_warm = None
+    op_parser_warm_up = None
     if cfg["inject"]["action_parser"].lower() == "llm":
         from korder.intent import IntentParser
         thinking = _bool(cfg["intent"]["thinking_mode"])
@@ -110,6 +111,7 @@ def _run_app() -> int:
         )
         op_parser = intent_parser.parse
         op_parser_is_warm = intent_parser.is_model_loaded
+        op_parser_warm_up = intent_parser.warm_up
         flags = []
         if thinking:
             flags.append("thinking")
@@ -126,6 +128,7 @@ def _run_app() -> int:
             paste_mode=cfg["inject"]["paste_mode"],
             op_parser=op_parser,
             op_parser_is_warm=op_parser_is_warm,
+            op_parser_warm_up=op_parser_warm_up,
         )
     except InjectError as e:
         print(f"[korder] injection disabled: {e}", file=sys.stderr)

@@ -53,7 +53,13 @@ class YdotoolBackend:
     PASTE_ALWAYS = "always"
     PASTE_NEVER = "never"
 
-    def __init__(self, paste_mode: str = "auto", op_parser=None, op_parser_is_warm=None):
+    def __init__(
+        self,
+        paste_mode: str = "auto",
+        op_parser=None,
+        op_parser_is_warm=None,
+        op_parser_warm_up=None,
+    ):
         if shutil.which("ydotool") is None:
             raise InjectError(
                 "ydotool not found in PATH. Install it (e.g. `sudo pacman -S ydotool`) "
@@ -63,8 +69,21 @@ class YdotoolBackend:
         self._has_wl_copy = shutil.which("wl-copy") is not None
         self._op_parser = op_parser or _split_into_ops
         self._op_parser_is_warm = op_parser_is_warm
+        self._op_parser_warm_up = op_parser_warm_up
         self._lock = threading.Lock()
         self.is_slow_parser = op_parser is not None
+
+    def warm_up_op_parser(self) -> None:
+        """Opportunistic preload (fire-and-forget). Called when the mic
+        opens so the model loads in parallel with the user's speech;
+        keeps the post-Whisper LLM call off the cold-start path. No-op
+        for parsers without a load step (regex)."""
+        if self._op_parser_warm_up is None:
+            return
+        try:
+            self._op_parser_warm_up()
+        except Exception:
+            pass
 
     def is_op_parser_warm(self) -> bool:
         """Returns True if the parser is ready for a fast call. False
@@ -212,9 +231,15 @@ class YdotoolBackend:
             ) from e
 
 
-def make_backend(paste_mode: str = "auto", op_parser=None, op_parser_is_warm=None) -> YdotoolBackend:
+def make_backend(
+    paste_mode: str = "auto",
+    op_parser=None,
+    op_parser_is_warm=None,
+    op_parser_warm_up=None,
+) -> YdotoolBackend:
     return YdotoolBackend(
         paste_mode=paste_mode,
         op_parser=op_parser,
         op_parser_is_warm=op_parser_is_warm,
+        op_parser_warm_up=op_parser_warm_up,
     )
