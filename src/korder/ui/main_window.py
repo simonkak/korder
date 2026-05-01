@@ -26,7 +26,7 @@ from korder.audio.vad import SpeechDetector
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import YdotoolBackend, InjectError
 from korder.ui.osd import OSDWindow
-from korder.ui.i18n import t
+from korder.ui.i18n import current_locale, t
 from korder.ui.progress import progress_signal
 
 
@@ -176,6 +176,7 @@ class MainWindow(QMainWindow):
         ducker: VolumeDucker | None = None,
         wake_detector=None,
         wake_idle_timeout_s: float = 5.0,
+        confirm_prompt_generator=None,
     ):
         super().__init__()
         self.setWindowTitle("Korder — transcript history")
@@ -194,6 +195,14 @@ class MainWindow(QMainWindow):
         # Wake-word activation (issue #1). Optional — None means hotkey-only.
         self._wake_detector = wake_detector
         self._wake_idle_timeout_s = float(wake_idle_timeout_s)
+        # Optional callable: (action_name, locale) -> str | None.
+        # When set, the pending-prompt resolver consults it before
+        # falling back to the i18n template chain. The actual
+        # generator is IntentParser.generate_confirm_prompt, which
+        # caches results so the call is instant after the first time
+        # (or after the warm_feedback_cache pre-generation finishes
+        # in the background at startup).
+        self._confirm_prompt_generator = confirm_prompt_generator
         # True for the dictation session that began via a wake event.
         # Resets to False on every dictation end. Used to gate the
         # idle-timeout timer that returns accidental wakes to wake-mode.
@@ -878,22 +887,43 @@ class MainWindow(QMainWindow):
         if action and action.parameters:
             param_label = next(iter(action.parameters.keys()))
         prompt_so_far = self._osd._state.prompt or action_name
-        # Hint resolution: try action-specific pending prompt first
-        # (e.g. "Shut down the computer? say 'yes'" for shutdown), then
-        # per-parameter prompt ("say the query…" for spotify_search),
-        # then generic ("say the parameter…"). i18n's t() returns the
-        # key itself when no translation exists, so a key-equals-result
-        # comparison detects the miss.
-        action_key = f"pending_prompt_{action_name}"
-        action_hint = t(action_key)
-        if action_hint != action_key:
-            hint = action_hint
-        elif param_label:
-            specific_key = f"say_the_param_{param_label}"
-            specific = t(specific_key)
-            hint = specific if specific != specific_key else t("pending_param_hint")
-        else:
-            hint = t("pending_param_hint")
+        # Hint resolution chain, highest-priority first:
+        #   1. LLM-generated confirmation prompt — when the action is
+        #      destructive (has a 'confirm' parameter) and the
+        #      generator is wired, ask Gemma for a contextual phrase
+        #      in the current locale. Cached, so this is instant after
+        #      warm_feedback_cache populates at startup.
+        #   2. Action-specific pending_prompt_<name> i18n key — static
+        #      hand-written fallback for when the LLM is unavailable
+        #      or off.
+        #   3. Per-parameter say_the_param_<label> — generic param
+        #      extraction (Spotify search, etc.).
+        #   4. The bare pending_param_hint — last-resort placeholder.
+        # i18n's t() returns the key itself on miss, so a
+        # key-equals-result comparison detects the fall-through.
+        hint: str | None = None
+        if self._confirm_prompt_generator is not None and "confirm" in (
+            (action.parameters if action else {}) or {}
+        ):
+            try:
+                hint = self._confirm_prompt_generator(action_name, current_locale())
+            except Exception as e:
+                print(
+                    f"[korder] confirm prompt generation failed: {e}",
+                    flush=True, file=sys.stderr,
+                )
+                hint = None
+        if not hint:
+            action_key = f"pending_prompt_{action_name}"
+            action_hint = t(action_key)
+            if action_hint != action_key:
+                hint = action_hint
+            elif param_label:
+                specific_key = f"say_the_param_{param_label}"
+                specific = t(specific_key)
+                hint = specific if specific != specific_key else t("pending_param_hint")
+            else:
+                hint = t("pending_param_hint")
         self._osd.set_pending(prompt_so_far, hint)
         self.statusBar().showMessage(
             f"Pending: {action_name} waiting for parameter",

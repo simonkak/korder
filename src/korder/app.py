@@ -158,6 +158,7 @@ def _run_app() -> int:
     op_parser = None
     op_parser_is_warm = None
     op_parser_warm_up = None
+    confirm_prompt_generator = None
     if cfg["inject"]["action_parser"].lower() == "llm":
         from korder.intent import IntentParser
         thinking = _bool(cfg["intent"]["thinking_mode"])
@@ -180,6 +181,13 @@ def _run_app() -> int:
         op_parser = intent_parser.parse
         op_parser_is_warm = intent_parser.is_model_loaded
         op_parser_warm_up = intent_parser.warm_up
+        confirm_prompt_generator = intent_parser.generate_confirm_prompt
+        # Pre-generate confirmation prompts for all confirmable actions
+        # in the current locale, so the first time the user triggers
+        # one (shutdown, reboot, sleep) the OSD's hint update is
+        # instant rather than paying the ~500ms LLM round-trip.
+        from korder.ui.i18n import current_locale
+        intent_parser.warm_feedback_cache(current_locale())
         flags = []
         if thinking:
             flags.append("thinking")
@@ -231,6 +239,7 @@ def _run_app() -> int:
         ducker=ducker,
         wake_detector=wake_detector,
         wake_idle_timeout_s=wake_idle_timeout_s,
+        confirm_prompt_generator=confirm_prompt_generator,
     )
 
     tray = _make_tray(window)
