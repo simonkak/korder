@@ -153,6 +153,38 @@ def test_snapshot_without_recording_returns_empty(recorder):
     assert out.shape == (0,)
 
 
+def test_unsubscribe_does_not_hold_lock_during_stream_stop(monkeypatch):
+    """Regression: PortAudio's stream.stop()/.close() block until the
+    current audio callback finishes; the callback wants self._lock to
+    snapshot subscribers. If unsubscribe() holds self._lock across
+    stream.stop(), the main thread deadlocks against the audio thread.
+
+    Simulate by giving the fake stream a stop() that tries to acquire
+    self._lock non-blockingly — if the lock is still held when stop()
+    runs, the assertion fires."""
+    from korder.audio import capture
+
+    rec = MicRecorder(sample_rate=16000, gain=1.0)
+    lock_was_free_during_stop = []
+
+    def fake_stop():
+        lock_was_free_during_stop.append(rec._lock.acquire(blocking=False))
+        if lock_was_free_during_stop[-1]:
+            rec._lock.release()
+
+    fake_stream = MagicMock()
+    fake_stream.stop.side_effect = fake_stop
+    monkeypatch.setattr(capture.sd, "InputStream", lambda **kw: fake_stream)
+
+    rec.start()
+    rec.stop()
+
+    assert lock_was_free_during_stop == [True], (
+        "unsubscribe held self._lock across stream.stop() — would deadlock "
+        "against the audio callback"
+    )
+
+
 def test_gain_applied_to_frames(monkeypatch):
     """When gain != 1.0, frames are scaled before they reach
     subscribers (and the dictation buffer)."""

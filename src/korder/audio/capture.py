@@ -59,6 +59,7 @@ class MicRecorder:
         subscriber. The same callable can be subscribed multiple times
         and will then receive each frame multiple times — pair every
         subscribe with a matching unsubscribe."""
+        stream_to_start: sd.InputStream | None = None
         with self._lock:
             self._subscribers.append(fn)
             if self._stream is None:
@@ -69,21 +70,33 @@ class MicRecorder:
                     device=self.device,
                     callback=self._callback,
                 )
-                self._stream.start()
+                stream_to_start = self._stream
+        # PortAudio start() is fast but we keep slow audio-engine calls
+        # outside the lock to mirror unsubscribe (where holding the lock
+        # would deadlock with the audio thread).
+        if stream_to_start is not None:
+            stream_to_start.start()
 
     def unsubscribe(self, fn: FrameCallback) -> None:
         """Remove the first matching subscription. Closes the stream if
         no subscribers remain. Calls with an unknown callable are a
         no-op so callers don't need to track subscription state."""
+        stream_to_close: sd.InputStream | None = None
         with self._lock:
             try:
                 self._subscribers.remove(fn)
             except ValueError:
                 return
             if not self._subscribers and self._stream is not None:
-                self._stream.stop()
-                self._stream.close()
+                stream_to_close = self._stream
                 self._stream = None
+        # PortAudio's stop()/close() block until the current callback
+        # finishes; the callback itself wants self._lock to snapshot
+        # subscribers, so holding the lock here would deadlock both
+        # threads. Drop it first, then close.
+        if stream_to_close is not None:
+            stream_to_close.stop()
+            stream_to_close.close()
 
     def start(self) -> None:
         """Begin a push-to-talk dictation session. Installs the
