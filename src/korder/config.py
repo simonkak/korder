@@ -61,6 +61,27 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # apps between dictation bursts.
         "keep_alive_s": "300",
     },
+    # Wake-word activation. When enabled, an always-on listener runs
+    # alongside the regular hotkey path: speaking the configured phrase
+    # opens a dictation session as if the hotkey had fired. Off by
+    # default — install with `uv sync --extra wake` first.
+    "wake": {
+        "enabled": "false",
+        # Backend that detects the wake phrase. 'openwakeword' is the
+        # only option today.
+        "engine": "openwakeword",
+        # With openwakeword, this is the model name from its pretrained
+        # catalog (hey_jarvis, alexa, hey_mycroft, ok_nabu, …). Custom
+        # phrases require training your own model.
+        "phrase": "hey_jarvis",
+        # Detection threshold (0.0-1.0). Lower fires more often (more
+        # false positives), higher misses softer wakes.
+        "sensitivity": "0.5",
+        # If wake fires but no follow-up speech arrives within this
+        # many seconds, return to wake-listening. Prevents accidental
+        # wakes from leaving the OSD stuck.
+        "idle_timeout_s": "5",
+    },
     "ui": {
         "show_history_on_start": "false",
         # Stop the recording session automatically after a command-style
