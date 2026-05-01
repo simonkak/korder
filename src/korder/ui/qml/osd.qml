@@ -84,7 +84,7 @@ Window {
     Rectangle {
         id: bg
         anchors.fill: parent
-        radius: 10
+        radius: 6
         // Semi-transparent fill — KWin blurs it automatically via the Blur
         // compositor effect (default-on in Plasma 6).
         color: Qt.rgba(palette.window.r, palette.window.g, palette.window.b, 0.86)

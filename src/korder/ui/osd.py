@@ -171,10 +171,10 @@ class OSDWindow(QObject):
         self._state.prompt = t("listening_placeholder")
         self._state.flux = ""
         self._state.status = t("write_mode_on") if write_mode else ""
-        self._state.state_label = t("state_listening")
-        self._state.state_kind = "listening"
-        self._state.show_cursor = True
-        self._state.placeholder_mode = True
+        self._state.stateLabel = t("state_listening")
+        self._state.stateKind = "listening"
+        self._state.showCursor = True
+        self._state.placeholderMode = True
         self._state.visible = True
         self._hide_timer.stop()
 
@@ -193,10 +193,10 @@ class OSDWindow(QObject):
         self._state.prompt = text or ""
         self._state.flux = flux or ""
         self._state.status = t("write_mode_on") if write_mode else ""
-        self._state.state_label = t("state_listening")
-        self._state.state_kind = "listening"
-        self._state.show_cursor = False
-        self._state.placeholder_mode = False
+        self._state.stateLabel = t("state_listening")
+        self._state.stateKind = "listening"
+        self._state.showCursor = False
+        self._state.placeholderMode = False
         self._state.visible = True
         self._hide_timer.stop()
 
@@ -206,10 +206,10 @@ class OSDWindow(QObject):
         self._state.prompt = prompt or ""
         self._state.flux = ""
         self._state.status = hint or t("thinking")
-        self._state.state_label = t("state_thinking")
-        self._state.state_kind = "thinking"
-        self._state.show_cursor = False
-        self._state.placeholder_mode = False
+        self._state.stateLabel = t("state_thinking")
+        self._state.stateKind = "thinking"
+        self._state.showCursor = False
+        self._state.placeholderMode = False
         self._state.visible = True
         self._hide_timer.stop()
 
@@ -221,10 +221,10 @@ class OSDWindow(QObject):
             self._state.status = f"{t('executing')}: {what}"
         else:
             self._state.status = t("executing")
-        self._state.state_label = t("state_executing")
-        self._state.state_kind = "executing"
-        self._state.show_cursor = False
-        self._state.placeholder_mode = False
+        self._state.stateLabel = t("state_executing")
+        self._state.stateKind = "executing"
+        self._state.showCursor = False
+        self._state.placeholderMode = False
         self._state.visible = True
         self._hide_timer.stop()
 
@@ -234,10 +234,10 @@ class OSDWindow(QObject):
         self._state.prompt = prompt_so_far or ""
         self._state.flux = ""
         self._state.status = hint or t("pending_param_hint")
-        self._state.state_label = t("state_pending")
-        self._state.state_kind = "pending"
-        self._state.show_cursor = True
-        self._state.placeholder_mode = False
+        self._state.stateLabel = t("state_pending")
+        self._state.stateKind = "pending"
+        self._state.showCursor = True
+        self._state.placeholderMode = False
         self._state.visible = True
         self._hide_timer.stop()
 
@@ -246,10 +246,10 @@ class OSDWindow(QObject):
         self._state.prompt = text or ""
         self._state.flux = ""
         self._state.status = ""
-        self._state.state_label = t("state_committed")
-        self._state.state_kind = "committed"
-        self._state.show_cursor = False
-        self._state.placeholder_mode = False
+        self._state.stateLabel = t("state_committed")
+        self._state.stateKind = "committed"
+        self._state.showCursor = False
+        self._state.placeholderMode = False
         self._state.visible = True
         if transient_ms > 0:
             self._hide_timer.start(transient_ms)
