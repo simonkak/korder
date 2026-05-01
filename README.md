@@ -36,11 +36,9 @@
   <br><em>Awaiting — pending parameter (alt path when an action needs more input)</em>
 </p>
 
-<p align="center">
-  <a href="assets/screens/video_spotify.mp4">
-    <img src="assets/screens/video_spotify_poster.png" alt="Voice command demo — click to play" width="720" />
-  </a>
-  <br><em>End-to-end Spotify command — click to play (8 s, ~90 KB)</em>
+<p align="center" width="100%">
+  <video src="https://github.com/simonkak/korder/raw/main/assets/screens/video_spotify.mp4" poster="assets/screens/video_spotify_poster.png" width="80%" controls></video>
+  <br><em>End-to-end Spotify command — Listening → Thinking → Executing (with action narration) → Done</em>
 </p>
 
 Built for one user — me — on KDE Plasma 6 / Wayland. Nothing here is
