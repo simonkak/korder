@@ -10,3 +10,7 @@ uv.lock
 tests.md
 bench-results/*
 !bench-results/*.json
+# Dev launcher (per-user — uses absolute Path= and `uv run korder`).
+# The bundled .desktop in src/korder/ui/icons/ is the one shipped to
+# end users; this one stays personal.
+/korder.desktop
