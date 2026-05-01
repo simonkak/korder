@@ -453,8 +453,20 @@ class MainWindow(QMainWindow):
         self._osd.set_thinking(self._osd._state.prompt or "", t("transcribing"))
         self._submit_transcribe(remaining, kind="commit")
 
+    # OSD states during which Whisper should actively transcribe new
+    # audio. Other states (loading / thinking / executing / committed)
+    # are "system is busy" — running Whisper there wastes CPU on noise
+    # the user isn't meant to be producing, and any partials it spits
+    # out would race the OSD's transition. Audio still accumulates in
+    # the recorder buffer, so anything the user does say gets picked up
+    # the next time we transition back to a listening-shaped state.
+    _WHISPER_ACTIVE_STATES = frozenset({"listening", "pending"})
+
     def _on_partial_tick(self) -> None:
         if not self._recorder.is_recording:
+            return
+        # Gate on OSD state — see _WHISPER_ACTIVE_STATES above.
+        if self._osd._state.stateKind not in self._WHISPER_ACTIVE_STATES:
             return
         sr = self._recorder.sample_rate
         full = self._recorder.snapshot()
