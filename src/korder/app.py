@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QRectF, Qt
-from PySide6.QtGui import QAction, QGuiApplication, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
@@ -23,7 +23,7 @@ from korder.ui.settings_dialog import SettingsDialog
 
 SOCKET_NAME = f"korder-{os.getuid()}"
 SOCKET_PATH = os.path.join(tempfile.gettempdir(), SOCKET_NAME)
-VALID_COMMANDS = {"toggle", "show", "cancel"}
+VALID_COMMANDS = {"toggle", "show", "cancel", "wake-toggle", "wake-on", "wake-off"}
 
 
 def _bool(s: str) -> bool:
@@ -146,6 +146,13 @@ def _run_app() -> int:
         target_pct=duck_pct,
     )
 
+    wake_detector = _build_wake_detector(cfg, recorder) if _bool(cfg["wake"]["enabled"]) else None
+
+    try:
+        wake_idle_timeout_s = float(cfg["wake"]["idle_timeout_s"])
+    except (KeyError, ValueError):
+        wake_idle_timeout_s = 5.0
+
     window = MainWindow(
         engine=engine,
         recorder=recorder,
@@ -154,10 +161,17 @@ def _run_app() -> int:
         trailing_space=_bool(cfg["inject"]["trailing_space"]),
         auto_stop_after_action=_bool(cfg["ui"]["auto_stop_after_action"]),
         ducker=ducker,
+        wake_detector=wake_detector,
+        wake_idle_timeout_s=wake_idle_timeout_s,
     )
 
     tray = _make_tray(window)
     tray.show()
+
+    # Auto-start wake-listening if configured. Done after tray is up so
+    # the icon swap on transition has a target.
+    if wake_detector is not None:
+        window.start_wake_listening()
 
     server = _start_ipc_server(window)
 
@@ -172,15 +186,53 @@ def _run_app() -> int:
     return app.exec()
 
 
+def _build_wake_detector(cfg, recorder: MicRecorder):
+    """Construct the WakeWordDetector if [wake] is enabled and the
+    optional 'wake' extra is installed. Failures are logged and return
+    None so the app boots in hotkey-only mode rather than crashing."""
+    from korder.audio.wake import WakeWordDetector
+
+    phrase = cfg["wake"]["phrase"].strip() or "hey_jarvis"
+    try:
+        sensitivity = float(cfg["wake"]["sensitivity"])
+    except (KeyError, ValueError):
+        sensitivity = 0.5
+    try:
+        detector = WakeWordDetector(
+            recorder=recorder,
+            phrase=phrase,
+            sensitivity=sensitivity,
+            sample_rate=recorder.sample_rate,
+        )
+    except Exception as e:
+        print(f"[korder] wake: detector init failed: {e}", file=sys.stderr)
+        return None
+    return detector
+
+
 def _make_tray(window: MainWindow) -> QSystemTrayIcon:
-    tray = QSystemTrayIcon(_tray_icon())
-    tray.setToolTip("Korder — voice transcription")
+    icons = {state: _tray_icon(state) for state in ("idle", "wake_listening", "dictating")}
+    tooltips = {
+        "idle": "Korder — voice transcription",
+        "wake_listening": "Korder — listening for wake word",
+        "dictating": "Korder — recording…",
+    }
+
+    tray = QSystemTrayIcon(icons["idle"])
+    tray.setToolTip(tooltips["idle"])
 
     menu = QMenu()
 
     act_toggle = QAction("Toggle recording", menu)
     act_toggle.triggered.connect(window.toggle_recording)
     menu.addAction(act_toggle)
+
+    act_wake = QAction("Wake-word listening", menu)
+    act_wake.setCheckable(True)
+    act_wake.toggled.connect(
+        lambda on: window.start_wake_listening() if on else window.stop_wake_listening()
+    )
+    menu.addAction(act_wake)
 
     act_history = QAction("Show transcript history", menu)
     act_history.triggered.connect(lambda: (window.show(), window.raise_(), window.activateWindow()))
@@ -198,12 +250,43 @@ def _make_tray(window: MainWindow) -> QSystemTrayIcon:
 
     tray.setContextMenu(menu)
 
+    def _on_state(state: str) -> None:
+        tray.setIcon(icons.get(state, icons["idle"]))
+        tray.setToolTip(tooltips.get(state, tooltips["idle"]))
+        # Reflect the wake-listening flag on the menu checkbox without
+        # triggering its toggled signal back at us.
+        with _block_signals(act_wake):
+            act_wake.setChecked(state == "wake_listening")
+
+    window.tray_state_changed.connect(_on_state)
+    # Sync the initial menu state without waiting for a user transition.
+    _on_state("wake_listening" if window.is_wake_listening() else "idle")
+
     def _on_activated(reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             window.toggle_recording()
 
     tray.activated.connect(_on_activated)
     return tray
+
+
+class _block_signals:
+    """Context manager: blockSignals(True) for the duration of the
+    block so a programmatic setChecked() on a QAction doesn't echo
+    back into the slot we just connected."""
+
+    def __init__(self, obj):
+        self._obj = obj
+        self._was = False
+
+    def __enter__(self):
+        self._was = self._obj.signalsBlocked()
+        self._obj.blockSignals(True)
+        return self._obj
+
+    def __exit__(self, *exc):
+        self._obj.blockSignals(self._was)
+        return False
 
 
 def _show_settings(parent: MainWindow) -> None:
@@ -216,18 +299,28 @@ def _show_settings(parent: MainWindow) -> None:
 
 _TRAY_SVG = Path(__file__).resolve().parent / "ui" / "icons" / "tray.svg"
 _TRAY_RENDER_SIZES = (16, 22, 24, 32, 48, 64)
+# Per-state foreground colors. idle uses the theme; the other two are
+# fixed accents so the user gets a consistent visual cue regardless of
+# light/dark theme. Soft blue mirrors the OSD's Loading state; warm
+# accent mirrors the Thinking/recording pulse.
+_TRAY_STATE_COLORS = {
+    "wake_listening": QColor(0x66, 0xb3, 0xf2),
+    "dictating": QColor(0xe6, 0x82, 0x5a),
+}
 
 
-def _tray_icon() -> QIcon:
-    """Bundled waveform tray icon, recolored to the active theme.
+def _tray_icon(state: str = "idle") -> QIcon:
+    """Bundled waveform tray icon, recolored per state.
 
     The SVG paints with ``currentColor``, which Qt's icon engine doesn't
     substitute on its own. We render to a transparent pixmap, then composite
     the foreground color in via ``CompositionMode_SourceIn`` — that recolors
-    the alpha-shaped glyph without touching the SVG source.
+    the alpha-shaped glyph without touching the SVG source. Different
+    foreground per state gives the user a quick visual confirmation that
+    the mic is open (and why).
     """
     renderer = QSvgRenderer(str(_TRAY_SVG))
-    fg = QGuiApplication.palette().windowText().color()
+    fg = _TRAY_STATE_COLORS.get(state) or QGuiApplication.palette().windowText().color()
     icon = QIcon()
     for size in _TRAY_RENDER_SIZES:
         pix = QPixmap(size, size)
@@ -274,6 +367,12 @@ def _on_ready_read(sock: QLocalSocket, window: MainWindow) -> None:
             window.raise_()
         elif line == "cancel":
             window.cancel_recording()
+        elif line == "wake-toggle":
+            window.toggle_wake_listening()
+        elif line == "wake-on":
+            window.start_wake_listening()
+        elif line == "wake-off":
+            window.stop_wake_listening()
 
 
 if __name__ == "__main__":

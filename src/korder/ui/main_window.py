@@ -145,6 +145,11 @@ class _InjectWorker(QThread):
 
 
 class MainWindow(QMainWindow):
+    # Tray and any other observer can listen here to swap state — values:
+    # 'idle', 'wake_listening', 'dictating'. Emitted on every transition
+    # plus once at startup so observers don't miss the initial state.
+    tray_state_changed = Signal(str)
+
     def __init__(
         self,
         *,
@@ -155,6 +160,8 @@ class MainWindow(QMainWindow):
         trailing_space: bool = True,
         auto_stop_after_action: bool = True,
         ducker: VolumeDucker | None = None,
+        wake_detector=None,
+        wake_idle_timeout_s: float = 5.0,
     ):
         super().__init__()
         self.setWindowTitle("Korder — transcript history")
@@ -170,6 +177,19 @@ class MainWindow(QMainWindow):
         self._ducker = ducker if ducker is not None else VolumeDucker(False, 30)
         self._auto_stop_pending = False
         self._detector = SpeechDetector(sample_rate=recorder.sample_rate, aggressiveness=3)
+        # Wake-word activation (issue #1). Optional — None means hotkey-only.
+        self._wake_detector = wake_detector
+        self._wake_idle_timeout_s = float(wake_idle_timeout_s)
+        # True for the dictation session that began via a wake event.
+        # Resets to False on every dictation end. Used to gate the
+        # idle-timeout timer that returns accidental wakes to wake-mode.
+        self._dictation_via_wake = False
+        self._wake_idle_timer = QTimer(self)
+        self._wake_idle_timer.setSingleShot(True)
+        self._wake_idle_timer.timeout.connect(self._on_wake_idle_timeout)
+        if self._wake_detector is not None:
+            self._wake_detector.detected.connect(self._on_wake_detected)
+            self._wake_detector.error.connect(self._on_wake_error)
         self._workers: set[_TranscribeWorker] = set()
         self._inject_workers: set[_InjectWorker] = set()
         self._commit_queue: list[str] = []
@@ -243,6 +263,76 @@ class MainWindow(QMainWindow):
             self._start_recording()
         self._sync_button()
 
+    # ---- wake-word activation (issue #1) ---------------------------------
+
+    def is_wake_listening(self) -> bool:
+        return self._wake_detector is not None and self._wake_detector.is_running
+
+    def start_wake_listening(self) -> None:
+        """Begin always-on wake-word listening. The detector subscribes
+        to MicRecorder, which keeps the audio stream open until the
+        last subscriber detaches. No-op if no detector is configured
+        or it's already running."""
+        if self._wake_detector is None or self._wake_detector.is_running:
+            return
+        try:
+            self._wake_detector.start()
+        except Exception as e:
+            print(f"[korder] wake: failed to start: {e}", flush=True, file=sys.stderr)
+            self.statusBar().showMessage(f"Wake-word: {e}", 8000)
+            return
+        self._emit_tray_state()
+
+    def stop_wake_listening(self) -> None:
+        """Disable wake-word listening. Closes the audio stream if no
+        dictation is in progress."""
+        if self._wake_detector is None or not self._wake_detector.is_running:
+            return
+        self._wake_detector.stop()
+        self._emit_tray_state()
+
+    def toggle_wake_listening(self) -> None:
+        if self.is_wake_listening():
+            self.stop_wake_listening()
+        else:
+            self.start_wake_listening()
+
+    def _on_wake_detected(self) -> None:
+        """Wake phrase fired. Begin a dictation session as if the user
+        had pressed the hotkey. If a dictation is already in flight
+        (e.g. user spoke their wake phrase mid-utterance), ignore."""
+        if self._recorder.is_recording:
+            return
+        self._dictation_via_wake = True
+        self._start_recording()
+        self._sync_button()
+
+    def _on_wake_error(self, msg: str) -> None:
+        print(f"[korder] wake: {msg}", flush=True, file=sys.stderr)
+
+    def _on_wake_idle_timeout(self) -> None:
+        """No speech arrived within wake_idle_timeout_s of a wake fire.
+        Probably an accidental wake — cancel and return to wake-listening
+        so the OSD doesn't sit open on a false positive."""
+        if not self._recorder.is_recording:
+            return
+        print(
+            "[korder] wake: dictation idle-timeout — canceling, returning to wake-listen",
+            flush=True, file=sys.stderr,
+        )
+        self.cancel_recording()
+
+    def _emit_tray_state(self) -> None:
+        """Compute the current observable state and emit so the tray can
+        swap its icon/tooltip. Called from every transition."""
+        if self._recorder.is_recording:
+            state = "dictating"
+        elif self.is_wake_listening():
+            state = "wake_listening"
+        else:
+            state = "idle"
+        self.tray_state_changed.emit(state)
+
     def cancel_recording(self) -> None:
         """Abort the current recording without transcribing or injecting.
 
@@ -254,6 +344,8 @@ class MainWindow(QMainWindow):
             return
         self._partial_timer.stop()
         self._osd_throttle_timer.stop()
+        self._wake_idle_timer.stop()
+        self._dictation_via_wake = False
         self._pending_partial_text = None
         # Drain and drop the recorder's buffer (sounddevice closes its stream
         # in stop()); we ignore the returned array.
@@ -265,6 +357,7 @@ class MainWindow(QMainWindow):
         self._status.setText(t("status_cancelled"))
         self._osd.hide_after(150)
         self._sync_button()
+        self._emit_tray_state()
 
     PAUSE_MS = 3500
     MIN_COMMIT_MS = 500
@@ -280,6 +373,7 @@ class MainWindow(QMainWindow):
             self._recorder.start()
         except Exception as e:
             self.statusBar().showMessage(f"Mic error: {e}", 6000)
+            self._dictation_via_wake = False
             return
         self._begin_dictation_lifecycle()
         self._status.setText(t("status_listening"))
@@ -296,6 +390,13 @@ class MainWindow(QMainWindow):
         self._stability_count = 0
         self._reset_partial_render_state()
         self._partial_timer.start()
+        # Arm the wake idle-timeout only when this dictation began via
+        # a wake event. Hotkey/tray invocations stay open as long as
+        # the user wants — we don't want the timer slamming a manual
+        # session shut.
+        if self._dictation_via_wake and self._wake_idle_timeout_s > 0:
+            self._wake_idle_timer.start(int(self._wake_idle_timeout_s * 1000))
+        self._emit_tray_state()
 
     def _begin_dictation_lifecycle(self) -> None:
         """Resources to acquire for the duration of a dictation session,
@@ -319,12 +420,15 @@ class MainWindow(QMainWindow):
             return
         self._partial_timer.stop()
         self._osd_throttle_timer.stop()
+        self._wake_idle_timer.stop()
+        self._dictation_via_wake = False
         self._pending_partial_text = None
         full = self._recorder.stop()
         # Restore volume the moment the mic closes, regardless of whether
         # transcription proceeds or short-circuits below. Whisper runs
         # off-thread; we don't want playback held down for the duration.
         self._end_dictation_lifecycle()
+        self._emit_tray_state()
         sr = self._recorder.sample_rate
         remaining = full[self._committed_samples:]
         if remaining.size < int(0.2 * sr) or not self._detector.has_speech(remaining):
@@ -343,6 +447,15 @@ class MainWindow(QMainWindow):
         new = full[self._committed_samples:]
         if new.size < int(0.3 * sr):
             return
+
+        # Once any real speech is detected, disarm the wake idle-timeout
+        # so the user can take their time finishing the utterance. This
+        # only matters for sessions that started via wake; the timer
+        # isn't armed otherwise.
+        if self._wake_idle_timer.isActive() and self._detector.has_speech(
+            new, min_speech_ms=self.MIN_SPEECH_FOR_PARTIAL_MS
+        ):
+            self._wake_idle_timer.stop()
 
         speech_end, silence_ms = self._detector.find_trailing_silence(new)
         speech_min = int((self.MIN_COMMIT_MS / 1000) * sr)
