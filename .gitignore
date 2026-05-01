@@ -8,4 +8,5 @@ build/
 .python-version
 uv.lock
 tests.md
-bench-results/
+bench-results/*
+!bench-results/*.json
