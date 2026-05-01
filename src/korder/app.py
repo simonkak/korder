@@ -75,6 +75,7 @@ from korder.audio.capture import MicRecorder
 from korder.audio.ducker import VolumeDucker
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import InjectError, make_backend
+from korder.ui.i18n import t
 from korder.ui.main_window import MainWindow
 from korder.ui.osd import OSDWindow
 from korder.ui.settings_dialog import SettingsDialog
@@ -280,9 +281,9 @@ def _build_wake_detector(cfg, recorder: MicRecorder):
 def _make_tray(window: MainWindow) -> QSystemTrayIcon:
     icons = {state: _tray_icon(state) for state in ("idle", "wake_listening", "dictating")}
     tooltips = {
-        "idle": "Korder — voice transcription",
-        "wake_listening": "Korder — listening for wake word",
-        "dictating": "Korder — recording…",
+        "idle": t("tray_tooltip_idle"),
+        "wake_listening": t("tray_tooltip_wake_listening"),
+        "dictating": t("tray_tooltip_dictating"),
     }
 
     tray = QSystemTrayIcon(icons["idle"])
@@ -290,28 +291,28 @@ def _make_tray(window: MainWindow) -> QSystemTrayIcon:
 
     menu = QMenu()
 
-    act_toggle = QAction("Toggle recording", menu)
+    act_toggle = QAction(t("menu_toggle_recording"), menu)
     act_toggle.triggered.connect(window.toggle_recording)
     menu.addAction(act_toggle)
 
-    act_wake = QAction("Wake-word listening", menu)
+    act_wake = QAction(t("menu_wake_listening"), menu)
     act_wake.setCheckable(True)
     act_wake.toggled.connect(
         lambda on: window.start_wake_listening() if on else window.stop_wake_listening()
     )
     menu.addAction(act_wake)
 
-    act_history = QAction("Show transcript history", menu)
+    act_history = QAction(t("menu_show_history"), menu)
     act_history.triggered.connect(lambda: (window.show(), window.raise_(), window.activateWindow()))
     menu.addAction(act_history)
 
-    act_settings = QAction("Settings…", menu)
+    act_settings = QAction(t("menu_settings"), menu)
     act_settings.triggered.connect(lambda: _show_settings(window))
     menu.addAction(act_settings)
 
     menu.addSeparator()
 
-    act_quit = QAction("Quit", menu)
+    act_quit = QAction(t("menu_quit"), menu)
     act_quit.triggered.connect(QApplication.instance().quit)
     menu.addAction(act_quit)
 
@@ -358,9 +359,9 @@ class _block_signals:
 
 def _show_settings(parent: MainWindow) -> None:
     dlg = SettingsDialog(parent)
-    dlg.settings_saved.connect(lambda: parent.statusBar().showMessage(
-        "Settings saved — restart Korder for all changes to take effect.", 8000
-    ))
+    dlg.settings_saved.connect(
+        lambda: parent.statusBar().showMessage(t("settings_saved_notice"), 8000)
+    )
     dlg.exec()
 
 
