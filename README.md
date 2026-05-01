@@ -109,7 +109,7 @@ CMAKE_ARGS="-DGGML_VULKAN=on" \
 uv run korder
 ```
 
-A microphone icon appears in your system tray. Left-click to toggle recording;
+A waveform icon appears in your system tray. Left-click to toggle recording;
 right-click for the context menu.
 
 For a global hotkey, bind `/home/YOU/priv/korder/.venv/bin/korder toggle` in
