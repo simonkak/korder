@@ -468,13 +468,19 @@ class MainWindow(QMainWindow):
         self._submit_transcribe(remaining, kind="commit")
 
     # OSD states during which Whisper should actively transcribe new
-    # audio. Other states (loading / thinking / executing / committed)
-    # are "system is busy" — running Whisper there wastes CPU on noise
-    # the user isn't meant to be producing, and any partials it spits
-    # out would race the OSD's transition. Audio still accumulates in
-    # the recorder buffer, so anything the user does say gets picked up
-    # the next time we transition back to a listening-shaped state.
-    _WHISPER_ACTIVE_STATES = frozenset({"listening", "pending"})
+    # audio. The "system is busy" states — loading / thinking /
+    # executing — are excluded so we don't waste CPU on noise the user
+    # isn't meant to be producing and don't race partials against OSD
+    # transitions. "committed" stays IN the active set on purpose:
+    # it's how the OSD looks after a pure-text commit (no action
+    # fired) when the user is still recording and may continue
+    # dictating; without this, post-text dictation would freeze with
+    # no way back to listening short of toggling the hotkey. For the
+    # command-flow committed (auto-stop scheduled in ~150 ms),
+    # _stop_recording's transcribe_tail=False drops anything Whisper
+    # captures during the brief window, so allowing it here doesn't
+    # leak spurious commits.
+    _WHISPER_ACTIVE_STATES = frozenset({"listening", "pending", "committed"})
 
     def _on_partial_tick(self) -> None:
         if not self._recorder.is_recording:
