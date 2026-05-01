@@ -88,6 +88,7 @@ def _run_app() -> int:
     )
 
     op_parser = None
+    op_parser_is_warm = None
     if cfg["inject"]["action_parser"].lower() == "llm":
         from korder.intent import IntentParser
         thinking = _bool(cfg["intent"]["thinking_mode"])
@@ -100,13 +101,15 @@ def _run_app() -> int:
             keep_alive_s = float(cfg["intent"]["keep_alive_s"])
         except (KeyError, ValueError):
             keep_alive_s = 300.0
-        op_parser = IntentParser(
+        intent_parser = IntentParser(
             model=cfg["inject"]["llm_model"],
             timeout_s=timeout_s,
             thinking_mode=thinking,
             show_triggers_in_prompt=show_triggers,
             keep_alive_s=keep_alive_s,
-        ).parse
+        )
+        op_parser = intent_parser.parse
+        op_parser_is_warm = intent_parser.is_model_loaded
         flags = []
         if thinking:
             flags.append("thinking")
@@ -119,7 +122,11 @@ def _run_app() -> int:
         )
 
     try:
-        injector = make_backend(paste_mode=cfg["inject"]["paste_mode"], op_parser=op_parser)
+        injector = make_backend(
+            paste_mode=cfg["inject"]["paste_mode"],
+            op_parser=op_parser,
+            op_parser_is_warm=op_parser_is_warm,
+        )
     except InjectError as e:
         print(f"[korder] injection disabled: {e}", file=sys.stderr)
         injector = None

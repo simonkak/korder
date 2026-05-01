@@ -3,6 +3,7 @@ drives explicitly. States:
 
   set_listening()   — mic open, no speech yet (placeholder + cursor)
   set_partial(text) — live transcript streaming
+  set_loading(...)  — waiting for ollama to load the LLM into VRAM
   set_thinking(...) — LLM is reasoning (status hint + faded color)
   set_executing(..) — action firing
   set_pending(...)  — pending parameterized action awaiting user input
@@ -211,6 +212,22 @@ class OSDWindow(QObject):
         self._state.status = t("write_mode_on") if write_mode else ""
         self._state.stateLabel = t("state_listening")
         self._state.stateKind = "listening"
+        self._state.showCursor = False
+        self._state.placeholderMode = False
+        self._state.feedbackMode = False
+        self._state.visible = True
+        self._hide_timer.stop()
+
+    def set_loading(self, prompt: str, hint: str = "") -> None:
+        """Ollama is paging the model into VRAM (cold-start path, when
+        keep_alive_s expired). Same layout as set_thinking but a distinct
+        state label + accent so the user knows the slow part is mechanical
+        loading, not semantic reasoning."""
+        self._state.prompt = prompt or ""
+        self._state.flux = ""
+        self._state.status = hint or t("loading_hint")
+        self._state.stateLabel = t("state_loading")
+        self._state.stateKind = "loading"
         self._state.showCursor = False
         self._state.placeholderMode = False
         self._state.feedbackMode = False

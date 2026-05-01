@@ -23,6 +23,7 @@ from korder.actions.base import all_actions, get_action
 from korder.actions.parser import split_into_ops
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
+_OLLAMA_PS_URL = "http://localhost:11434/api/ps"
 
 _PUNCT_TO_STRIP = " \t.!?,;:\n"
 
@@ -141,6 +142,24 @@ class IntentParser:
         # when thinking_mode is on. Surfaced for diagnostics (logged to
         # stderr in _call_ollama; readable by the benchmark dialog).
         self.last_thinking: str = ""
+
+    def is_model_loaded(self) -> bool:
+        """Quick check (≈20 ms) of whether ollama already has self.model
+        resident in VRAM. Used by the UI to show a 'Loading' state on
+        the cold-start path (when keep_alive_s expired). Fails open —
+        any error returns True so a transient ollama hiccup doesn't
+        falsely flash 'Loading' on every command.
+        """
+        try:
+            req = urllib.request.Request(_OLLAMA_PS_URL, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            return True
+        for m in body.get("models", []) or []:
+            if m.get("name") == self.model or m.get("model") == self.model:
+                return True
+        return False
 
     def parse(self, transcript: str) -> list[tuple]:
         if not transcript:

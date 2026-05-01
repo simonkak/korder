@@ -59,6 +59,7 @@ Window {
         if (!osdState) return accentColor;
         switch (osdState.stateKind) {
             case "listening": return accentColor;
+            case "loading":   return Qt.rgba(0.40, 0.70, 0.95, 1.0); // soft blue — mechanical wait
             case "thinking":  return Qt.rgba(1.0, 0.73, 0.33, 1.0); // amber
             case "executing": return Qt.rgba(0.45, 0.85, 0.45, 1.0); // green
             case "pending":   return Qt.rgba(1.0, 0.73, 0.33, 1.0); // amber
@@ -185,7 +186,7 @@ Window {
                             }
 
                             // Inner solid dot — also gently pulses for "thinking"
-                            // (fade only, no scale) so user knows we're alive.
+                            // and "loading" (fade only, no scale) so user knows we're alive.
                             Rectangle {
                                 id: dot
                                 anchors.centerIn: parent
@@ -193,7 +194,7 @@ Window {
                                 radius: width / 2
                                 color: root.accentForState
                                 SequentialAnimation on opacity {
-                                    running: osdState && osdState.stateKind === "thinking"
+                                    running: osdState && (osdState.stateKind === "thinking" || osdState.stateKind === "loading")
                                     loops: Animation.Infinite
                                     NumberAnimation { from: 1.0; to: 0.35; duration: 600 }
                                     NumberAnimation { from: 0.35; to: 1.0; duration: 600 }

@@ -59,6 +59,7 @@ class _InjectWorker(QThread):
     pending_action = Signal(str)  # name of an action waiting for a param
     command_executed = Signal()  # at least one non-text, non-mode action ran
     parse_started = Signal()  # LLM parse is about to start (slow path)
+    loading_started = Signal()  # LLM model not resident — cold load + parse
     parse_done = Signal()  # parse finished, executing now
 
     def __init__(
@@ -81,7 +82,15 @@ class _InjectWorker(QThread):
             if self._prebuilt_ops is not None:
                 ops = self._prebuilt_ops
             else:
-                self.parse_started.emit()
+                # Pre-flight: ask the parser whether the model is warm.
+                # When false (LLM only — regex always reports warm), the
+                # next call pays a cold-load. Surface that to the UI as
+                # a separate Loading state so the user understands the
+                # extra second isn't reasoning, it's paging the model in.
+                if self._injector.is_slow_parser and not self._injector.is_op_parser_warm():
+                    self.loading_started.emit()
+                else:
+                    self.parse_started.emit()
                 ops = self._injector.parse_ops(self._payload)
                 self.parse_done.emit()
             filtered: list[tuple] = []
@@ -498,6 +507,7 @@ class MainWindow(QMainWindow):
             worker.pending_action.connect(self._on_pending_action)
             worker.command_executed.connect(self._on_command_executed)
             worker.parse_started.connect(lambda t=text: self._on_parse_started(t))
+            worker.loading_started.connect(lambda t=text: self._on_loading_started(t))
             worker.parse_done.connect(self._on_parse_done)
             worker.finished.connect(lambda w=worker: self._reap_inject(w))
             self._inject_workers.add(worker)
@@ -538,6 +548,14 @@ class MainWindow(QMainWindow):
         """LLM parse is starting (only fires for the slow LLM parser)."""
         if self._injector and self._injector.is_slow_parser:
             self._osd.set_thinking(prompt)
+
+    def _on_loading_started(self, prompt: str) -> None:
+        """Cold-start path: ollama needs to page the model into VRAM
+        before it can reason. Fires instead of parse_started when the
+        model wasn't resident at request time. The same parse_done
+        signal then transitions to Executing once the call returns."""
+        if self._injector and self._injector.is_slow_parser:
+            self._osd.set_loading(prompt)
 
     def _on_parse_done(self) -> None:
         """LLM parse finished. We don't have the ops at this point (worker

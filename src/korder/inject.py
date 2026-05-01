@@ -53,7 +53,7 @@ class YdotoolBackend:
     PASTE_ALWAYS = "always"
     PASTE_NEVER = "never"
 
-    def __init__(self, paste_mode: str = "auto", op_parser=None):
+    def __init__(self, paste_mode: str = "auto", op_parser=None, op_parser_is_warm=None):
         if shutil.which("ydotool") is None:
             raise InjectError(
                 "ydotool not found in PATH. Install it (e.g. `sudo pacman -S ydotool`) "
@@ -62,8 +62,22 @@ class YdotoolBackend:
         self.paste_mode = paste_mode
         self._has_wl_copy = shutil.which("wl-copy") is not None
         self._op_parser = op_parser or _split_into_ops
+        self._op_parser_is_warm = op_parser_is_warm
         self._lock = threading.Lock()
         self.is_slow_parser = op_parser is not None
+
+    def is_op_parser_warm(self) -> bool:
+        """Returns True if the parser is ready for a fast call. False
+        means the next call is expected to pay a cold-start cost (e.g.
+        ollama needs to load the model into VRAM). Used by the UI to
+        decide between a 'Loading' and a 'Thinking' state. Defaults to
+        True for parsers without a load step (regex)."""
+        if self._op_parser_is_warm is None:
+            return True
+        try:
+            return bool(self._op_parser_is_warm())
+        except Exception:
+            return True
 
     def parse_ops(self, text: str) -> list[tuple]:
         """Parse text into op tuples WITHOUT executing. Lets the caller
@@ -198,5 +212,9 @@ class YdotoolBackend:
             ) from e
 
 
-def make_backend(paste_mode: str = "auto", op_parser=None) -> YdotoolBackend:
-    return YdotoolBackend(paste_mode=paste_mode, op_parser=op_parser)
+def make_backend(paste_mode: str = "auto", op_parser=None, op_parser_is_warm=None) -> YdotoolBackend:
+    return YdotoolBackend(
+        paste_mode=paste_mode,
+        op_parser=op_parser,
+        op_parser_is_warm=op_parser_is_warm,
+    )
