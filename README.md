@@ -27,8 +27,13 @@
 </p>
 
 <p align="center">
+  <img src="assets/screens/command_done.png" alt="Done — action committed" width="720" />
+  <br><em>Done — action finished, committed text echoed back</em>
+</p>
+
+<p align="center">
   <img src="assets/screens/command_pending_action.png" alt="Awaiting — waiting for follow-up parameter" width="720" />
-  <br><em>Awaiting — pending parameter, waiting for your follow-up utterance</em>
+  <br><em>Awaiting — pending parameter (alt path when an action needs more input)</em>
 </p>
 
 <p align="center">

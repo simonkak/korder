@@ -58,6 +58,7 @@ DEFAULT_INPUTS = [
     "command_invocation.png",
     "command_thinking.png",
     "command_execution_feedback.png",
+    "command_done.png",
     "command_pending_action.png",
 ]
 
