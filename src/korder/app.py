@@ -6,6 +6,53 @@ import sys
 import tempfile
 from pathlib import Path
 
+# CRITICAL: rebrand the process and set audio-server identity env vars
+# BEFORE any import that transitively loads sounddevice/PortAudio.
+#
+# PipeWire's pw_get_prgname() (used to label clients in the volume
+# mixer) reads glibc's program_invocation_short_name, which is set at
+# exec() from argv[0] and is NOT updated by prctl(PR_SET_NAME) alone.
+# setproctitle rewrites both argv[0] in memory AND glibc's pointer, so
+# pipewire then sees "korder" instead of "python3.12". This is the
+# only way to rename the *persistent* PipeWire client (factory.id=2)
+# that PortAudio creates the moment its ALSA hostapi initializes.
+#
+# Failure here is non-fatal — without setproctitle the mixer just
+# falls back to the previous "ALSA plug-in [python3.12]" labelling.
+try:
+    import setproctitle as _setproctitle
+    _setproctitle.setproctitle("korder")
+except ImportError:
+    pass
+
+# PipeWire reads three different env vars for three different objects
+# we touch when we record. All three need to be set before sounddevice
+# imports — the audio libs read them at connect time, and `setdefault`
+# leaves any user override intact.
+#
+# - PIPEWIRE_PROPS: properties for libpipewire's primary client, the
+#   one PortAudio creates the moment its ALSA hostapi initializes.
+#   Format is SPA-JSON (PipeWire's relaxed-JSON dialect): braces,
+#   key=value pairs, **comma-separated**. Earlier attempts without
+#   commas were silently ignored or, in the worst case, hung pw_init.
+# - PIPEWIRE_ALSA: properties for the per-stream node that
+#   pcm_pipewire creates when an InputStream actually opens. Same
+#   SPA-JSON format.
+# - PULSE_PROP: covers users on plain PulseAudio (libpulse format —
+#   space-separated key=value, no braces).
+os.environ.setdefault(
+    "PIPEWIRE_PROPS",
+    "{ application.name = Korder, application.icon_name = korder }",
+)
+os.environ.setdefault(
+    "PIPEWIRE_ALSA",
+    "{ application.name = Korder, application.icon_name = korder, node.name = Korder }",
+)
+os.environ.setdefault(
+    "PULSE_PROP",
+    "application.name=Korder application.icon_name=korder",
+)
+
 from PySide6.QtCore import QByteArray, QRectF, Qt
 from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -70,11 +117,11 @@ def main() -> int:
 def _run_app() -> int:
     cfg = config.load()
 
-    # Announce ourselves to PipeWire/PulseAudio before any audio code
-    # starts a stream — the volume mixer otherwise labels us
-    # "PipeWire ALSA [python3.12]" which is correct but unhelpful.
-    # Must happen before MicRecorder constructs its first InputStream.
-    _announce_pulse_identity()
+    # Audio-server identity env vars are set at module-import time
+    # (see top of this file — they have to land before sounddevice
+    # imports). Here we only install the icon file so the icon_name
+    # in those env vars resolves visually.
+    _install_tray_icon_in_theme()
 
     app = QApplication(sys.argv)
     app.setApplicationName("Korder")
@@ -311,55 +358,18 @@ _TRAY_SVG = Path(__file__).resolve().parent / "ui" / "icons" / "tray.svg"
 _USER_ICON_PATH = Path.home() / ".local" / "share" / "icons" / "hicolor" / "scalable" / "apps" / "korder.svg"
 
 
-def _announce_pulse_identity() -> None:
-    """Tell PipeWire/PulseAudio to label our streams "Korder" with our
-    icon, instead of the default "PipeWire ALSA [python3.12]" derived
-    from the binary name. Also installs the bundled tray SVG into the
-    user's hicolor icon theme so the icon_name lookup resolves.
-
-    Two env vars are set, both via setdefault so user overrides win:
-
-    * ``PIPEWIRE_ALSA`` — read by libasound_module_pcm_pipewire.so (the
-      ALSA-to-PipeWire bridge through which sounddevice → PortAudio →
-      ALSA actually reaches PipeWire). Format is SPA-JSON: a dict of
-      properties merged onto the stream node at creation. This is the
-      env var that actually overrides the bridge's default
-      "ALSA plug-in [<prgname>]" labelling.
-    * ``PULSE_PROP`` — read by libpulse, on the off chance someone is
-      on plain PulseAudio rather than pipewire-pulse.
-
-    A previous attempt set ``PIPEWIRE_PROPS`` (libpipewire's
-    context-level dict). It does not propagate to the ALSA bridge's
-    stream node and, with a slightly off format, can stall ``pw_init``
-    when the first stream opens — which freezes the Qt event loop
-    before the tray ever shows. PIPEWIRE_ALSA is the correct knob.
-
-    MUST run before sounddevice opens any stream — both env vars are
-    read once, when the audio backend connects.
-    """
-    # Install our SVG into the user's icon theme if missing. Failure
-    # here is non-fatal — the stream still gets renamed, it just
-    # falls back to a default mic icon.
+def _install_tray_icon_in_theme() -> None:
+    """Install the bundled tray SVG into the user's hicolor icon theme
+    so application.icon_name=korder (set in PIPEWIRE_ALSA / PULSE_PROP
+    at the top of this module) resolves to a real glyph. No-op if the
+    file is already there. Failure is non-fatal — the stream still
+    gets named, it just falls back to a default mic icon."""
     try:
         if not _USER_ICON_PATH.exists() and _TRAY_SVG.exists():
             _USER_ICON_PATH.parent.mkdir(parents=True, exist_ok=True)
             _USER_ICON_PATH.write_bytes(_TRAY_SVG.read_bytes())
     except OSError as e:
         print(f"[korder] couldn't install tray icon: {e}", file=sys.stderr)
-
-    # SPA-JSON dict for the pipewire-alsa bridge. node.name is what
-    # the volume mixer surfaces in the Strumienie wejściowe row.
-    os.environ.setdefault(
-        "PIPEWIRE_ALSA",
-        '{ application.name = "Korder" '
-        'application.icon_name = "korder" '
-        'node.name = "Korder" }',
-    )
-    # PULSE_PROP is space-separated key=value pairs (libpulse format).
-    os.environ.setdefault(
-        "PULSE_PROP",
-        "application.name=Korder application.icon_name=korder",
-    )
 _TRAY_RENDER_SIZES = (16, 22, 24, 32, 48, 64)
 # Per-state foreground colors. idle uses the theme; the other two are
 # fixed accents so the user gets a consistent visual cue regardless of

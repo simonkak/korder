@@ -9,6 +9,12 @@ dependencies = [
     "numpy>=1.26",
     "pywhispercpp>=1.3",
     "webrtcvad-wheels>=2.0",
+    # Process-name rebrand so PipeWire/PulseAudio's pw_get_prgname()
+    # returns "korder" instead of "python3.12". prctl(PR_SET_NAME) is
+    # insufficient — pw_get_prgname reads glibc's
+    # program_invocation_short_name pointer, which has to be rewritten
+    # alongside argv[0]. setproctitle handles all of that in one call.
+    "setproctitle>=1.3",
 ]
 
 [project.scripts]
