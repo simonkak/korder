@@ -244,21 +244,24 @@ Window {
                             id: promptText
                             // RichText whenever flux or status is present so
                             // we can color the segments differently. Plain
-                            // text fallback only for the placeholder path
-                            // where italic+statusColor styling is uniform.
+                            // text fallback for placeholder + feedback paths
+                            // where the styling is uniform across the whole
+                            // line (italic + alternate color).
                             readonly property bool _hasFlux:
                                 osdState && osdState.flux !== undefined &&
                                 osdState.flux.length > 0
                             readonly property bool _hasStatus:
                                 osdState && osdState.status !== undefined &&
                                 osdState.status.length > 0
+                            readonly property bool _isFeedback:
+                                osdState && osdState.feedbackMode === true
                             readonly property bool _useRich:
                                 osdState && !osdState.placeholderMode &&
-                                (_hasFlux || _hasStatus)
+                                !_isFeedback && (_hasFlux || _hasStatus)
 
                             text: {
                                 if (!osdState) return "";
-                                if (osdState.placeholderMode || !_useRich) {
+                                if (osdState.placeholderMode || _isFeedback || !_useRich) {
                                     return osdState.prompt;
                                 }
                                 var parts = [];
@@ -280,12 +283,19 @@ Window {
                                 return parts.join("");
                             }
                             textFormat: _useRich ? Text.RichText : Text.PlainText
-                            color: osdState && osdState.placeholderMode
-                                ? root.statusColor
-                                : root.promptColor
+                            // Color resolution priority:
+                            //  - placeholder: muted statusColor
+                            //  - feedback (action narration): state's accent
+                            //  - normal: bright promptColor
+                            color: {
+                                if (!osdState) return root.promptColor;
+                                if (osdState.placeholderMode) return root.statusColor;
+                                if (_isFeedback) return root.accentForState;
+                                return root.promptColor;
+                            }
                             font.pixelSize: 16
-                            font.weight: Font.Medium
-                            font.italic: osdState ? osdState.placeholderMode : false
+                            font.weight: _isFeedback ? Font.Normal : Font.Medium
+                            font.italic: osdState && (osdState.placeholderMode || _isFeedback)
                             wrapMode: Text.WordWrap
                             elide: Text.ElideRight
                             horizontalAlignment: Text.AlignLeft

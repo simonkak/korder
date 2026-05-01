@@ -34,6 +34,7 @@ class _OSDState(QObject):
     placeholderModeChanged = Signal()
     stateLabelChanged = Signal()
     stateKindChanged = Signal()
+    feedbackModeChanged = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -49,6 +50,10 @@ class _OSDState(QObject):
         # executing, pending, committed).
         self._state_label = ""
         self._state_kind = "idle"
+        # When True, the center prompt is system feedback (action progress
+        # narration) — render in the state's accent color + italic so it
+        # reads visually distinct from the user's own dictated words.
+        self._feedback_mode = False
         # Localized "Press ESC to cancel" hint, set once at startup.
         self._esc_hint = t("press_to_cancel")
 
@@ -132,6 +137,16 @@ class _OSDState(QObject):
 
     stateKind = Property(str, _get_state_kind, _set_state_kind, notify=stateKindChanged)
 
+    def _get_feedback_mode(self) -> bool:
+        return self._feedback_mode
+
+    def _set_feedback_mode(self, value: bool) -> None:
+        if self._feedback_mode != value:
+            self._feedback_mode = value
+            self.feedbackModeChanged.emit()
+
+    feedbackMode = Property(bool, _get_feedback_mode, _set_feedback_mode, notify=feedbackModeChanged)
+
     def _get_esc_hint(self) -> str:
         return self._esc_hint
 
@@ -175,6 +190,7 @@ class OSDWindow(QObject):
         self._state.stateKind = "listening"
         self._state.showCursor = True
         self._state.placeholderMode = True
+        self._state.feedbackMode = False
         self._state.visible = True
         self._hide_timer.stop()
 
@@ -197,6 +213,7 @@ class OSDWindow(QObject):
         self._state.stateKind = "listening"
         self._state.showCursor = False
         self._state.placeholderMode = False
+        self._state.feedbackMode = False
         self._state.visible = True
         self._hide_timer.stop()
 
@@ -211,6 +228,7 @@ class OSDWindow(QObject):
         self._state.stateKind = "thinking"
         self._state.showCursor = False
         self._state.placeholderMode = False
+        self._state.feedbackMode = False
         self._state.visible = True
         self._hide_timer.stop()
 
@@ -225,6 +243,7 @@ class OSDWindow(QObject):
         self._state.stateKind = "executing"
         self._state.showCursor = False
         self._state.placeholderMode = False
+        self._state.feedbackMode = False
         self._state.visible = True
         self._hide_timer.stop()
 
@@ -233,7 +252,11 @@ class OSDWindow(QObject):
         "Searching for X" / "Found album Y" / "Playing Y". State stays
         Executing; the leading label and pulse don't change. Caller is
         responsible for the final transition (typically set_committed)
-        once the action completes."""
+        once the action completes.
+
+        Sets feedbackMode=True so the QML renders this text in the
+        state's accent color + italic, distinct from the user's own
+        spoken command."""
         self._state.prompt = text or ""
         self._state.flux = ""
         self._state.status = ""
@@ -241,6 +264,7 @@ class OSDWindow(QObject):
         self._state.stateKind = "executing"
         self._state.showCursor = False
         self._state.placeholderMode = False
+        self._state.feedbackMode = True
         self._state.visible = True
         self._hide_timer.stop()
 
@@ -254,6 +278,7 @@ class OSDWindow(QObject):
         self._state.stateKind = "pending"
         self._state.showCursor = True
         self._state.placeholderMode = False
+        self._state.feedbackMode = False
         self._state.visible = True
         self._hide_timer.stop()
 
@@ -266,6 +291,7 @@ class OSDWindow(QObject):
         self._state.stateKind = "committed"
         self._state.showCursor = False
         self._state.placeholderMode = False
+        self._state.feedbackMode = False
         self._state.visible = True
         if transient_ms > 0:
             self._hide_timer.start(transient_ms)
