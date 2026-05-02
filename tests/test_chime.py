@@ -25,34 +25,54 @@ def _reset_chime_state():
         chime_mod._active_stream = None
 
 
-def test_build_chime_returns_sane_buffer():
+def test_build_chime_loads_real_asset():
+    """Loads the .opus file shipped alongside the module. Asserts
+    on properties of the LOADER (mono float32, sane sample rate,
+    non-zero length, deferral window matches doc), not on the
+    file's specific waveform — the asset can be re-recorded
+    without breaking tests."""
     _reset_chime_state()
     audio, sr, dur_ms = chime_mod.build_start_chime()
-    assert sr == 44100
-    # Third return is the DEFERRAL window for the caller — the audio
-    # itself is longer (bell rings out past the mic-open point at
-    # sub-bleed amplitude). dur_ms = 280 ms; audio = ~550 ms.
-    assert dur_ms == 280
+    # Deferral window matches the documented value
+    assert dur_ms == 400
+    # Sample rate is whatever the file ships at — assert it's a
+    # plausible audio rate, not a specific number
+    assert sr in (16000, 22050, 24000, 32000, 44100, 48000)
+    # Loader contract: float32 mono numpy array
     assert audio.dtype == np.float32
     assert audio.ndim == 1
-    expected_n = int(0.55 * 44100)
-    # Allow ±1 sample tolerance on the linspace boundary
-    assert abs(audio.shape[0] - expected_n) <= 1
-    # Peak amplitude bounded by the documented headroom (~ -13 dBFS)
-    peak = float(np.max(np.abs(audio)))
-    assert 0.0 < peak <= 0.25, f"peak {peak} outside expected range"
-    # Soft attack: first sample near zero (avoids speaker pop)
-    assert abs(audio[0]) < peak * 0.5
-    # Bell ringdown: the last 50 ms must be substantially quieter
-    # than the loud body (~first 100 ms). Sanity check that the
-    # exponential envelope is wired up — not a precise acoustic
-    # claim. Real speaker-bleed margin is provided by the ducker
-    # taking system volume to 30 % at mic-open.
-    body_peak = float(np.max(np.abs(audio[: int(0.10 * 44100)])))
-    tail_peak = float(np.max(np.abs(audio[-int(0.05 * 44100):])))
-    assert tail_peak < body_peak * 0.5, (
-        f"tail {tail_peak} should be much quieter than body {body_peak}"
-    )
+    assert audio.shape[0] > 0
+    # Audio must not be silent (the file has content)
+    assert float(np.max(np.abs(audio))) > 0.0
+
+
+def test_build_chime_collapses_stereo_to_mono(monkeypatch):
+    """If the asset is ever re-recorded in stereo, the loader
+    averages channels into mono. UI chimes are spatially neutral
+    by convention."""
+    _reset_chime_state()
+    fake_stereo = np.column_stack([
+        np.full(1000, 0.4, dtype=np.float32),
+        np.full(1000, 0.6, dtype=np.float32),
+    ])
+    import soundfile
+    monkeypatch.setattr(soundfile, "read", lambda *a, **kw: (fake_stereo, 48000))
+    audio, sr, dur_ms = chime_mod.build_start_chime()
+    assert audio.ndim == 1
+    assert audio.shape[0] == 1000
+    # Average of 0.4 and 0.6 = 0.5
+    assert abs(float(audio[0]) - 0.5) < 1e-5
+
+
+def test_build_chime_raises_when_asset_missing(monkeypatch, tmp_path):
+    """If the .opus file is absent (corrupt install / git checkout
+    without the asset), build_start_chime raises and the play
+    wrapper returns 0 to skip the chime gracefully."""
+    _reset_chime_state()
+    bad_path = tmp_path / "missing.opus"
+    monkeypatch.setattr(chime_mod, "_CHIME_PATH", bad_path)
+    with pytest.raises((FileNotFoundError, RuntimeError)):
+        chime_mod.build_start_chime()
 
 
 def test_build_chime_caches_buffer():
@@ -81,7 +101,7 @@ def test_play_chime_uses_dedicated_output_stream(monkeypatch):
     monkeypatch.setattr(chime_mod.sd, "play", MagicMock(side_effect=AssertionError("chime must not use sd.play")))
 
     duration_ms = chime_mod.play_start_chime()
-    assert duration_ms == 280
+    assert duration_ms == 400
     # OutputStream constructed exactly once with the right format
     assert len(constructed) == 1
     # start() called on it

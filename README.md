@@ -85,6 +85,11 @@ names will differ but the binaries are the same.
 # Input synthesis (Wayland-friendly)
 sudo pacman -S ydotool wl-clipboard
 
+# Audio decode (for the start-listening chime — soundfile binds to
+# libsndfile; current libsndfile reads Opus). Pre-installed on most
+# desktop distros; included for completeness.
+sudo pacman -S libsndfile
+
 # Build deps for whisper.cpp Vulkan backend (pywhispercpp builds from source)
 sudo pacman -S cmake gcc vulkan-headers vulkan-icd-loader shaderc
 
@@ -195,11 +200,13 @@ gain = 0.7                      # software gain on captured audio; lower if mic 
 duck_during_recording = true    # lower system playback volume while listening
 duck_volume_pct = 30            # target volume (% of full) while ducked; no-op if
                                 # you're already quieter than this. Requires wpctl.
-start_chime = true              # play a soft 200 ms two-tone chime when dictation
-                                # starts. Mic capture is deliberately deferred until
-                                # the chime finishes so Whisper doesn't transcribe it
-                                # via speaker bleed. Adds ~250 ms perceived latency
-                                # in exchange for an audible "go" signal.
+start_chime = true              # play a soft chime (src/korder/audio/chime.opus)
+                                # when dictation starts. Mic capture is deferred
+                                # ~400 ms until the chime's loud body finishes so
+                                # Whisper doesn't transcribe it via speaker bleed.
+                                # The tail plays during early recording at sub-bleed
+                                # amplitude (combined with the ducker's drop, well
+                                # below ASR threshold). Set false to skip.
 
 [inject]
 action_parser = regex   # "regex" (fast, deterministic) or "llm" (smarter, slower)
@@ -375,7 +382,7 @@ across whichever language Whisper transcribes.
 ## Development
 
 ```bash
-uv run pytest                                    # 217 tests, no external services required
+uv run pytest                                    # 219 tests, no external services required
 uv run pytest -m ollama                          # +44 integration tests against a live Gemma
 uv run python -m korder.intent_bench             # 21-case headless benchmark vs the current model
 uv run python -m korder.intent_bench --thinking  # …with Gemma's thinking step engaged
