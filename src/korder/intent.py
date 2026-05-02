@@ -107,26 +107,47 @@ _SYSTEM_PROMPT = (
     "is not present in the input, leave `params` empty or omit it — do NOT invent values.\n"
     "\n"
     "Optionally include `response` — a brief natural-language reply to the "
-    "user. Three cases where `response` should be populated:\n"
+    "user. Cases where `response` should be populated:\n"
     "  - Action has a `confirm` parameter the user did not supply: ask "
     "'are you sure?' in second person, end with yes/no hint.\n"
     "  - Action has another missing parameter (`query`, `kind`, etc.): ask "
     "WHAT the user wants — e.g. 'What do you want to play?'.\n"
-    "  - Conversational query (no action match) with a clear factual "
-    "answer YOU know from your training — math, definitions, "
-    "translations, general knowledge, geography, history. Write the "
-    "answer directly. Do NOT answer questions about live data (current "
-    "time, today's weather, news) — leave `response` empty for those, "
-    "you'll only hallucinate.\n"
+    "  - Factual question (no action match) you can answer confidently "
+    "from your training — math, definitions, translations, general "
+    "knowledge, geography, history. Write the answer directly, briefly. "
+    "Do NOT answer questions about live data (current time, today's "
+    "weather, news) — leave `response` empty for those, you'll only "
+    "hallucinate. If you don't actually know the answer to a factual "
+    "question, say so plainly ('Nie wiem.' / 'I don't know.') rather "
+    "than inventing facts.\n"
+    "  - Small-talk / personal / opinion question ('do you like cats?', "
+    "'how are you?', 'what's your name?'): give a brief friendly "
+    "answer (≤ 2 sentences), in character as a helpful voice assistant. "
+    "Stay warm but concise.\n"
     "Always write `response` in the same language as the input transcript. "
     "For pure dictation (description, narrative, prose with no question "
     "and no command), leave `response` empty.\n"
+    "\n"
+    "Precedence between `response` and `actions`: when you can answer a "
+    "factual question confidently from training, populate `response` and "
+    "leave `actions` empty. Reserve `web_search` and `wikipedia_search` "
+    "for when the user EXPLICITLY asks to open a browser / look "
+    "something up on Wikipedia, OR when you genuinely don't know. Do "
+    "NOT emit BOTH a direct answer in `response` AND a search action — "
+    "pick one.\n"
     "\n"
     "When previous turns are provided as context, USE them to resolve "
     "follow-up questions like 'and Poland?' after 'what is the capital "
     "of France?' — treat the new input as if its referring expressions "
     "point at the prior turns. Don't repeat the entire prior question "
-    "back; just answer."
+    "back; just answer.\n"
+    "\n"
+    "Follow-up continuity: if the prior turn was answered via `response` "
+    "(no action), the follow-up almost certainly continues that Q&A — "
+    "answer it the same way (populate `response`, leave `actions` "
+    "empty). Do NOT switch to `wikipedia_search` / `web_search` just "
+    "because the follow-up is short, fragmentary, or names a specific "
+    "topic. Match the prior turn's answering mode."
 )
 
 
@@ -192,8 +213,25 @@ def _build_user_prompt(
         '  "Spotify zagraj" → {"actions": [{"phrase": "Spotify zagraj", "name": "spotify_search"}], "response": "Co chcesz odtworzyć w Spotify?"}\n'
         '  "play on Spotify" → {"actions": [{"phrase": "play on Spotify", "name": "spotify_search"}], "response": "What do you want to play on Spotify?"}\n'
         '  "what is the capital of France" → {"actions": [], "response": "Paris."}\n'
+        '  "co to jest Paryż?" → {"actions": [], "response": "Paryż to stolica Francji."}\n'
         '  "ile to siedem razy osiem" → {"actions": [], "response": "Pięćdziesiąt sześć."}\n'
+        '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
+        '  "how are you?" → {"actions": [], "response": "Doing well, thanks for asking. What can I help you with?"}\n'
+        '  "wikipedia, Paryż" → {"actions": [{"phrase": "wikipedia, Paryż", "name": "wikipedia_search", "params": {"query": "Paryż"}}]}\n'
+        '  "look up Paris on Wikipedia" → {"actions": [{"phrase": "look up Paris on Wikipedia", "name": "wikipedia_search", "params": {"query": "Paris"}}]}\n'
+        '  "google pogodę w Warszawie" → {"actions": [{"phrase": "google pogodę w Warszawie", "name": "web_search", "params": {"query": "pogoda w Warszawie"}}]}\n'
         '  "what time is it" → {"actions": []}    (live data — no response, model would hallucinate)\n'
+        '  "Ok, dzięki. Koniec." → {"actions": [{"phrase": "Ok, dzięki. Koniec.", "name": "cancel_session"}]}\n'
+        '  "that\'s all, thanks" → {"actions": [{"phrase": "that\'s all, thanks", "name": "cancel_session"}]}\n'
+        '  "Zakończę." → {"actions": [{"phrase": "Zakończę.", "name": "cancel_session"}]}\n'
+        '  "I want to cancel my subscription." → {"actions": []}    (dictated content, NOT meta-cancel)\n'
+        "\n"
+        "Follow-up examples (when prior conversation is shown above):\n"
+        '  prior: User "what is the capital of France?" / Assistant "Paris."\n'
+        '  now:   "and Poland?" → {"actions": [], "response": "Warsaw."}\n'
+        '  prior: User "Jaka jest stolica Francji?" / Assistant "Paryż."\n'
+        '  now:   "A Polski?" → {"actions": [], "response": "Warszawa."}\n'
+        "  Note how the follow-up gets answered directly — same mode as the prior turn — NOT dispatched to wikipedia_search.\n"
         "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
