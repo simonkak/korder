@@ -86,69 +86,41 @@ def _extract_json_object(text: str):
 
 
 _SYSTEM_PROMPT = (
-    "You are an inline action detector for a voice dictation tool. The user "
-    "dictates speech that may include imperative commands (key presses, media "
-    "control, app actions). Your job is to identify which commands are present "
-    "and classify them by *intent*, not by literal string match. The user may "
-    "speak in any language Whisper transcribed — match meaning, not surface form.\n"
+    "You are an inline action detector for dictated speech. Identify "
+    "commands by INTENT, not literal string match. Match meaning across "
+    "any language Whisper transcribed.\n"
     "\n"
-    "Return a single JSON object with this exact shape:\n"
-    '  {"actions": [{"phrase": "<exact substring of input>", "name": "<action_name>", "params": {...}}],\n'
-    '   "response": "<optional natural-language reply to the user>"}\n'
+    "Return ONE JSON object with this exact shape:\n"
+    '  {"actions": [{"phrase": "<verbatim substring of input>", "name": "<action_name>", "params": {...}}],\n'
+    '   "response": "<optional natural-language reply, same language as input>"}\n'
     "\n"
-    "Rules you must always follow:\n"
-    "- If the transcript is plain dictation (description, prose, narrative, no imperative command), "
-    'return {"actions": []}.\n'
-    "- The `phrase` field must be a substring that appears verbatim in the user input.\n"
-    "- The `name` field must be one of the action names listed in the user message.\n"
-    "- Multiple actions in one input are allowed; return them in the order they appear.\n"
-    "- Descriptive prose about a command (e.g., 'the docs say to press enter after each line', 'pressing enter felt satisfying') is NOT an action.\n"
-    "- Song / album / artist names that incidentally contain a verb the user did NOT issue ARE NOT descriptions — they're query content. 'Odtwórz w Spotify all the things she said' is a Spotify command with query='all the things she said', not narrative.\n"
-    "- For parameterized actions, extract relevant fields into `params`. If a required parameter "
-    "is not present in the input, leave `params` empty or omit it — do NOT invent values.\n"
+    "Rules:\n"
+    "- Plain dictation with no command → `{\"actions\": []}`.\n"
+    "- `phrase` must appear verbatim in the input. `name` must be one of "
+    "the listed action names. Multiple actions allowed, in order.\n"
+    "- For parameterized actions, extract values into `params`. If a value "
+    "is missing, leave it out — do NOT invent.\n"
+    "- A song / album / artist name in a query is query content, NOT "
+    "narrative — even if it contains pronouns or verbs.\n"
     "\n"
-    "Optionally include `response` — a brief natural-language reply to the "
-    "user. Cases where `response` should be populated:\n"
-    "  - Action has a `confirm` parameter the user did not supply: ask "
-    "'are you sure?' in second person, end with yes/no hint.\n"
-    "  - Action has another missing parameter (`query`, `kind`, etc.): ask "
-    "WHAT the user wants — e.g. 'What do you want to play?'.\n"
-    "  - Factual question (no action match) you can answer confidently "
-    "from your training — math, definitions, translations, general "
-    "knowledge, geography, history. Write the answer directly, briefly. "
-    "Do NOT answer questions about live data (current time, today's "
-    "weather, news) — leave `response` empty for those, you'll only "
-    "hallucinate. If you don't actually know the answer to a factual "
-    "question, say so plainly ('Nie wiem.' / 'I don't know.') rather "
-    "than inventing facts.\n"
-    "  - Small-talk / personal / opinion question ('do you like cats?', "
-    "'how are you?', 'what's your name?'): give a brief friendly "
-    "answer (≤ 2 sentences), in character as a helpful voice assistant. "
-    "Stay warm but concise.\n"
-    "Always write `response` in the same language as the input transcript. "
-    "For pure dictation (description, narrative, prose with no question "
-    "and no command), leave `response` empty.\n"
+    "`response` cases (optional, same language as input):\n"
+    "- Confirmation needed (`confirm` param missing): 'are you sure?' "
+    "with yes/no hint.\n"
+    "- Other parameter missing (`query`, etc.): ask what the user wants.\n"
+    "- Factual question, no action match, you know the answer from "
+    "training (math, geography, definitions, etc.): answer directly, "
+    "briefly. Don't answer about live data (time, today's weather). "
+    "If unsure, say so plainly — don't invent.\n"
+    "- Small-talk / opinion ('do you like cats?', 'how are you?'): brief, "
+    "friendly, in-character (≤ 2 sentences).\n"
+    "- Otherwise leave `response` empty.\n"
     "\n"
-    "Precedence between `response` and `actions`: when you can answer a "
-    "factual question confidently from training, populate `response` and "
-    "leave `actions` empty. Reserve `web_search` and `wikipedia_search` "
-    "for when the user EXPLICITLY asks to open a browser / look "
-    "something up on Wikipedia, OR when you genuinely don't know. Do "
-    "NOT emit BOTH a direct answer in `response` AND a search action — "
-    "pick one.\n"
-    "\n"
-    "When previous turns are provided as context, USE them to resolve "
-    "follow-up questions like 'and Poland?' after 'what is the capital "
-    "of France?' — treat the new input as if its referring expressions "
-    "point at the prior turns. Don't repeat the entire prior question "
-    "back; just answer.\n"
-    "\n"
-    "Follow-up continuity: if the prior turn was answered via `response` "
-    "(no action), the follow-up almost certainly continues that Q&A — "
-    "answer it the same way (populate `response`, leave `actions` "
-    "empty). Do NOT switch to `wikipedia_search` / `web_search` just "
-    "because the follow-up is short, fragmentary, or names a specific "
-    "topic. Match the prior turn's answering mode."
+    "Don't emit BOTH a direct factual answer AND a search action — pick "
+    "one. Reserve `web_search` / `wikipedia_search` for when the user "
+    "explicitly says to open a browser / look something up. Use prior "
+    "turns (when shown) to resolve follow-ups like 'and Poland?' against "
+    "the prior question — answer in the same mode (response vs action) "
+    "as the prior turn."
 )
 
 
@@ -202,42 +174,21 @@ def _build_user_prompt(
         f"{catalogue}\n"
         "\n"
         + history_block +
-        "A few examples to anchor your output shape:\n"
+        "Examples:\n"
         '  "hello world" → {"actions": []}\n'
         '  "Naciśnij Enter." → {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}\n'
-        '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_search", "params": {"query": "Linkin Park"}}]}\n'
-        '  "Spotify zagraj album Meteora" → {"actions": [{"phrase": "Spotify zagraj album Meteora", "name": "spotify_search", "params": {"query": "Meteora", "kind": "album"}}]}\n'
-        '  "Odtwórz Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz Lose Yourself w Spotify", "name": "spotify_search", "params": {"query": "Lose Yourself"}}]}\n'
-        '  "Odtwórz utwór Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz utwór Lose Yourself w Spotify", "name": "spotify_search", "params": {"query": "Lose Yourself", "kind": "track"}}]}\n'
-        '  "Play Bohemian Rhapsody on Spotify" → {"actions": [{"phrase": "Play Bohemian Rhapsody on Spotify", "name": "spotify_search", "params": {"query": "Bohemian Rhapsody"}}]}\n'
         '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
-        '  "the docs say to press enter after each line" → {"actions": []}\n'
-        '  "Odtwórz all the things she said w Spotify" → {"actions": [{"phrase": "Odtwórz all the things she said w Spotify", "name": "spotify_search", "params": {"query": "all the things she said"}}]}\n'
-        '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
-        '  "uśpij komputer" → {"actions": [{"phrase": "uśpij komputer", "name": "sleep"}], "response": "Czy uśpić komputer? Powiedz tak lub nie."}\n'
-        '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
+        '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_search", "params": {"query": "Linkin Park"}}]}\n'
+        '  "Odtwórz Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz Lose Yourself w Spotify", "name": "spotify_search", "params": {"query": "Lose Yourself"}}]}\n'
+        '  "Odtwórz utwór all the things she said w Spotify" → {"actions": [{"phrase": "Odtwórz utwór all the things she said w Spotify", "name": "spotify_search", "params": {"query": "all the things she said", "kind": "track"}}]}\n'
         '  "Spotify zagraj" → {"actions": [{"phrase": "Spotify zagraj", "name": "spotify_search"}], "response": "Co chcesz odtworzyć w Spotify?"}\n'
-        '  "play on Spotify" → {"actions": [{"phrase": "play on Spotify", "name": "spotify_search"}], "response": "What do you want to play on Spotify?"}\n'
+        '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
+        '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
         '  "what is the capital of France" → {"actions": [], "response": "Paris."}\n'
-        '  "co to jest Paryż?" → {"actions": [], "response": "Paryż to stolica Francji."}\n'
         '  "ile to siedem razy osiem" → {"actions": [], "response": "Pięćdziesiąt sześć."}\n'
         '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
-        '  "how are you?" → {"actions": [], "response": "Doing well, thanks for asking. What can I help you with?"}\n'
         '  "wikipedia, Paryż" → {"actions": [{"phrase": "wikipedia, Paryż", "name": "wikipedia_search", "params": {"query": "Paryż"}}]}\n'
-        '  "look up Paris on Wikipedia" → {"actions": [{"phrase": "look up Paris on Wikipedia", "name": "wikipedia_search", "params": {"query": "Paris"}}]}\n'
-        '  "google pogodę w Warszawie" → {"actions": [{"phrase": "google pogodę w Warszawie", "name": "web_search", "params": {"query": "pogoda w Warszawie"}}]}\n'
-        '  "what time is it" → {"actions": []}    (live data — no response, model would hallucinate)\n'
-        '  "Ok, dzięki. Koniec." → {"actions": [{"phrase": "Ok, dzięki. Koniec.", "name": "cancel_session"}]}\n'
-        '  "that\'s all, thanks" → {"actions": [{"phrase": "that\'s all, thanks", "name": "cancel_session"}]}\n'
         '  "Zakończę." → {"actions": [{"phrase": "Zakończę.", "name": "cancel_session"}]}\n'
-        '  "I want to cancel my subscription." → {"actions": []}    (dictated content, NOT meta-cancel)\n'
-        "\n"
-        "Follow-up examples (when prior conversation is shown above):\n"
-        '  prior: User "what is the capital of France?" / Assistant "Paris."\n'
-        '  now:   "and Poland?" → {"actions": [], "response": "Warsaw."}\n'
-        '  prior: User "Jaka jest stolica Francji?" / Assistant "Paryż."\n'
-        '  now:   "A Polski?" → {"actions": [], "response": "Warszawa."}\n'
-        "  Note how the follow-up gets answered directly — same mode as the prior turn — NOT dispatched to wikipedia_search.\n"
         "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
@@ -428,6 +379,26 @@ class IntentParser:
         if ops is None:
             print(f"[korder] LLM action phrase not found in input, falling back to regex", flush=True, file=sys.stderr)
             return split_into_ops(transcript)
+
+        # Second-chance regex backstop: LLM emitted SOMETHING in actions
+        # (so the empty-actions branch above didn't fire), but every
+        # entry got skipped by segmentation — typically because it
+        # lacked a `phrase` field or used a legacy schema like
+        # `{name: 'actions', args: [...]}`. Result is a text-only
+        # ops list, which is wrong for "Odtwórz w Spotify Linkin Park"
+        # and similar utterances where regex would clearly catch the
+        # trigger. Try regex; if it finds something actionable, prefer
+        # that over silently typing the user's command.
+        if actions and ops and all(op[0] == "text" for op in ops):
+            regex_ops = split_into_ops(transcript)
+            if any(op[0] != "text" for op in regex_ops):
+                print(
+                    f"[korder] LLM emitted malformed actions; regex caught triggers, using regex: {regex_ops!r}",
+                    flush=True,
+                    file=sys.stderr,
+                )
+                return regex_ops
+
         print(f"[korder] segmented ops: {ops!r}", flush=True, file=sys.stderr)
         return ops
 

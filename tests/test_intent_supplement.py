@@ -60,3 +60,43 @@ def test_pisz_recognized_via_supplement():
     parser = _parser_returning([])
     ops = parser.parse("Pisz.")
     assert ("write_mode", True) in ops
+
+
+def test_regex_backstop_when_llm_emits_malformed_actions():
+    """E4B sometimes returns malformed shapes like
+    `[{'name': 'actions', 'args': []}]` or
+    `[{'type': 'action', 'action_type': 'search'}]` — non-empty
+    actions, but every entry lacks a usable `phrase` field. Without
+    a backstop, segmentation skips them all and ops degenerates to
+    text-only, silently typing the user's command. With the
+    backstop, regex catches the registered trigger and routes the
+    intent. Reported case: 'Odtwórz w Spotify.' → LLM emits the
+    malformed bag → regex catches the new Polish Spotify trigger →
+    spotify_search goes pending."""
+    parser = _parser_returning([{"name": "actions", "args": []}])
+    ops = parser.parse("Odtwórz w Spotify.")
+    kinds = [op[0] for op in ops]
+    assert "pending_action" in kinds or "callable" in kinds, (
+        f"expected regex backstop to route Spotify intent; got {ops!r}"
+    )
+
+
+def test_no_backstop_when_malformed_llm_and_no_regex_triggers():
+    """Same malformed LLM output but on a transcript with no
+    registered trigger phrases — backstop should NOT fabricate an
+    action. Falls through to text injection."""
+    parser = _parser_returning([{"name": "actions", "args": []}])
+    ops = parser.parse("just some plain dictation here")
+    assert ops == [("text", "just some plain dictation here")]
+
+
+def test_backstop_ignored_when_segmentation_already_produced_action():
+    """When the LLM returns a properly-shaped action that segmentation
+    accepts, the backstop must NOT also fire — otherwise a regex
+    trigger inside the same utterance would double-fire."""
+    parser = _parser_returning(
+        [{"phrase": "press enter", "name": "press_enter"}]
+    )
+    ops = parser.parse("press enter and run it")
+    # press_enter once + trailing text — backstop did not double-up.
+    assert ops == [("key", 28), ("text", "and run it")]
