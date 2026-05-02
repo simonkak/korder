@@ -204,7 +204,11 @@ def _build_user_prompt(
         "A few examples to anchor your output shape:\n"
         '  "hello world" → {"actions": []}\n'
         '  "Naciśnij Enter." → {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}\n'
-        '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_search", "params": {"query": "Linkin Park", "kind": "album"}}]}\n'
+        '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_search", "params": {"query": "Linkin Park"}}]}\n'
+        '  "Spotify zagraj album Meteora" → {"actions": [{"phrase": "Spotify zagraj album Meteora", "name": "spotify_search", "params": {"query": "Meteora", "kind": "album"}}]}\n'
+        '  "Odtwórz Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz Lose Yourself w Spotify", "name": "spotify_search", "params": {"query": "Lose Yourself"}}]}\n'
+        '  "Odtwórz utwór Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz utwór Lose Yourself w Spotify", "name": "spotify_search", "params": {"query": "Lose Yourself", "kind": "track"}}]}\n'
+        '  "Play Bohemian Rhapsody on Spotify" → {"actions": [{"phrase": "Play Bohemian Rhapsody on Spotify", "name": "spotify_search", "params": {"query": "Bohemian Rhapsody"}}]}\n'
         '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
         '  "she pressed enter on the keyboard" → {"actions": []}\n'
         '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
