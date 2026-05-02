@@ -115,11 +115,18 @@ def _setup_logging() -> None:
     convention so the new logger output reads alongside historical
     print statements.
 
+    Third-party loggers that are chatty at INFO (pywhispercpp's
+    per-segment "Transcribing... / Inference time: 0.18s" lines,
+    PIL's stream-debug spam) are clamped to WARNING when our level
+    is above DEBUG — they show up at DEBUG only. Stops them from
+    drowning out korder's own INFO output by default while keeping
+    everything visible when actually debugging.
+
     This branch carries TTS + MPRIS code that uses the logging
     module; without this setup, voice / pause / resume diagnostics
     are silent in stderr while older print()-based code (intent.py,
     main_window.py, etc.) keeps emitting. Backporting the full
-    print→logging migration is a separate concern (issue #N if filed)."""
+    print→logging migration is a separate concern."""
     import logging
     level_name = (os.environ.get("KORDER_LOG_LEVEL") or "INFO").strip().upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -132,6 +139,14 @@ def _setup_logging() -> None:
             stream=sys.stderr,
         )
     logging.getLogger("korder").setLevel(level)
+    # Quiet down chatty third-party loggers that emit per-segment /
+    # per-frame INFO messages. Restored to default at DEBUG so they
+    # remain available for actual debugging. Names enumerated
+    # explicitly rather than catch-all so we don't accidentally
+    # suppress something useful from a future dependency.
+    if level > logging.DEBUG:
+        for noisy in ("pywhispercpp", "pywhispercpp.model", "pywhispercpp.utils", "PIL"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def main() -> int:
