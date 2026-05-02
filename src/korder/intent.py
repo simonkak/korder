@@ -98,8 +98,11 @@ _SYSTEM_PROMPT = (
     "- Plain dictation with no command → `{\"actions\": []}`.\n"
     "- `phrase` must appear verbatim in the input. `name` must be one of "
     "the listed action names. Multiple actions allowed, in order.\n"
-    "- For parameterized actions, extract values into `params`. If a value "
-    "is missing, leave it out — do NOT invent.\n"
+    "- For parameterized actions, extract values into `params`. Pull from "
+    "the input first; if the input refers back to a topic from a prior "
+    "turn ('open Wikipedia' after asking about Gdańsk → query='Gdańsk'), "
+    "use that topic. Leave the value out only when neither input nor "
+    "context names it — do NOT invent.\n"
     "- A song / album / artist name in a query is query content, NOT "
     "narrative — even if it contains pronouns or verbs.\n"
     "\n"
@@ -189,6 +192,9 @@ def _build_user_prompt(
         '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
         '  "wikipedia, Paryż" → {"actions": [{"phrase": "wikipedia, Paryż", "name": "wikipedia_search", "params": {"query": "Paryż"}}]}\n'
         '  "Zakończę." → {"actions": [{"phrase": "Zakończę.", "name": "cancel_session"}]}\n'
+        "  Context inference example (when prior turn shown):\n"
+        '    prior: User "Jak stary jest Gdańsk?" / Assistant "Gdańsk istnieje od X wieku."\n'
+        '    now:   "otwórz stronę na Wikipedii" → {"actions": [{"phrase": "otwórz stronę na Wikipedii", "name": "wikipedia_search", "params": {"query": "Gdańsk"}}]}\n'
         "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
