@@ -143,7 +143,7 @@ def test_parameterized_action_passes_params_to_factory():
         "Zagraj na Spotify Despacito",
         [{
             "phrase": "Zagraj na Spotify Despacito",
-            "name": "spotify_search",
+            "name": "spotify_play",
             "params": {"query": "Despacito"},
         }],
     )
@@ -160,7 +160,7 @@ def test_parameterized_action_with_empty_params_returns_pending():
     query. MainWindow then waits for the next commit as the parameter."""
     ops = segment_input_by_actions(
         "Odtwórz w Spotify",
-        [{"phrase": "Odtwórz w Spotify", "name": "spotify_search"}],
+        [{"phrase": "Odtwórz w Spotify", "name": "spotify_play"}],
     )
     assert ops is not None
-    assert ("pending_action", "spotify_search") in ops
+    assert ("pending_action", "spotify_play") in ops

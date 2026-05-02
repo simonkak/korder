@@ -69,17 +69,17 @@ CASES: tuple[BenchCase, ...] = (
     # --- Parameterized ---
     BenchCase(
         "Spotify zagraj Linkin Park",
-        "spotify_search",
+        "spotify_play",
         "Parameterized, default kind",
     ),
     BenchCase(
         "Spotify zagraj album Pink Floyd",
-        "spotify_search",
+        "spotify_play",
         "Parameterized, explicit kind=album",
     ),
     BenchCase(
         "Spotify zagraj utwór Numb",
-        "spotify_search",
+        "spotify_play",
         "Parameterized, explicit kind=track",
     ),
     # --- False positives ---

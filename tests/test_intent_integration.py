@@ -145,7 +145,7 @@ def test_descriptive_prose_does_not_trigger_action(parser, phrase):
 
 # ---- Parameterized actions -----------------------------------------------
 
-def test_spotify_search_extracts_query(parser):
+def test_spotify_play_extracts_query(parser):
     """Gemma should extract the search target into params.query and not
     include the trigger word ('Spotify') in the query itself."""
     ops = parser.parse("Spotify play Pink Floyd")
@@ -155,16 +155,16 @@ def test_spotify_search_extracts_query(parser):
     callable_ops = [op for op in ops if op[0] == "callable"]
     pending_ops = [op for op in ops if op[0] == "pending_action"]
     # Either resolved (callable) or pending awaiting query — both indicate
-    # Gemma identified spotify_search.
+    # Gemma identified spotify_play.
     assert callable_ops or pending_ops, \
-        f"Expected spotify_search to be detected; got {ops!r}"
+        f"Expected spotify_play to be detected; got {ops!r}"
 
 
-def test_spotify_search_pending_when_query_missing(parser):
+def test_spotify_play_pending_when_query_missing(parser):
     """Bare trigger phrase with no query should yield pending_action."""
     ops = parser.parse("Odtwórz na Spotify")
-    pending = [op for op in ops if op == ("pending_action", "spotify_search")]
-    assert pending, f"Expected pending_action for spotify_search; got {ops!r}"
+    pending = [op for op in ops if op == ("pending_action", "spotify_play")]
+    assert pending, f"Expected pending_action for spotify_play; got {ops!r}"
 
 
 # ---- Mode toggles --------------------------------------------------------
@@ -250,12 +250,12 @@ def test_polish_text_passed_through_verbatim(parser):
     ("Spotify play artist Linkin Park", "artist", "Linkin Park"),
     ("Spotify play playlist Today's Top Hits", "playlist", "Top Hits"),
 ])
-def test_spotify_search_explicit_kind_cue(parser, phrase, expected_kind, expected_query_substring):
+def test_spotify_play_explicit_kind_cue(parser, phrase, expected_kind, expected_query_substring):
     """Gemma should infer kind from explicit cues in any supported language."""
     raw = parser._call_ollama(phrase)
     assert raw, f"LLM returned no actions for {phrase!r}"
-    spotify = next((a for a in raw if a.get("name") == "spotify_search"), None)
-    assert spotify is not None, f"No spotify_search in {raw!r}"
+    spotify = next((a for a in raw if a.get("name") == "spotify_play"), None)
+    assert spotify is not None, f"No spotify_play in {raw!r}"
     params = spotify.get("params") or {}
     assert params.get("kind") == expected_kind, \
         f"{phrase!r}: expected kind={expected_kind!r}, got {params!r}"
@@ -269,14 +269,14 @@ def test_spotify_search_explicit_kind_cue(parser, phrase, expected_kind, expecte
     ("Spotify play Pink Floyd", "Pink Floyd"),
     ("Spotify zagraj Małomiasteczkowy", "Małomiasteczkowy"),
 ])
-def test_spotify_search_no_kind_cue_leaves_kind_unset(parser, phrase, expected_query_substring):
+def test_spotify_play_no_kind_cue_leaves_kind_unset(parser, phrase, expected_query_substring):
     """When the user gives no explicit album/track/artist/playlist cue,
     Gemma should leave `kind` unset (or omit it) so the SpotifyClient picker
     matches across all four types. Either missing-key or empty-string is OK."""
     raw = parser._call_ollama(phrase)
     assert raw, f"LLM returned no actions for {phrase!r}"
-    spotify = next((a for a in raw if a.get("name") == "spotify_search"), None)
-    assert spotify is not None, f"No spotify_search in {raw!r}"
+    spotify = next((a for a in raw if a.get("name") == "spotify_play"), None)
+    assert spotify is not None, f"No spotify_play in {raw!r}"
     params = spotify.get("params") or {}
     kind = params.get("kind")
     assert not kind or kind == "", \

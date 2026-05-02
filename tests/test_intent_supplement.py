@@ -72,7 +72,7 @@ def test_regex_backstop_when_llm_emits_malformed_actions():
     backstop, regex catches the registered trigger and routes the
     intent. Reported case: 'Odtwórz w Spotify.' → LLM emits the
     malformed bag → regex catches the new Polish Spotify trigger →
-    spotify_search goes pending."""
+    spotify_play goes pending."""
     parser = _parser_returning([{"name": "actions", "args": []}])
     ops = parser.parse("Odtwórz w Spotify.")
     kinds = [op[0] for op in ops]

@@ -55,7 +55,7 @@ def test_user_prompt_quotes_transcript_safely():
 
 def test_parameterized_action_shows_param_keys_in_catalogue():
     cat = _render_action_catalogue(show_triggers=False)
-    assert "spotify_search" in cat
+    assert "spotify_play" in cat
     assert "params: query" in cat
 
 

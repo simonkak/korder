@@ -123,7 +123,7 @@ def _spotify_play_query(query: str, kind: str) -> None:
 _VALID_KINDS = ("album", "track", "artist", "playlist")
 
 
-def _spotify_search_op(args: dict) -> tuple | None:
+def _spotify_play_op(args: dict) -> tuple | None:
     if not isinstance(args, dict):
         args = {}
     query = args.get("query", "").strip()
@@ -135,17 +135,21 @@ def _spotify_search_op(args: dict) -> tuple | None:
 
 
 register(Action(
-    name="spotify_search",
+    name="spotify_play",
     description=(
-        "Search Spotify and play the result. Use when the user invokes "
-        "Spotify by name and provides a query (album / artist / song / "
-        "playlist). The word 'Spotify' can appear at the START, END, or "
-        "MIDDLE of the utterance ('Spotify play X', 'play X on Spotify', "
-        "'Odtwórz X w Spotify'). Extract the actual subject — the song / "
-        "album / artist / playlist name — into params.query. Strip out "
-        "'Spotify', the imperative verb (play / zagraj / odtwórz / "
-        "puść), and any kind cue word; everything else is the query, "
-        "even if it's an English title inside a Polish frame.\n"
+        "Play music on Spotify by looking up a query and starting "
+        "playback in the user's default Spotify client. Use ONLY when "
+        "the user wants something PLAYED — not when they want "
+        "information about an album / artist (e.g. 'co wiesz o płycie "
+        "X', 'tell me about album X' should be answered conversationally, "
+        "not dispatched here). The word 'Spotify' can appear at the "
+        "START, END, or MIDDLE of the utterance ('Spotify play X', "
+        "'play X on Spotify', 'Odtwórz X w Spotify'). Extract the "
+        "actual subject — the song / album / artist / playlist name — "
+        "into params.query. Strip out 'Spotify', the imperative verb "
+        "(play / zagraj / odtwórz / puść), and any kind cue word; "
+        "everything else is the query, even if it's an English title "
+        "inside a Polish frame.\n"
         "Set params.kind only when the user gives an explicit cue:\n"
         "  - 'album' / 'płyta' / 'krążek' → kind='album'\n"
         "  - 'track' / 'song' / 'utwór' / 'piosenka' → kind='track'\n"
@@ -173,7 +177,7 @@ register(Action(
             "włącz spotify",
         ],
     },
-    op_factory=_spotify_search_op,
+    op_factory=_spotify_play_op,
     parameters={
         # query is the primary param — pending-action follow-up text fills it
         "query": {

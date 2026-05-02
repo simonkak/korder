@@ -232,7 +232,7 @@ class MainWindow(QMainWindow):
         self._commit_queue: list[str] = []
         self._write_mode = False  # default: preview only, no typing
         # When the LLM detects an action with empty required params (e.g.,
-        # spotify_search with no query), we store the action name + time
+        # spotify_play with no query), we store the action name + time
         # and treat the NEXT text-only commit as the parameter.
         self._pending_action: str | None = None
         self._pending_action_time: float = 0.0
@@ -259,7 +259,7 @@ class MainWindow(QMainWindow):
         self._osd_throttle_timer.timeout.connect(self._flush_pending_partial)
 
         # Cross-thread progress narration from action executors. Lets
-        # actions like spotify_search push "Searching for X" / "Found Y" /
+        # actions like spotify_play push "Searching for X" / "Found Y" /
         # "Playing Y" into the OSD center text while we're in Executing.
         progress_signal().connect(self._on_executing_progress)
 

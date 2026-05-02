@@ -136,7 +136,7 @@ def test_shutdown_trigger_goes_pending_without_confirm():
     """Power actions require confirmation. The trigger phrase alone
     fires op_factory({}) which returns None — the parser then emits
     pending_action so the next utterance is treated as the confirm
-    word. Same shape spotify_search uses for missing query."""
+    word. Same shape spotify_play uses for missing query."""
     ops = split_into_ops("shutdown computer")
     assert ops == [("pending_action", "shutdown")]
 

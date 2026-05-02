@@ -41,11 +41,11 @@ def split_into_ops(text: str) -> list[tuple]:
     """Split a transcript into a sequence of op tuples using the action
     registry. Returns an empty list for empty input.
 
-    For parameterized actions (spotify_search, web_search, etc.), the
+    For parameterized actions (spotify_play, web_search, etc.), the
     text BETWEEN this trigger and the next trigger (or end of input)
     is consumed as the action's first parameter — so "Odtwórz w
     Spotify Linkin Park" via regex routes the same way as via the
-    LLM: spotify_search(query="Linkin Park") fires immediately,
+    LLM: spotify_play(query="Linkin Park") fires immediately,
     rather than going pending and forcing the user to say the query
     again. Falls through to a pending marker only when the trailing
     region is empty.
@@ -78,7 +78,7 @@ def split_into_ops(text: str) -> list[tuple]:
         # Try op_factory with empty args first — distinguishes
         # actions whose parameters are OPTIONAL (volume_up's step_pct
         # has a sensible default; the empty-args op is valid) from
-        # actions where the parameter is REQUIRED (spotify_search
+        # actions where the parameter is REQUIRED (spotify_play
         # without query returns None, signaling 'I need the value').
         # Only when op_factory({}) returns None AND the action
         # declares parameters do we treat the trailing text as the

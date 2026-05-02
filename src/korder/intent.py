@@ -221,10 +221,10 @@ def _build_user_prompt(
         '  "hello world" → {"actions": []}\n'
         '  "Naciśnij Enter." → {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}\n'
         '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
-        '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_search", "params": {"query": "Linkin Park"}}]}\n'
-        '  "Odtwórz Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz Lose Yourself w Spotify", "name": "spotify_search", "params": {"query": "Lose Yourself"}}]}\n'
-        '  "Odtwórz utwór all the things she said w Spotify" → {"actions": [{"phrase": "Odtwórz utwór all the things she said w Spotify", "name": "spotify_search", "params": {"query": "all the things she said", "kind": "track"}}]}\n'
-        '  "Spotify zagraj" → {"actions": [{"phrase": "Spotify zagraj", "name": "spotify_search"}], "response": "Co chcesz odtworzyć w Spotify?"}\n'
+        '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_play", "params": {"query": "Linkin Park"}}]}\n'
+        '  "Odtwórz Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz Lose Yourself w Spotify", "name": "spotify_play", "params": {"query": "Lose Yourself"}}]}\n'
+        '  "Odtwórz utwór all the things she said w Spotify" → {"actions": [{"phrase": "Odtwórz utwór all the things she said w Spotify", "name": "spotify_play", "params": {"query": "all the things she said", "kind": "track"}}]}\n'
+        '  "Spotify zagraj" → {"actions": [{"phrase": "Spotify zagraj", "name": "spotify_play"}], "response": "Co chcesz odtworzyć w Spotify?"}\n'
         '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
         '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
         '  "what is the capital of France" → {"actions": [], "response": "Paris.", "context": "France"}\n'
@@ -240,7 +240,7 @@ def _build_user_prompt(
         '    Current topic: Gdańsk\n'
         '    now:   "Pokaż stronę na Wikipedii" → {"actions": [{"phrase": "Pokaż stronę na Wikipedii", "name": "wikipedia_search", "params": {"query": "Gdańsk"}}], "context": "Gdańsk"}\n'
         '    Current topic: Bohemian Rhapsody\n'
-        '    now:   "play it on Spotify" → {"actions": [{"phrase": "play it on Spotify", "name": "spotify_search", "params": {"query": "Bohemian Rhapsody"}}], "context": "Bohemian Rhapsody"}\n'
+        '    now:   "play it on Spotify" → {"actions": [{"phrase": "play it on Spotify", "name": "spotify_play", "params": {"query": "Bohemian Rhapsody"}}], "context": "Bohemian Rhapsody"}\n'
         "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
