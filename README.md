@@ -72,6 +72,7 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
 - **Opportunistic LLM preload** — when the hotkey opens the mic, Korder fires a fire-and-forget load request to ollama in parallel with your speech + Whisper. By the time the transcript is ready the model is usually resident, so the LLM call jumps straight to *Thinking* even when `keep_alive_s` had expired. Cold-load logging on stderr shows whether warm-up beat Whisper to the finish.
 - **Auto-duck system volume while listening** (default on) — drops the default PipeWire sink to 30 % when the mic opens and restores the original level on stop, so speaker bleed stops confusing Whisper. Skipped if you're already quieter than the target; restored on crash via `atexit`. Volume commands ("louder", "quieter", "mute") restore the duck snapshot *before* the wpctl step lands, so an increment isn't silently overwritten by the post-action restore. Requires `wpctl`.
 - **Wake-word activation** (off by default, opt-in via the **Wake word** Settings tab) — when enabled, the mic stays open and the configured phrase ("hey jarvis", "alexa", "hey mycroft", or "hey rhasspy" from openWakeWord's pretrained catalog) fires a dictation session as if you'd pressed the hotkey. Hotkey path keeps working alongside. Tray icon flips to a soft-blue waveform while wake-listening, warm accent while dictating; tooltip changes too so you always know whether the mic is open and why. Auto-cancels back to wake-listening on accidental wakes (configurable idle-timeout). Requires the optional dep — install with `uv sync --extra wake`. Detector runs on CPU via ONNX, ~5 % of one core when idle.
+- **Spoken responses** (off by default, opt-in via the **Speech** Settings tab) — when enabled, conversational answers and `now_playing` results read aloud through a [Piper](https://github.com/OHF-Voice/piper1-gpl) voice. Polish + English defaults; per-utterance language switching driven by diacritic detection (so *"Stressed Out by Twenty One Pilots"* speaks in EN and *"Małomiasteczkowy"* speaks in PL even within the same session). While speaking, Korder pauses any active MPRIS player (Spotify, mpv, browser MPRIS bridges) for a clean dropout, then resumes. Requires the optional dep + voice models — install with `uv sync --extra tts` and pre-fetch voices (see Run section below). Real-time on CPU; per-utterance synthesis ~200–500 ms.
 
 ## OS dependencies
 
@@ -247,6 +248,33 @@ idle_timeout_s = 5                # cancel dictation back to wake-listening
                                   # if no speech arrives within this many
                                   # seconds (catches accidental wakes); 0
                                   # disables the auto-cancel
+
+# Optional — spoken responses (issue #2). Off by default. When enabled,
+# actions that produce a spoken response (now_playing today; future
+# weather/time/date) plus conversational answers from Gemma read
+# their result aloud through a Piper voice. Requires
+# `uv sync --extra tts` and pre-fetched voice models — see the Run
+# section above for the download command.
+[tts]
+enabled = false
+engine = piper                    # only implemented backend today
+voice_en = en_US-amy-medium       # any voice ID from the Piper voices
+voice_pl = pl_PL-darkman-medium   # catalog (huggingface.co/rhasspy/piper-voices)
+speed = 1.0                       # playback speed multiplier (Piper's
+                                  # length_scale is the inverse, applied
+                                  # internally; 0.5–2.0× clamp range)
+suppress_when_playing = false     # true: stay silent when something is
+                                  # already playing audio. false (default):
+                                  # pause the active MPRIS player, speak,
+                                  # resume — clean dropout, but the marquee
+                                  # use case (now_playing) is precisely the
+                                  # case where music IS playing, so default
+                                  # off keeps the feature firing.
+speak_action_progress = false     # voice every emit_progress_speak call,
+                                  # not just speakable_response actions.
+                                  # Off by default — keeps TTS scoped to
+                                  # query answers rather than chatty
+                                  # "Searching Spotify…" lines.
 ```
 
 ## Picking your Gemma model
@@ -342,7 +370,7 @@ across whichever language Whisper transcribes.
 ## Development
 
 ```bash
-uv run pytest                                    # 206 tests, no external services required
+uv run pytest                                    # 209 tests, no external services required
 uv run pytest -m ollama                          # +44 integration tests against a live Gemma
 uv run python -m korder.intent_bench             # 21-case headless benchmark vs the current model
 uv run python -m korder.intent_bench --thinking  # …with Gemma's thinking step engaged
