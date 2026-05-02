@@ -155,8 +155,23 @@ register(Action(
         "across all four types based on the query."
     ),
     triggers={
-        "en": ["play on spotify", "spotify search", "spotify play"],
-        "pl": ["zagraj na spotify", "spotify wyszukaj", "puść na spotify"],
+        "en": [
+            "play on spotify",
+            "spotify search",
+            "spotify play",
+            "search on spotify",
+        ],
+        "pl": [
+            "zagraj na spotify",
+            "spotify wyszukaj",
+            "puść na spotify",
+            "odtwórz w spotify",
+            "odtwórz na spotify",
+            "odtwórz spotify",
+            "włącz w spotify",
+            "włącz na spotify",
+            "włącz spotify",
+        ],
     },
     op_factory=_spotify_search_op,
     parameters={

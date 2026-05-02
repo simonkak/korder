@@ -41,6 +41,15 @@ def split_into_ops(text: str) -> list[tuple]:
     """Split a transcript into a sequence of op tuples using the action
     registry. Returns an empty list for empty input.
 
+    For parameterized actions (spotify_search, web_search, etc.), the
+    text BETWEEN this trigger and the next trigger (or end of input)
+    is consumed as the action's first parameter — so "Odtwórz w
+    Spotify Linkin Park" via regex routes the same way as via the
+    LLM: spotify_search(query="Linkin Park") fires immediately,
+    rather than going pending and forcing the user to say the query
+    again. Falls through to a pending marker only when the trailing
+    region is empty.
+
     Inner edges (adjacent to action triggers) are stripped of whitespace
     and Whisper-added punctuation. Outer edges (start/end of input) pass
     through untouched so caller-supplied trailing whitespace for
@@ -50,9 +59,10 @@ def split_into_ops(text: str) -> list[tuple]:
         return []
     regex, phrase_map = _compile_trigger_regex()
 
+    matches = list(regex.finditer(text))
     ops: list[tuple] = []
     last_end = 0
-    for m in regex.finditer(text):
+    for i, m in enumerate(matches):
         if m.start() > last_end:
             seg = text[last_end:m.start()]
             if last_end > 0:
@@ -62,16 +72,40 @@ def split_into_ops(text: str) -> list[tuple]:
                 ops.append(("text", seg))
         action_name = phrase_map[m.group(0).lower()]
         action = get_action(action_name)
-        if action is not None:
-            op = action.op_factory({})
-            if op is None and action.parameters:
-                # Parameterized action triggered via regex — emit pending
-                # marker so MainWindow can grab the next commit as the
-                # parameter, same as via the LLM path.
-                ops.append(("pending_action", action_name))
-            elif op is not None:
-                ops.append(op)
         last_end = m.end()
+        if action is None:
+            continue
+        # Try op_factory with empty args first — distinguishes
+        # actions whose parameters are OPTIONAL (volume_up's step_pct
+        # has a sensible default; the empty-args op is valid) from
+        # actions where the parameter is REQUIRED (spotify_search
+        # without query returns None, signaling 'I need the value').
+        # Only when op_factory({}) returns None AND the action
+        # declares parameters do we treat the trailing text as the
+        # parameter value.
+        op = action.op_factory({})
+        if op is None and action.parameters:
+            trailing_start = m.end()
+            trailing_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            trailing = (
+                text[trailing_start:trailing_end]
+                .lstrip(_PUNCT_AFTER)
+                .rstrip(_PUNCT_BEFORE)
+                .strip()
+            )
+            if trailing:
+                first_param = next(iter(action.parameters.keys()))
+                trailing_op = action.op_factory({first_param: trailing})
+                if trailing_op is not None:
+                    ops.append(trailing_op)
+                    last_end = trailing_end
+                    continue
+            # Empty trailing OR op_factory still rejected — emit
+            # pending so MainWindow can grab the next commit as the
+            # parameter, same as via the LLM path.
+            ops.append(("pending_action", action_name))
+        elif op is not None:
+            ops.append(op)
     if last_end < len(text):
         seg = text[last_end:]
         if last_end > 0:

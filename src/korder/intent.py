@@ -442,7 +442,14 @@ class IntentParser:
             "system": _SYSTEM_PROMPT,
             "prompt": user_prompt,
             "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 512},
+            # num_predict capped at 256 — well above any legitimate
+            # JSON output (the longest valid response we've seen is
+            # ~120 tokens, including a multi-action segment + a Polish
+            # response field) but tight enough that runaway recursion
+            # ('{"actions": [{"actions": [{"actions": [...') gets
+            # truncated in ~3s rather than ~10s, so the regex
+            # fallback path engages quickly when the model degrades.
+            "options": {"temperature": 0.0, "num_predict": 256},
             "keep_alive": self.keep_alive_s,
         }
         if self.thinking_mode:
