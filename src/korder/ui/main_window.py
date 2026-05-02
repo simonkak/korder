@@ -104,14 +104,19 @@ class _InjectWorker(QThread):
                 # Snapshot the LLM's response field BEFORE any other
                 # parse can race with us. Empty string when the LLM
                 # didn't include a response or we're on the regex path.
+                # Emit unconditionally — even an empty value matters,
+                # because it tells the main thread "the previous turn's
+                # response is no longer current" and clears any stale
+                # _last_llm_response that might otherwise leak into a
+                # later turn (e.g. across a Spotify-pending → command
+                # auto-stop → new wake-word session boundary).
                 response = ""
                 last_response_fn = getattr(
                     self._injector, "last_op_parser_response", None
                 )
                 if callable(last_response_fn):
                     response = last_response_fn() or ""
-                if response:
-                    self.parse_response.emit(response)
+                self.parse_response.emit(response)
                 if self._injector.is_slow_parser:
                     print(
                         f"[korder] parse: completed in {(time.perf_counter()-t0)*1000:.0f} ms",
