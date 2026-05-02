@@ -12,11 +12,13 @@ an ImportError at module load time, even if they don't have it
 installed.
 """
 from __future__ import annotations
-import sys
+import logging
 import threading
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
+
+log = logging.getLogger(__name__)
 
 
 class WakeWordDetector(QObject):
@@ -97,10 +99,9 @@ class WakeWordDetector(QObject):
             self._cooldown_frames = 0
         self._running = True
         self._recorder.subscribe(self._on_frame)
-        print(
-            f"[korder] wake: listening for {self._phrase!r} "
-            f"(sensitivity {self._sensitivity:.2f})",
-            flush=True, file=sys.stderr,
+        log.info(
+            "wake: listening for %r (sensitivity %.2f)",
+            self._phrase, self._sensitivity,
         )
 
     def stop(self) -> None:
@@ -113,7 +114,7 @@ class WakeWordDetector(QObject):
             self._recorder.unsubscribe(self._on_frame)
         except Exception:
             pass
-        print("[korder] wake: stopped listening", flush=True, file=sys.stderr)
+        log.info("wake: stopped listening")
 
     def _on_frame(self, chunk: np.ndarray) -> None:
         """MicRecorder subscriber callback. Accumulates frames until a
@@ -148,10 +149,9 @@ class WakeWordDetector(QObject):
                     self._cooldown_frames -= 1
             return
         if score >= self._sensitivity:
-            print(
-                f"[korder] wake: {self._phrase!r} fired "
-                f"(score={score:.3f} >= {self._sensitivity:.2f})",
-                flush=True, file=sys.stderr,
+            log.info(
+                "wake: %r fired (score=%.3f >= %.2f)",
+                self._phrase, score, self._sensitivity,
             )
             cooldown_chunks = int(
                 self._COOLDOWN_S * self._sample_rate / self.CHUNK_SAMPLES

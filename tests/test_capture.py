@@ -103,8 +103,9 @@ def test_stream_stays_open_until_last_subscriber_leaves(recorder):
     assert rec._stream is None
 
 
-def test_subscriber_error_does_not_kill_others(recorder, capsys):
+def test_subscriber_error_does_not_kill_others(recorder, caplog):
     """One bad subscriber shouldn't deny the others their frames."""
+    import logging
     rec, _stream, _calls = recorder
     seen: list[float] = []
 
@@ -113,11 +114,11 @@ def test_subscriber_error_does_not_kill_others(recorder, capsys):
 
     rec.subscribe(bad)
     rec.subscribe(lambda c: seen.append(float(c[0])))
-    rec._callback(_frame(fill=0.7), 160, None, None)
+    with caplog.at_level(logging.ERROR, logger="korder.audio.capture"):
+        rec._callback(_frame(fill=0.7), 160, None, None)
 
     assert seen == [pytest.approx(0.7)]
-    err = capsys.readouterr().err
-    assert "mic subscriber error" in err and "boom" in err
+    assert "mic subscriber error" in caplog.text and "boom" in caplog.text
 
 
 def test_unsubscribe_unknown_callable_is_noop(recorder):

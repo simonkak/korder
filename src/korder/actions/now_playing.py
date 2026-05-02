@@ -12,10 +12,13 @@ actually coming out of the speakers, not whatever happens to be loaded
 in a long-paused tab.
 """
 from __future__ import annotations
+import logging
 import re
 import subprocess
 
 from korder.actions.base import Action, register
+
+log = logging.getLogger(__name__)
 
 
 _QDBUS_TIMEOUT_S = 2.0
@@ -136,7 +139,7 @@ def _notify(title: str, body: str) -> None:
             check=False,
         )
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-        print(f"[korder] now_playing: notify-send failed: {e}", flush=True)
+        log.error("now_playing: notify-send failed: %s", e)
 
 
 def _now_playing() -> None:

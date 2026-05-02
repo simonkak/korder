@@ -16,6 +16,7 @@ from the system locale (en or pl).
 from __future__ import annotations
 
 import locale
+import logging
 import subprocess
 from urllib.parse import quote
 
@@ -23,6 +24,8 @@ from korder import config
 from korder.actions.base import Action, register
 from korder.ui.i18n import tf
 from korder.ui.progress import emit_progress
+
+log = logging.getLogger(__name__)
 
 
 # Engine-name → URL template. The {q} placeholder gets replaced with
@@ -74,7 +77,7 @@ def _xdg_open(url: str, *, narrate_label: str, query: str) -> None:
         )
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
         emit_progress(tf("progress_xdg_failed", error=str(e)))
-        print(f"[korder] web action: xdg-open failed: {e}", flush=True)
+        log.error("web action: xdg-open failed: %s", e)
         return
     emit_progress(tf("progress_opened_search", engine=narrate_label))
 
