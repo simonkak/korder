@@ -62,8 +62,10 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
     - Spotify: search and play albums, tracks, artists, or playlists via the Web API (free Client Credentials flow, no Premium required for search). When you don't say what kind ("Spotify play *Pink Floyd*"), one request fans out across all four types and the closest name match wins — artist > album > track > playlist within each match tier.
     - Web actions (xdg-routed, opens default browser): web search (DuckDuckGo / Google / Bing / Startpage / Ecosia), YouTube search, Wikipedia (auto-picks language from system locale), Maps
     - System: lock screen via `xdg-screensaver lock`; shutdown / reboot / sleep via `systemctl` (each gated behind voice confirmation — saying just *"shutdown computer"* doesn't fire it, you have to say *"yes"* / *"tak"* to a follow-up question)
-    - Cancel-by-voice: *"cancel that"* / *"nevermind"* / *"forget it"* / *"nieważne"* mid-recording aborts the current dictation without typing or firing anything
+    - End-by-voice: *"cancel that"* / *"nevermind"* / *"forget it"* / *"nieważne"* aborts mid-recording, and graceful-end phrasings like *"that's all"* / *"we're done"* / *"koniec"* / *"zakończ"* / *"to wszystko"* / *"stop listening"* close the session the same way — pending text and queued actions in the utterance go nowhere either way
 - **Pending parameter handling with LLM-generated prompts** — say *"Spotify play"* and Gemma both detects the action AND emits a contextual question in the same JSON response: *"Co chcesz odtworzyć w Spotify?"* in Polish, *"What do you want to play on Spotify?"* in English. The follow-up utterance becomes the search query. Same pattern works for confirmation (*"Czy uśpić komputer? Powiedz tak lub nie."*), web search (*"Co chcesz wyszukać w sieci?"*), and any future parameterized action — the LLM picks up the action's description + parameter name and phrases an appropriate ask in the input language. Falls back to hand-written i18n templates when the LLM is unavailable or the model omits the response field.
+- **Conversational answers + follow-up memory** — ask a factual question Korder isn't expected to dispatch (*"Jaka jest stolica Francji?"*, *"ile to siedem razy osiem?"*) and Gemma answers directly in the OSD instead of opening a Wikipedia tab. The current dictation session keeps a rolling 4-turn history, so follow-ups like *"A Polski?"* / *"And Poland?"* resolve against the prior question — the LLM reads referring expressions like a continuation rather than a fresh utterance. Small-talk works too (*"Czy lubisz kotki?"* → *"Tak, lubię kotki — są urocze."*). History clears at session end (mic close, cancel, idle timeout) so cross-session context never leaks into a new *"hey jarvis"*. The model is told to say *"I don't know"* plainly rather than hallucinate when uncertain — it still occasionally gets facts wrong, but doesn't try to confidently invent them. Live-data questions (current time, today's weather) are intentionally not answered.
+- **Graceful session end** — the cancel-by-voice path covers polite end signals as well as aborts. *"Ok, dzięki. Koniec."* / *"Zakończę."* / *"that's all"* / *"we're done"* / *"stop listening"* / *"to wszystko"* / *"wystarczy"* all close the session as cleanly as *"cancel that"* / *"nieważne"*. Same drop-everything semantics — pending text and queued actions in the same utterance go nowhere.
 - **Multilingual intent** — regex mode ships hardcoded PL + EN trigger phrases for every action; LLM mode (Gemma) understands intent across any language it speaks (so Whisper can transcribe German/Spanish/French/etc. and the right action still fires)
 - **Optional Gemma thinking step** — off by default. Slower (~1.9 s vs ~600 ms on E4B; ~3.9 s on E2B) and on the current 21-case benchmark it never improved accuracy, so it's kept as an opt-in for ambiguous phrasings the regex/prompt path doesn't cover. Toggle via `[intent] thinking_mode`. See *Picking your Gemma model* below for measured numbers.
 - **Auto-stop after a command** — fires once an action lands so you don't have to hit the hotkey twice; pure dictation and mode toggles keep the session open
@@ -296,23 +298,26 @@ across whichever language Whisper transcribes.
 | Spotify track     | "spotify play track Numb"                         |
 | Spotify artist    | "spotify play artist Pink Floyd"                  |
 | Spotify playlist  | "spotify play playlist workout"                   |
-| Web search        | "search for X", "google X"                        |
+| Web search        | "search the web for X", "google X"                |
 | YouTube           | "play X on YouTube"                               |
-| Wikipedia         | "wikipedia X", "tell me about X"                  |
+| Wikipedia         | "wikipedia X", "look up X on Wikipedia"           |
 | Maps              | "navigate to X", "where is X"                     |
 | Lock screen       | "lock screen"                                     |
 | Shutdown          | "shutdown computer" (then "yes" to confirm)       |
 | Reboot            | "restart computer" (then "yes" to confirm)        |
 | Sleep             | "suspend computer" (then "yes" to confirm)        |
+| Ask a question    | "what is the capital of France", "ile to 7×8"     |
+| Small-talk        | "do you like cats", "how are you"                 |
+| Follow-up         | (after a question) "and Poland?", "A Niemiec?"    |
 | Write mode on     | "start writing"                                   |
 | Write mode off    | "stop writing"                                    |
-| Cancel session    | "cancel that", "nevermind", "forget it"           |
+| End session       | "cancel that", "nevermind", "that's all", "koniec", "zakończ" |
 
 ## Development
 
 ```bash
-uv run pytest                                    # 141 tests, no external services required
-uv run pytest -m ollama                          # +39 integration tests against a live Gemma
+uv run pytest                                    # 174 tests, no external services required
+uv run pytest -m ollama                          # +44 integration tests against a live Gemma
 uv run python -m korder.intent_bench             # 21-case headless benchmark vs the current model
 uv run python -m korder.intent_bench --thinking  # …with Gemma's thinking step engaged
 ```
