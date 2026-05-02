@@ -5,8 +5,12 @@ via the plasma-browser-integration bridge, Chromium, VLC, …) over
 session D-Bus. We use it for:
 
   - now_playing action: which player is active, what's the title
-  - TTS pause/resume: pause the playing player(s) for the duration
-    of a synthesized utterance so it isn't drowned out by music
+  - TTS pause/resume in MainWindow: pause the playing player(s) for
+    the duration of a synthesized utterance so it isn't drowned out
+    by music. The TTS path uses two methods spanning an async call
+    (one to pause on speak start, one bound to playback_finished
+    to resume) rather than a context manager — see MainWindow's
+    _mpris_pause_for_tts / _resume_after_tts.
 
 Originally lived inside `actions/now_playing.py`; extracted so the
 TTS path doesn't have to import an action module just to read player
@@ -17,7 +21,6 @@ Wire is qdbus6 (Qt 6's D-Bus CLI, ships with Plasma 6).
 from __future__ import annotations
 import logging
 import subprocess
-from contextlib import contextmanager
 
 log = logging.getLogger(__name__)
 
@@ -87,32 +90,3 @@ def any_playing() -> bool:
         if player_status(s) == "Playing":
             return True
     return False
-
-
-@contextmanager
-def paused_for_tts():
-    """Context manager: pause every Playing MPRIS service on entry,
-    resume only those services on exit. No-op when nothing is playing
-    or qdbus is missing.
-
-    Used by the TTS path so a synthesized voice doesn't fight music
-    underneath. The pause is the same verb a phone-call interruption
-    would issue, so well-behaved players (Spotify, mpv, Firefox MPRIS
-    bridge) handle it cleanly with state restoration.
-
-    Services that were Paused before the with-block aren't touched —
-    we don't want to surprise the user by starting playback they
-    didn't ask for.
-    """
-    paused: list[str] = []
-    for service in list_players():
-        if player_status(service) == "Playing":
-            if qdbus(service, MPRIS_OBJECT, f"{PLAYER_IFACE}.Pause") is not None:
-                paused.append(service)
-                log.debug("mpris: paused %s for TTS", service)
-    try:
-        yield paused
-    finally:
-        for service in paused:
-            qdbus(service, MPRIS_OBJECT, f"{PLAYER_IFACE}.Play")
-            log.debug("mpris: resumed %s after TTS", service)

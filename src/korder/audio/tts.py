@@ -69,6 +69,26 @@ def _detect_lang(text: str) -> str:
     return "en"
 
 
+def voices_available_on_disk(lang: str) -> list[str]:
+    """Module-level voice-list helper. Returns voice IDs found in
+    ~/.local/share/piper for the given language ('en', 'pl', etc.).
+    Settings dialog uses this to populate its voice pickers without
+    needing a live SpeechEngine instance."""
+    if not _PIPER_DATA_DIR.is_dir():
+        return []
+    prefix_short = lang.lower() + "_"
+    out: list[str] = []
+    for entry in _PIPER_DATA_DIR.iterdir():
+        stem = entry.stem
+        if entry.is_file() and entry.suffix == ".onnx" and stem.lower().startswith(prefix_short):
+            out.append(stem)
+        elif entry.is_dir() and entry.name.lower().startswith(prefix_short):
+            model = entry / f"{entry.name}.onnx"
+            if model.is_file():
+                out.append(entry.name)
+    return sorted(set(out))
+
+
 class SpeechEngine(QObject):
     """Thread-safe TTS facade. Constructor doesn't block — voice load
     is deferred to the first ``say`` per language. Set ``enabled=False``
@@ -126,23 +146,10 @@ class SpeechEngine(QObject):
 
     def voices_available(self, lang: str) -> list[str]:
         """List downloaded Piper voices for the given language (e.g.
-        'en', 'pl'). Reads from ~/.local/share/piper. Empty list when
-        nothing's downloaded yet — Settings UI can offer a manual
-        entry field for that case."""
-        if not _PIPER_DATA_DIR.is_dir():
-            return []
-        prefix_short = lang.lower() + "_"
-        out: list[str] = []
-        for entry in _PIPER_DATA_DIR.iterdir():
-            stem = entry.stem
-            if entry.is_file() and entry.suffix == ".onnx" and stem.lower().startswith(prefix_short):
-                out.append(stem)
-            elif entry.is_dir() and entry.name.lower().startswith(prefix_short):
-                # Per-voice subdir layout
-                model = entry / f"{entry.name}.onnx"
-                if model.is_file():
-                    out.append(entry.name)
-        return sorted(set(out))
+        'en', 'pl'). Method form for callers holding an engine
+        instance; the standalone ``voices_available_on_disk`` does
+        the same lookup without needing one."""
+        return voices_available_on_disk(lang)
 
     def say(self, text: str, lang: str = "auto") -> None:
         """Queue an utterance for synthesis + playback. Returns
@@ -327,7 +334,15 @@ class SpeechEngine(QObject):
     def _worker_loop(self) -> None:
         """Single thread that owns the synth + playback pipeline.
         Pulls (text, lang) jobs FIFO, runs synth, plays audio,
-        repeats. None sentinel = shutdown."""
+        repeats. None sentinel = shutdown.
+
+        Contract: ``playback_finished`` is emitted exactly once per
+        job pulled off the queue, regardless of whether playback
+        succeeded, was cancelled, or failed at synth/load. Receivers
+        ref-count active speech around this signal (e.g. MainWindow's
+        MPRIS pause/resume), so a missed emit would strand the count
+        and never resume the music.
+        """
         while True:
             job = self._queue.get()
             if job is None:
@@ -346,10 +361,17 @@ class SpeechEngine(QObject):
                     continue
                 audio, sample_rate = synth
                 self._play(audio, sample_rate)
-                self.playback_finished.emit()
             except Exception as e:
                 log.error("tts: worker error: %s", e)
             finally:
+                # Always notify "this utterance is done" — even on
+                # cancel / synth-failure / load-failure. The
+                # playback_finished receiver(s) ref-count active
+                # speech and can't tolerate a missed emit.
+                try:
+                    self.playback_finished.emit()
+                except Exception:
+                    pass
                 self._queue.task_done()
                 # Reset cancel state for the next job.
                 self._cancel_event.clear()

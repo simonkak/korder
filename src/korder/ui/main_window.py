@@ -280,6 +280,16 @@ class MainWindow(QMainWindow):
         self._tts_suppress_when_playing = tts_suppress_when_playing
         self._tts_speak_action_progress = tts_speak_action_progress
         self._tts_paused_services: list[str] = []
+        # Ref count of in-flight TTS utterances. Increments on every
+        # _mpris_pause_for_tts call, decrements on every
+        # _resume_after_tts call. Music is paused on the 0→1
+        # transition and resumed only on the N→0 transition. Without
+        # this, two TTS calls queued in rapid succession (the first
+        # already paused music) would race: when the first
+        # playback_finished fired, music would resume while the
+        # second utterance was still synthesizing/playing — producing
+        # bleed into the recording or audible bleed during speech.
+        self._tts_active_count = 0
         # Soft "go" chime on dictation start (mirrors the Plasma
         # "ready" cue users expect from voice assistants). Audible
         # signal that mic just opened — but transcription is
@@ -438,7 +448,7 @@ class MainWindow(QMainWindow):
             return
         if self._tts is not None:
             self._tts.cancel()
-            self._resume_after_tts()
+            self._force_resume_after_cancel()
         self._await_tts_for_answer_reset = False
         self._partial_timer.stop()
         self._osd_throttle_timer.stop()
@@ -471,7 +481,7 @@ class MainWindow(QMainWindow):
         # speaking is implicit "interrupt and listen to me".
         if self._tts is not None and self._tts.is_playing():
             self._tts.cancel()
-            self._resume_after_tts()
+            self._force_resume_after_cancel()
         # Soft "go" chime, then start capture once it finishes.
         # Transcription begins AFTER the chime so Whisper doesn't
         # hear it via speaker bleed. When the chime is disabled or
@@ -1064,7 +1074,7 @@ class MainWindow(QMainWindow):
         self._pending_action = None
         if self._tts is not None:
             self._tts.cancel()
-            self._resume_after_tts()  # restore music if we paused it
+            self._force_resume_after_cancel()  # restore music if we paused it
         self._await_tts_for_answer_reset = False
         self.cancel_recording()
 
@@ -1117,10 +1127,14 @@ class MainWindow(QMainWindow):
         self._tts.say(text, lang)
 
     def _mpris_pause_for_tts(self) -> None:
-        """Pause every Playing MPRIS service and remember which ones
-        we paused so _resume_after_tts can put them back. Idempotent —
-        if we already paused this turn, the second call is a no-op."""
-        if getattr(self, "_tts_paused_services", None):
+        """Pause every Playing MPRIS service for the duration of
+        TTS playback. Ref-counts in-flight utterances so concurrent
+        speech keeps music paused across the whole burst — only the
+        last finishing utterance resumes."""
+        self._tts_active_count += 1
+        if self._tts_active_count > 1:
+            # Earlier utterance already paused; piggyback on its
+            # paused-services list (we'll release together).
             return
         paused: list[str] = []
         for svc in _mpris.list_players():
@@ -1132,15 +1146,43 @@ class MainWindow(QMainWindow):
             log.info("tts: paused %d MPRIS service(s) for speech", len(paused))
 
     def _resume_after_tts(self) -> None:
-        """Slot for SpeechEngine.playback_finished. Resume whatever
-        we paused for this utterance."""
-        services = getattr(self, "_tts_paused_services", None)
+        """Slot for SpeechEngine.playback_finished. Decrements the
+        ref count; resumes paused MPRIS services only when the count
+        reaches zero (last utterance done). Always called via the
+        playback_finished signal which the SpeechEngine emits exactly
+        once per queued job — succeeded, cancelled, or failed."""
+        self._tts_active_count = max(0, self._tts_active_count - 1)
+        if self._tts_active_count > 0:
+            return  # more TTS in flight; keep music paused
+        services = self._tts_paused_services
+        self._tts_paused_services = []
         if not services:
             return
         for svc in services:
             _mpris.qdbus(svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Play")
         log.info("tts: resumed %d MPRIS service(s)", len(services))
+
+    def _force_resume_after_cancel(self) -> None:
+        """Cancel-path counterpart to _resume_after_tts.
+
+        ``tts.cancel()`` drains queued utterances WITHOUT pulling
+        them through the worker's finally-emit, so playback_finished
+        fires only for the currently-playing job (if any), not for
+        the N-1 still queued. That'd leave the ref count unbalanced
+        and music paused forever.
+
+        This method force-releases: zero the count, resume every
+        paused service, and rely on the at-most-one stale
+        playback_finished from the in-flight job to be a no-op
+        (count already 0; services list empty)."""
+        self._tts_active_count = 0
+        services = self._tts_paused_services
         self._tts_paused_services = []
+        if not services:
+            return
+        for svc in services:
+            _mpris.qdbus(svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Play")
+        log.info("tts: resumed %d MPRIS service(s) (cancel)", len(services))
 
     def _on_tts_done_check_answer_reset(self) -> None:
         """Second slot bound to playback_finished. When a

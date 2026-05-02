@@ -282,9 +282,10 @@ def test_now_playing_emits_speak_when_track_resolved():
     assert speak_calls == [("Overcompensate by Twenty One Pilots", "en")]
 
 
-def test_now_playing_does_not_speak_when_nothing_playing():
-    """No metadata → no speak call. The desktop notification covers
-    the diagnostic; voicing 'nothing is playing' would be noise."""
+def test_now_playing_speaks_when_nothing_playing():
+    """No MPRIS service → notify-send PLUS a spoken 'nothing is
+    playing'. Eyes-busy users wouldn't see the notification, and
+    silence on a query feels broken. lang derived from system locale."""
     speak_calls: list[tuple[str, str]] = []
 
     def fake_run(cmd, *args, **kwargs):
@@ -297,7 +298,14 @@ def test_now_playing_does_not_speak_when_nothing_playing():
     ):
         np_mod._now_playing()
 
-    assert speak_calls == []
+    assert len(speak_calls) == 1
+    text, lang = speak_calls[0]
+    # English or Polish — system locale dependent; both are valid
+    assert lang in ("en", "pl")
+    if lang == "en":
+        assert "Nothing" in text
+    else:
+        assert "Nic" in text
 
 
 # --- Action registration ---------------------------------------------------

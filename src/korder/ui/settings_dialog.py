@@ -497,19 +497,38 @@ class SettingsDialog(QDialog):
         )
         f.addRow("", self._tts_enabled)
 
-        self._tts_voice_en = QLineEdit()
-        self._tts_voice_en.setPlaceholderText("en_US-amy-medium")
+        # Voice pickers — editable combo boxes auto-populated from
+        # ~/.local/share/piper at dialog-open time. User can also
+        # type a voice ID that isn't downloaded yet (Korder logs a
+        # missing-voice error on first use rather than at config
+        # save, so unknown IDs are valid input here).
+        try:
+            from korder.audio.tts import voices_available_on_disk
+            en_voices = voices_available_on_disk("en")
+            pl_voices = voices_available_on_disk("pl")
+        except Exception:
+            en_voices, pl_voices = [], []
+
+        self._tts_voice_en = QComboBox()
+        self._tts_voice_en.setEditable(True)
+        if en_voices:
+            self._tts_voice_en.addItems(en_voices)
         self._tts_voice_en.setToolTip(
-            "Piper voice ID for English. Browse available voices at "
-            "https://huggingface.co/rhasspy/piper-voices. Pre-fetch with "
-            "`python -m piper.download_voices VOICE_ID`."
+            "Piper voice ID for English. The list shows voices "
+            "currently downloaded under ~/.local/share/piper; type "
+            "another ID to use a voice not on disk yet (download via "
+            "`uv run python -m piper.download_voices --data-dir "
+            "~/.local/share/piper VOICE_ID`). Catalogue: "
+            "https://huggingface.co/rhasspy/piper-voices"
         )
         f.addRow("English voice:", self._tts_voice_en)
 
-        self._tts_voice_pl = QLineEdit()
-        self._tts_voice_pl.setPlaceholderText("pl_PL-darkman-medium")
+        self._tts_voice_pl = QComboBox()
+        self._tts_voice_pl.setEditable(True)
+        if pl_voices:
+            self._tts_voice_pl.addItems(pl_voices)
         self._tts_voice_pl.setToolTip(
-            "Piper voice ID for Polish. Same catalogue as English; "
+            "Piper voice ID for Polish. Same lookup as English; "
             "pl_PL voices are scarcer than en_US — pl_PL-darkman-medium "
             "and pl_PL-gosia-medium are the common picks."
         )
@@ -666,8 +685,10 @@ class SettingsDialog(QDialog):
 
         # TTS / Speech
         self._tts_enabled.setChecked(_truthy(c["tts"].get("enabled", "false")))
-        self._tts_voice_en.setText(c["tts"].get("voice_en", "en_US-amy-medium"))
-        self._tts_voice_pl.setText(c["tts"].get("voice_pl", "pl_PL-darkman-medium"))
+        # Voice combo boxes are editable — setCurrentText accepts any
+        # value (including ones not in the dropdown list).
+        self._tts_voice_en.setCurrentText(c["tts"].get("voice_en", "en_US-amy-medium"))
+        self._tts_voice_pl.setCurrentText(c["tts"].get("voice_pl", "pl_PL-darkman-medium"))
         try:
             self._tts_speed.setValue(float(c["tts"].get("speed", "1.0")))
         except (KeyError, ValueError):
@@ -723,8 +744,8 @@ class SettingsDialog(QDialog):
         c["wake"]["idle_timeout_s"] = str(self._wake_idle_timeout.value())
 
         c["tts"]["enabled"] = "true" if self._tts_enabled.isChecked() else "false"
-        c["tts"]["voice_en"] = self._tts_voice_en.text().strip() or "en_US-amy-medium"
-        c["tts"]["voice_pl"] = self._tts_voice_pl.text().strip() or "pl_PL-darkman-medium"
+        c["tts"]["voice_en"] = self._tts_voice_en.currentText().strip() or "en_US-amy-medium"
+        c["tts"]["voice_pl"] = self._tts_voice_pl.currentText().strip() or "pl_PL-darkman-medium"
         c["tts"]["speed"] = f"{self._tts_speed.value():.2f}"
         c["tts"]["suppress_when_playing"] = (
             "true" if self._tts_suppress_when_playing.isChecked() else "false"

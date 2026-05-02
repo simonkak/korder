@@ -130,15 +130,27 @@ def _spoken_form(body: str, lang: str) -> str:
 def _now_playing() -> None:
     composed = _compose_now_playing()
     if composed is None:
+        # Nothing playable. Speak too — eyes-busy users wouldn't see
+        # the notification, and "no answer" feels like the action
+        # broke. Lang heuristic uses the system locale via i18n.
+        from korder.ui.i18n import current_locale
+        lang = "pl" if current_locale() == "pl" else "en"
         services = _mpris.list_players()
         if services:
             player = _mpris.pick_active_player(services) or services[0]
-            _notify(
-                f"{_short_player_name(player)}: nothing playing",
-                "Player is open but no track metadata is available.",
+            headline = f"{_short_player_name(player)}: nothing playing"
+            body = "Player is open but no track metadata is available."
+            spoken = (
+                "Odtwarzacz jest otwarty, ale nie ma żadnego utworu."
+                if lang == "pl" else
+                "A media player is open but nothing is playing."
             )
         else:
-            _notify("Nothing playing", "No media player is running.")
+            headline = "Nothing playing"
+            body = "No media player is running."
+            spoken = "Nic nie gra." if lang == "pl" else "Nothing is playing."
+        _notify(headline, body)
+        emit_progress_speak(spoken, lang)
         return
     headline, body, lang = composed
     _notify(headline, body)

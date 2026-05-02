@@ -382,7 +382,7 @@ across whichever language Whisper transcribes.
 ## Development
 
 ```bash
-uv run pytest                                    # 219 tests, no external services required
+uv run pytest                                    # 220 tests, no external services required
 uv run pytest -m ollama                          # +44 integration tests against a live Gemma
 uv run python -m korder.intent_bench             # 21-case headless benchmark vs the current model
 uv run python -m korder.intent_bench --thinking  # …with Gemma's thinking step engaged
