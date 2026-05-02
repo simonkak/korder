@@ -1,10 +1,13 @@
 from __future__ import annotations
 import argparse
+import logging
 import os
 import socket
 import sys
 import tempfile
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # CRITICAL: rebrand the process and set audio-server identity env vars
 # BEFORE any import that transitively loads sounddevice/PortAudio.
@@ -64,6 +67,48 @@ os.environ.setdefault(
     "application.process.binary=korder",
 )
 
+
+# Resolve the canonical AT-SPI bus address from the session D-Bus and
+# pin it to AT_SPI_BUS_ADDRESS BEFORE PySide6 imports. Qt's
+# accessibility plugin loads libatspi.so transitively during
+# QApplication() init and caches whichever bus address libatspi
+# finds at that moment — and on KDE 6 + Wayland, libatspi's own
+# discovery sometimes locks onto a stale per-session socket path
+# (/run/user/.../at-spi2-XXXXXX/socket from a previous login)
+# instead of the canonical /run/user/.../at-spi/bus_0.
+#
+# The org.a11y.Bus.GetAddress D-Bus call always returns the live
+# address. We invoke dbus-send (already a hard dep of every Plasma
+# session) and pin the result before any GLib / Qt / Atspi import
+# can run its broken cache logic. Failure here is non-fatal — the
+# AT-SPI-based click action will degrade to its vision fallback.
+def _pin_atspi_bus_address() -> None:
+    if os.environ.get("AT_SPI_BUS_ADDRESS"):
+        return
+    try:
+        import subprocess as _sp
+        result = _sp.run(
+            [
+                "dbus-send", "--session", "--print-reply",
+                "--dest=org.a11y.Bus", "/org/a11y/bus",
+                "org.a11y.Bus.GetAddress",
+            ],
+            capture_output=True, timeout=2.0, text=True, check=True,
+        )
+    except Exception:
+        return
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("string "):
+            quoted = line[len("string "):].strip()
+            if quoted.startswith('"') and quoted.endswith('"'):
+                os.environ["AT_SPI_BUS_ADDRESS"] = quoted[1:-1]
+                return
+
+
+_pin_atspi_bus_address()
+
+
 from PySide6.QtCore import QByteArray, QRectF, Qt
 from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -106,7 +151,21 @@ def _try_forward(cmd: str, timeout_s: float = 0.5) -> bool:
             pass
 
 
+def _setup_logging() -> None:
+    level_name = os.environ.get("KORDER_LOG_LEVEL", "INFO").strip().upper()
+    level = getattr(logging, level_name, logging.INFO)
+    if not isinstance(level, int):
+        level = logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
+    logging.getLogger("korder").setLevel(level)
+
+
 def main() -> int:
+    _setup_logging()
     parser = argparse.ArgumentParser(prog="korder")
     parser.add_argument(
         "cmd",
@@ -120,7 +179,7 @@ def main() -> int:
     if _try_forward(forward_cmd):
         return 0
     if args.cmd is not None:
-        print(f"[korder] not running; start with `korder` first", file=sys.stderr)
+        log.error("not running; start with `korder` first")
         return 1
 
     return _run_app()
@@ -197,9 +256,9 @@ def _run_app() -> int:
         if show_triggers:
             flags.append("show-triggers")
         flag_str = f" [{', '.join(flags)}]" if flags else ""
-        print(
-            f"[korder] using LLM action parser ({cfg['inject']['llm_model']}){flag_str}",
-            file=sys.stderr,
+        log.info(
+            "using LLM action parser (%s)%s",
+            cfg['inject']['llm_model'], flag_str,
         )
 
     try:
@@ -212,7 +271,7 @@ def _run_app() -> int:
             op_parser_clear_history=op_parser_clear_history,
         )
     except InjectError as e:
-        print(f"[korder] injection disabled: {e}", file=sys.stderr)
+        log.error("injection disabled: %s", e)
         injector = None
 
     osd = OSDWindow()
@@ -286,7 +345,7 @@ def _build_wake_detector(cfg, recorder: MicRecorder):
             sample_rate=recorder.sample_rate,
         )
     except Exception as e:
-        print(f"[korder] wake: detector init failed: {e}", file=sys.stderr)
+        log.error("wake: detector init failed: %s", e)
         return None
     return detector
 
@@ -402,7 +461,7 @@ def _install_tray_icon_in_theme() -> None:
             _USER_ICON_PATH.parent.mkdir(parents=True, exist_ok=True)
             _USER_ICON_PATH.write_bytes(_TRAY_SVG.read_bytes())
     except OSError as e:
-        print(f"[korder] couldn't install tray icon: {e}", file=sys.stderr)
+        log.error("couldn't install tray icon: %s", e)
 
 
 def _install_desktop_entry() -> None:
@@ -427,7 +486,7 @@ def _install_desktop_entry() -> None:
         _USER_DESKTOP_PATH.parent.mkdir(parents=True, exist_ok=True)
         _USER_DESKTOP_PATH.write_bytes(src_bytes)
     except OSError as e:
-        print(f"[korder] couldn't install desktop entry: {e}", file=sys.stderr)
+        log.error("couldn't install desktop entry: %s", e)
 _TRAY_RENDER_SIZES = (16, 22, 24, 32, 48, 64)
 # Per-state foreground colors. idle uses the theme; the other two are
 # fixed accents so the user gets a consistent visual cue regardless of
@@ -470,10 +529,7 @@ def _start_ipc_server(window: MainWindow) -> QLocalServer:
     if not server.listen(SOCKET_NAME):
         QLocalServer.removeServer(SOCKET_NAME)
         if not server.listen(SOCKET_NAME):
-            print(
-                f"[korder] IPC server failed: {server.errorString()}",
-                file=sys.stderr,
-            )
+            log.error("IPC server failed: %s", server.errorString())
 
     def _on_new_connection() -> None:
         sock = server.nextPendingConnection()
