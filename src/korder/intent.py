@@ -20,9 +20,28 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 
 from korder.actions.base import all_actions, get_action
 from korder.actions.parser import split_into_ops
+
+
+@dataclass(frozen=True)
+class Turn:
+    """One past exchange in the current dictation session: what the
+    user said, what action (if any) fired, and what natural-language
+    reply the LLM produced. Used as conversation context for
+    follow-up resolution — e.g. 'A Polski?' after asking about
+    France's capital."""
+    user_text: str
+    action_name: str  # main action name fired, "" if none
+    response: str  # last_response from that turn, "" if none
+
+
+# Number of past turns to feed into the parser as context. 4 covers
+# typical Q&A → follow-up → follow-up patterns without bloating the
+# prompt enough to risk a meaningful latency or accuracy regression.
+_MAX_HISTORY_TURNS = 4
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
 _OLLAMA_PS_URL = "http://localhost:11434/api/ps"
@@ -87,15 +106,48 @@ _SYSTEM_PROMPT = (
     "- For parameterized actions, extract relevant fields into `params`. If a required parameter "
     "is not present in the input, leave `params` empty or omit it — do NOT invent values.\n"
     "\n"
-    "Optionally include `response` — a brief natural-language question — "
-    "ONLY when the action has parameters that the user did not supply. "
-    "Tailor the question to which parameter is missing:\n"
-    "  - For a `confirm` parameter: 'are you sure?' style — make it obvious "
-    "what is about to happen and ask for yes/no.\n"
-    "  - For other parameters (`query`, `kind`, etc.): ask WHAT the user "
-    "wants — e.g. 'What do you want to play?' for a search query.\n"
-    "Write `response` in the same language as the input transcript. "
-    "Otherwise omit `response` (most non-pending commands fire silently)."
+    "Optionally include `response` — a brief natural-language reply to the "
+    "user. Cases where `response` should be populated:\n"
+    "  - Action has a `confirm` parameter the user did not supply: ask "
+    "'are you sure?' in second person, end with yes/no hint.\n"
+    "  - Action has another missing parameter (`query`, `kind`, etc.): ask "
+    "WHAT the user wants — e.g. 'What do you want to play?'.\n"
+    "  - Factual question (no action match) you can answer confidently "
+    "from your training — math, definitions, translations, general "
+    "knowledge, geography, history. Write the answer directly, briefly. "
+    "Do NOT answer questions about live data (current time, today's "
+    "weather, news) — leave `response` empty for those, you'll only "
+    "hallucinate. If you don't actually know the answer to a factual "
+    "question, say so plainly ('Nie wiem.' / 'I don't know.') rather "
+    "than inventing facts.\n"
+    "  - Small-talk / personal / opinion question ('do you like cats?', "
+    "'how are you?', 'what's your name?'): give a brief friendly "
+    "answer (≤ 2 sentences), in character as a helpful voice assistant. "
+    "Stay warm but concise.\n"
+    "Always write `response` in the same language as the input transcript. "
+    "For pure dictation (description, narrative, prose with no question "
+    "and no command), leave `response` empty.\n"
+    "\n"
+    "Precedence between `response` and `actions`: when you can answer a "
+    "factual question confidently from training, populate `response` and "
+    "leave `actions` empty. Reserve `web_search` and `wikipedia_search` "
+    "for when the user EXPLICITLY asks to open a browser / look "
+    "something up on Wikipedia, OR when you genuinely don't know. Do "
+    "NOT emit BOTH a direct answer in `response` AND a search action — "
+    "pick one.\n"
+    "\n"
+    "When previous turns are provided as context, USE them to resolve "
+    "follow-up questions like 'and Poland?' after 'what is the capital "
+    "of France?' — treat the new input as if its referring expressions "
+    "point at the prior turns. Don't repeat the entire prior question "
+    "back; just answer.\n"
+    "\n"
+    "Follow-up continuity: if the prior turn was answered via `response` "
+    "(no action), the follow-up almost certainly continues that Q&A — "
+    "answer it the same way (populate `response`, leave `actions` "
+    "empty). Do NOT switch to `wikipedia_search` / `web_search` just "
+    "because the follow-up is short, fragmentary, or names a specific "
+    "topic. Match the prior turn's answering mode."
 )
 
 
@@ -116,14 +168,39 @@ def _render_action_catalogue(*, show_triggers: bool) -> str:
     return "\n".join(lines)
 
 
-def _build_user_prompt(transcript: str, *, show_triggers: bool) -> str:
-    """Per-call user message: action catalogue + transcript + reminder of
-    the JSON output format."""
+def _render_history(history: list[Turn]) -> str:
+    """Format prior turns as a 'Recent conversation' block to prepend to
+    the analysis section of the user prompt. Empty string when there's
+    no history. Each turn is one User: + Assistant: pair, trimmed of
+    empty fields so action-only turns don't print blank Assistant lines."""
+    if not history:
+        return ""
+    lines = ["Recent conversation in this session (oldest first):"]
+    for turn in history:
+        lines.append(f"  User: {turn.user_text!r}")
+        if turn.response:
+            lines.append(f"  Assistant: {turn.response!r}")
+        elif turn.action_name:
+            lines.append(f"  (Korder fired action: {turn.action_name})")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_user_prompt(
+    transcript: str,
+    history: list[Turn] | None = None,
+    *,
+    show_triggers: bool,
+) -> str:
+    """Per-call user message: action catalogue + optional conversation
+    history + transcript + reminder of the JSON output format."""
     catalogue = _render_action_catalogue(show_triggers=show_triggers)
+    history_block = _render_history(history or [])
     return (
         "Available actions:\n"
         f"{catalogue}\n"
         "\n"
+        + history_block +
         "A few examples to anchor your output shape:\n"
         '  "hello world" → {"actions": []}\n'
         '  "Naciśnij Enter." → {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}\n'
@@ -135,6 +212,26 @@ def _build_user_prompt(transcript: str, *, show_triggers: bool) -> str:
         '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
         '  "Spotify zagraj" → {"actions": [{"phrase": "Spotify zagraj", "name": "spotify_search"}], "response": "Co chcesz odtworzyć w Spotify?"}\n'
         '  "play on Spotify" → {"actions": [{"phrase": "play on Spotify", "name": "spotify_search"}], "response": "What do you want to play on Spotify?"}\n'
+        '  "what is the capital of France" → {"actions": [], "response": "Paris."}\n'
+        '  "co to jest Paryż?" → {"actions": [], "response": "Paryż to stolica Francji."}\n'
+        '  "ile to siedem razy osiem" → {"actions": [], "response": "Pięćdziesiąt sześć."}\n'
+        '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
+        '  "how are you?" → {"actions": [], "response": "Doing well, thanks for asking. What can I help you with?"}\n'
+        '  "wikipedia, Paryż" → {"actions": [{"phrase": "wikipedia, Paryż", "name": "wikipedia_search", "params": {"query": "Paryż"}}]}\n'
+        '  "look up Paris on Wikipedia" → {"actions": [{"phrase": "look up Paris on Wikipedia", "name": "wikipedia_search", "params": {"query": "Paris"}}]}\n'
+        '  "google pogodę w Warszawie" → {"actions": [{"phrase": "google pogodę w Warszawie", "name": "web_search", "params": {"query": "pogoda w Warszawie"}}]}\n'
+        '  "what time is it" → {"actions": []}    (live data — no response, model would hallucinate)\n'
+        '  "Ok, dzięki. Koniec." → {"actions": [{"phrase": "Ok, dzięki. Koniec.", "name": "cancel_session"}]}\n'
+        '  "that\'s all, thanks" → {"actions": [{"phrase": "that\'s all, thanks", "name": "cancel_session"}]}\n'
+        '  "Zakończę." → {"actions": [{"phrase": "Zakończę.", "name": "cancel_session"}]}\n'
+        '  "I want to cancel my subscription." → {"actions": []}    (dictated content, NOT meta-cancel)\n'
+        "\n"
+        "Follow-up examples (when prior conversation is shown above):\n"
+        '  prior: User "what is the capital of France?" / Assistant "Paris."\n'
+        '  now:   "and Poland?" → {"actions": [], "response": "Warsaw."}\n'
+        '  prior: User "Jaka jest stolica Francji?" / Assistant "Paryż."\n'
+        '  now:   "A Polski?" → {"actions": [], "response": "Warszawa."}\n'
+        "  Note how the follow-up gets answered directly — same mode as the prior turn — NOT dispatched to wikipedia_search.\n"
         "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
@@ -166,6 +263,12 @@ class IntentParser:
         # ground for future conversational/TTS features. Empty string
         # when the LLM didn't include a response (the common case).
         self.last_response: str = ""
+        # Rolling conversation history, fed back into the parser prompt
+        # so follow-up questions ('A Polski?' after the France-capital
+        # question) resolve against prior turns. Cleared by
+        # clear_history() on dictation-session boundaries
+        # (auto-stop, cancel, hotkey toggle-off).
+        self._history: list[Turn] = []
 
     def warm_up(self) -> None:
         """Fire-and-forget: tell ollama to page the model into VRAM,
@@ -238,6 +341,33 @@ class IntentParser:
                 return True
         return False
 
+    def clear_history(self) -> None:
+        """Drop the conversation context. Called by main_window at
+        dictation-session boundaries (recorder stops, cancel) so the
+        next session starts fresh — yesterday's 'and Polish?' shouldn't
+        resolve against last week's France question."""
+        if self._history:
+            print(f"[korder] history cleared ({len(self._history)} turns)", flush=True, file=sys.stderr)
+        self._history = []
+
+    def _push_turn(self, transcript: str, actions: list, response: str) -> None:
+        """Append a Turn for this parse to history, trimmed to the most
+        recent _MAX_HISTORY_TURNS entries. Action-only turns (no
+        response) still get recorded for context — 'press enter' →
+        'and now backspace?' should plausibly work."""
+        action_name = ""
+        if isinstance(actions, list) and actions:
+            first = actions[0]
+            if isinstance(first, dict):
+                action_name = first.get("name") or ""
+        self._history.append(Turn(
+            user_text=transcript,
+            action_name=action_name,
+            response=response,
+        ))
+        if len(self._history) > _MAX_HISTORY_TURNS:
+            self._history = self._history[-_MAX_HISTORY_TURNS:]
+
     def parse(self, transcript: str) -> list[tuple]:
         if not transcript:
             return []
@@ -246,6 +376,10 @@ class IntentParser:
         except Exception as e:
             print(f"[korder] intent LLM failed, falling back to regex: {e}", flush=True, file=sys.stderr)
             return split_into_ops(transcript)
+        # Record this turn BEFORE the regex-supplement / segmentation
+        # path forks — history is about what the LLM saw and produced,
+        # which is the input to the next round's resolution.
+        self._push_turn(transcript, actions, self.last_response)
 
         # Safety net: clear hallucinated `confirm` params. Smaller
         # models (e2b) sometimes invent a confirm value even when the
@@ -266,7 +400,15 @@ class IntentParser:
         # mode toggles in particular). LLM still wins for "she pressed
         # enter on the keyboard" because regex would also classify that
         # as text-only thanks to the word-boundary trigger phrasing.
+        #
+        # Exception: when last_response is populated, the LLM intentionally
+        # chose to answer the user conversationally rather than dispatch
+        # an action. Skipping the regex supplement preserves that choice
+        # — otherwise a fuzzy trigger match like "what is" → wikipedia
+        # would overshadow Gemma's direct answer.
         if not actions:
+            if self.last_response:
+                return [("text", transcript)] if transcript else []
             regex_ops = split_into_ops(transcript)
             if any(op[0] != "text" for op in regex_ops):
                 print(
@@ -285,7 +427,9 @@ class IntentParser:
 
     def _call_ollama(self, transcript: str) -> list:
         user_prompt = _build_user_prompt(
-            transcript, show_triggers=self.show_triggers_in_prompt
+            transcript,
+            self._history,
+            show_triggers=self.show_triggers_in_prompt,
         )
         payload: dict = {
             "model": self.model,

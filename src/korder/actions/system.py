@@ -264,15 +264,19 @@ register(_confirmable_action(
 register(Action(
     name="cancel_session",
     description=(
-        "Abort the current dictation/recording. Drops any pending text "
-        "AND any other actions in the same utterance — nothing gets "
-        "injected, the OSD shows 'Cancelled' and hides, the mic closes. "
-        "Use ONLY when the user is plainly aborting the recording: "
-        "saying just 'cancel', 'nevermind', 'forget it', or similar as "
-        "the entire intent. Do NOT fire when 'cancel' / 'nevermind' "
-        "appear inside dictated content (e.g., 'I want to cancel my "
-        "subscription' is dictation, not a meta-cancel). When in doubt, "
-        "treat it as text — a misfire here loses the user's whole "
+        "End the current dictation/recording session. Drops any pending "
+        "text AND any other actions in the same utterance — nothing "
+        "gets injected, the OSD hides, the mic closes. Two flavors of "
+        "intent map to this: (a) ABORT — 'cancel that', 'nevermind', "
+        "'forget it', 'nieważne'; and (b) GRACEFUL END — 'that's all', "
+        "'we're done', 'I'm done', 'thanks, that's it', 'koniec', "
+        "'zakończ', 'to wszystko', 'to tyle', 'wystarczy'. Both close "
+        "the session the same way. Use ONLY when the user's whole "
+        "utterance is a meta-end signal — closing remark addressed to "
+        "the assistant, not dictated content. Do NOT fire when these "
+        "phrases appear inside content (e.g. 'I want to cancel my "
+        "subscription' is dictation, not a meta-cancel). When in "
+        "doubt, treat it as text — a misfire here drops the whole "
         "utterance and is more disruptive than typing the word."
     ),
     triggers={
@@ -282,12 +286,29 @@ register(Action(
             "never mind",
             "forget it",
             "abort recording",
+            "that's all",
+            "thats all",
+            "we're done",
+            "were done",
+            "we are done",
+            "i'm done",
+            "im done",
+            "i am done",
+            "stop listening",
+            "end session",
         ],
         "pl": [
             "nieważne",
             "nie ważne",
             "zapomnij",
             "anuluj nagrywanie",
+            "koniec",
+            "zakończ",
+            "zakończę",
+            "to wszystko",
+            "to tyle",
+            "wystarczy",
+            "skończ",
         ],
     },
     op_factory=lambda _args: ("cancel", None),

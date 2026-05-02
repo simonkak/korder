@@ -408,6 +408,12 @@ class MainWindow(QMainWindow):
             self._dictation_via_wake = False
             return
         self._begin_dictation_lifecycle()
+        # Defensive: clear any history left behind by a parse that
+        # completed on the worker thread after the previous
+        # _stop_recording cleared. Cheap, idempotent — typically a
+        # no-op since stop already cleared.
+        if self._injector is not None:
+            self._injector.clear_op_parser_history()
         self._status.setText(t("status_listening"))
         self._osd.set_listening(write_mode=self._write_mode)
         # Opportunistic preload — kick the model load now (fire-and-
@@ -470,6 +476,13 @@ class MainWindow(QMainWindow):
         # transcription proceeds or short-circuits below. Whisper runs
         # off-thread; we don't want playback held down for the duration.
         self._end_dictation_lifecycle()
+        # End-of-session: drop the parser's conversation history so the
+        # next 'hey jarvis' (or hotkey toggle) starts fresh. Within ONE
+        # session, follow-ups like 'A Polski?' resolve against prior
+        # turns; across sessions, that resolution would be more
+        # confusing than helpful.
+        if self._injector is not None:
+            self._injector.clear_op_parser_history()
         self._emit_tray_state()
         if not transcribe_tail:
             self._status.setText(t("status_idle"))
@@ -775,6 +788,23 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(150, self._auto_stop)
             return
 
+        # Conversational-answer path: the user asked a question with no
+        # registered action match, and Gemma populated `response` with
+        # a free-form reply (math, definitions, translation, general
+        # knowledge). Show the answer in the OSD instead of falling
+        # through to the "didn't get that" reset, then transition back
+        # to listening so the user can ask a follow-up.
+        if (
+            not command_fired
+            and self._pending_action is None
+            and self._last_llm_response
+            and self._recorder.is_recording
+        ):
+            answer = self._last_llm_response
+            self._last_llm_response = ""
+            QTimer.singleShot(120, lambda a=answer: self._show_conversational_answer(a))
+            return
+
         # Pure-dictation path: the LLM produced no command actions this
         # round (or auto-stop is off). If the recorder is still open and
         # there's no pending parameter expected, give the user a fresh
@@ -789,6 +819,45 @@ class MainWindow(QMainWindow):
             and self._recorder.is_recording
         ):
             QTimer.singleShot(700, self._reset_to_listening_after_miss)
+
+    def _show_conversational_answer(self, answer: str) -> None:
+        """Display Gemma's free-form reply for a no-action conversational
+        query (math, definition, translation, general knowledge).
+        Reuses the executing-progress visual treatment — italic, accent
+        color — so the answer reads as system feedback distinct from
+        the user's own dictated text. After a read window proportional
+        to the answer's length, transition back to listening so the
+        user can ask a follow-up. No-op if the recorder closed or
+        another state took over in the interim."""
+        if not self._recorder.is_recording:
+            return
+        if self._pending_action is not None:
+            return
+        print(f"[korder] conversational answer: {answer!r}", flush=True)
+        self._osd.set_executing_progress(answer)
+        # Read window: ~50 ms per character + 1.5 s minimum + 7 s
+        # ceiling. Long enough for Polish multi-clause sentences, short
+        # enough that an absent user doesn't sit on a stale answer.
+        read_ms = max(1500, min(7000, 1500 + 50 * len(answer)))
+        QTimer.singleShot(read_ms, self._reset_to_listening_after_answer)
+
+    def _reset_to_listening_after_answer(self) -> None:
+        """Mirror of _reset_to_listening_after_miss but for the path
+        where a conversational answer was just displayed. Same
+        end-state — fresh listening with placeholder — but expects to
+        be called from 'executing' rather than 'committed'."""
+        if not self._recorder.is_recording:
+            return
+        if self._pending_action is not None:
+            return
+        if self._osd._state.stateKind != "executing":
+            return  # user started a new utterance — let that flow win
+        # Skip past any audio captured while the user was reading.
+        self._committed_samples = self._recorder.snapshot().shape[0]
+        self._reset_partial_render_state()
+        self._last_partial_norm = ""
+        self._stability_count = 0
+        self._osd.set_listening(write_mode=self._write_mode)
 
     def _reset_to_listening_after_miss(self) -> None:
         """Transition from 'committed' to a fresh 'listening' with a

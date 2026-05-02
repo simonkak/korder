@@ -60,6 +60,7 @@ class YdotoolBackend:
         op_parser_is_warm=None,
         op_parser_warm_up=None,
         op_parser_last_response=None,
+        op_parser_clear_history=None,
     ):
         if shutil.which("ydotool") is None:
             raise InjectError(
@@ -76,6 +77,12 @@ class YdotoolBackend:
         # Used for confirmation prompts today; future home for
         # conversational replies and TTS-spoken progress.
         self._op_parser_last_response = op_parser_last_response
+        # Optional callable -> None. Called by the UI on dictation-
+        # session boundaries (recorder stop, cancel) to drop the
+        # parser's conversation history so the next session starts
+        # fresh — cross-session follow-up resolution would be more
+        # confusing than helpful.
+        self._op_parser_clear_history = op_parser_clear_history
         self._lock = threading.Lock()
         self.is_slow_parser = op_parser is not None
 
@@ -100,6 +107,19 @@ class YdotoolBackend:
             return
         try:
             self._op_parser_warm_up()
+        except Exception:
+            pass
+
+    def clear_op_parser_history(self) -> None:
+        """End the current dictation session's conversation context. The
+        UI calls this from _stop_recording so the next session — fresh
+        wake-word fire or hotkey toggle — starts without yesterday's
+        Q&A leaking into resolution. No-op for parsers without history
+        (regex)."""
+        if self._op_parser_clear_history is None:
+            return
+        try:
+            self._op_parser_clear_history()
         except Exception:
             pass
 
@@ -288,6 +308,7 @@ def make_backend(
     op_parser_is_warm=None,
     op_parser_warm_up=None,
     op_parser_last_response=None,
+    op_parser_clear_history=None,
 ) -> YdotoolBackend:
     return YdotoolBackend(
         paste_mode=paste_mode,
@@ -295,4 +316,5 @@ def make_backend(
         op_parser_is_warm=op_parser_is_warm,
         op_parser_warm_up=op_parser_warm_up,
         op_parser_last_response=op_parser_last_response,
+        op_parser_clear_history=op_parser_clear_history,
     )

@@ -163,12 +163,14 @@ def _maps_search_op(args: dict) -> tuple | None:
 register(Action(
     name="web_search",
     description=(
-        "Open the user's default browser with a generic web search. Use "
-        "for general 'search the web for X', 'google X', 'look up X' "
-        "where the user wants regular search results. Do NOT use for "
-        "queries that explicitly say YouTube, Wikipedia, or Maps — those "
-        "have their own actions. Extract the actual search terms into "
-        "params.query without including the trigger word itself."
+        "Open the user's default browser on a generic web-search results "
+        "page. Use ONLY when the user explicitly asks to SEARCH the web — "
+        "phrasings like 'search the web for X', 'google X', 'wyszukaj w "
+        "internecie X'. Do NOT use for general factual questions ('what "
+        "is X', 'co to jest X', 'how tall is X') — answer those directly "
+        "via the response field instead. Only dispatch when the user "
+        "wants the browser opened on results. Extract the actual search "
+        "terms into params.query without the trigger word."
     ),
     triggers={
         "en": [
@@ -234,12 +236,15 @@ register(Action(
 register(Action(
     name="wikipedia_search",
     description=(
-        "Open Wikipedia for a topic. Use when the user wants to look up / "
-        "read about / find information on a specific subject — typical "
-        "phrasings: 'wikipedia X', 'co to jest X', 'kim był X', 'tell me "
-        "about X', 'read about X'. Picks the Wikipedia language matching "
-        "the system locale automatically. Extract the actual subject "
-        "into params.query."
+        "Open Wikipedia in the user's browser for a topic. Use ONLY when "
+        "the user explicitly names Wikipedia or asks to LOOK SOMETHING "
+        "UP on it — 'wikipedia X', 'look up X on Wikipedia', 'open the "
+        "Wikipedia article for X'. Do NOT use for general 'what is X', "
+        "'co to jest X', 'tell me about X', 'kim był X' — those are "
+        "conversational and should be answered directly via the response "
+        "field. Only dispatch when the user wants the article OPENED in "
+        "a browser. Picks the Wikipedia language matching the system "
+        "locale. Extract the subject into params.query."
     ),
     triggers={
         "en": [

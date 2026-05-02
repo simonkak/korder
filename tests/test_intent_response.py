@@ -144,6 +144,25 @@ def test_legitimate_confirm_param_passes_through():
     assert "callable" in kinds, f"expected the action to fire; got {ops!r}"
 
 
+def test_last_response_for_conversational_no_action_query():
+    """Pure-conversational queries — no action match but the LLM has
+    a factual answer — populate `response` and produce no ops besides
+    the original text. main_window's _show_conversational_answer
+    consumer detects this case (actions empty + last_response set)
+    and renders the reply in the OSD instead of the 'didn't get
+    that' reset."""
+    p, mock_urlopen = _patched_parser({
+        "actions": [],
+        "response": "Paris.",
+    })
+    with mock_urlopen:
+        ops = p.parse("what is the capital of France")
+    assert p.last_response == "Paris."
+    # Empty actions → text op for the original transcript (regex
+    # supplement runs but won't match either, so just the text).
+    assert ("text", "what is the capital of France") in ops
+
+
 def test_last_response_strips_whitespace():
     """Models sometimes wrap with leading/trailing whitespace —
     consumers display this directly so leading newlines look bad."""

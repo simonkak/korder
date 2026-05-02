@@ -159,6 +159,7 @@ def _run_app() -> int:
     op_parser_is_warm = None
     op_parser_warm_up = None
     op_parser_last_response = None
+    op_parser_clear_history = None
     if cfg["inject"]["action_parser"].lower() == "llm":
         from korder.intent import IntentParser
         thinking = _bool(cfg["intent"]["thinking_mode"])
@@ -186,6 +187,10 @@ def _run_app() -> int:
         # actions; replaces PR #6's separate-call generation +
         # boot-time cache warming.
         op_parser_last_response = lambda: intent_parser.last_response
+        # Drop conversation history at session boundaries (mic close /
+        # cancel). Scopes follow-up resolution to a single dictation
+        # invocation — see IntentParser.clear_history.
+        op_parser_clear_history = intent_parser.clear_history
         flags = []
         if thinking:
             flags.append("thinking")
@@ -204,6 +209,7 @@ def _run_app() -> int:
             op_parser_is_warm=op_parser_is_warm,
             op_parser_warm_up=op_parser_warm_up,
             op_parser_last_response=op_parser_last_response,
+            op_parser_clear_history=op_parser_clear_history,
         )
     except InjectError as e:
         print(f"[korder] injection disabled: {e}", file=sys.stderr)
