@@ -157,6 +157,7 @@ class SettingsDialog(QDialog):
         self._tabs.addTab(self._build_actions_tab(), "Actions && Output")
         self._tabs.addTab(self._build_spotify_tab(), "Spotify")
         self._tabs.addTab(self._build_wake_tab(), "Wake word")
+        self._tabs.addTab(self._build_speech_tab(), "Speech")
         self._tabs.addTab(self._build_general_tab(), "General")
         layout.addWidget(self._tabs, 1)
 
@@ -460,6 +461,87 @@ class SettingsDialog(QDialog):
         outer.addStretch(1)
         return page
 
+    def _build_speech_tab(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
+        outer.setSpacing(_SPACING * 2)
+
+        info = _InfoBanner(
+            "Spoken responses: certain actions (like \"what's playing\") "
+            "can read their result aloud. Uses Piper, a local neural TTS "
+            "engine — voices auto-download to <code>~/.local/share/piper</code> "
+            "on first use. Requires the <code>tts</code> optional extra: "
+            "install with <code>uv sync --extra tts</code>."
+        )
+        outer.addWidget(info)
+
+        speech = QGroupBox("Speech")
+        f = _make_form(speech)
+
+        self._tts_enabled = QCheckBox("Speak action responses aloud")
+        self._tts_enabled.setToolTip(
+            "When checked, actions that produce a spoken response "
+            "(now_playing today; future weather/time/date) read their "
+            "result through TTS. Off by default."
+        )
+        f.addRow("", self._tts_enabled)
+
+        self._tts_voice_en = QLineEdit()
+        self._tts_voice_en.setPlaceholderText("en_US-amy-medium")
+        self._tts_voice_en.setToolTip(
+            "Piper voice ID for English. Browse available voices at "
+            "https://huggingface.co/rhasspy/piper-voices. Pre-fetch with "
+            "`python -m piper.download_voices VOICE_ID`."
+        )
+        f.addRow("English voice:", self._tts_voice_en)
+
+        self._tts_voice_pl = QLineEdit()
+        self._tts_voice_pl.setPlaceholderText("pl_PL-darkman-medium")
+        self._tts_voice_pl.setToolTip(
+            "Piper voice ID for Polish. Same catalogue as English; "
+            "pl_PL voices are scarcer than en_US — pl_PL-darkman-medium "
+            "and pl_PL-gosia-medium are the common picks."
+        )
+        f.addRow("Polish voice:", self._tts_voice_pl)
+
+        self._tts_speed = QDoubleSpinBox()
+        self._tts_speed.setRange(0.5, 2.0)
+        self._tts_speed.setSingleStep(0.1)
+        self._tts_speed.setDecimals(2)
+        self._tts_speed.setToolTip(
+            "Playback speed multiplier. 1.0 is the voice's natural rate; "
+            "increase to ~1.3 for faster delivery, decrease for slower. "
+            "Piper applies this via length-scale internally."
+        )
+        f.addRow("Speed:", self._tts_speed)
+
+        self._tts_suppress_when_playing = QCheckBox(
+            "Stay silent when something is already playing"
+        )
+        self._tts_suppress_when_playing.setToolTip(
+            "When checked, TTS doesn't fire if any MPRIS player is "
+            "currently Playing. Avoids talking over music. With this "
+            "off, TTS pauses the player, speaks, and resumes it — "
+            "clean dropout window but more invasive."
+        )
+        f.addRow("", self._tts_suppress_when_playing)
+
+        self._tts_speak_action_progress = QCheckBox(
+            "Also voice action progress narration"
+        )
+        self._tts_speak_action_progress.setToolTip(
+            "When checked, every progress narration emitted via the "
+            "speak bus is voiced (not just speakable_response actions). "
+            "Off by default — keeps TTS scoped to query answers rather "
+            "than chatty 'Searching Spotify…' lines."
+        )
+        f.addRow("", self._tts_speak_action_progress)
+
+        outer.addWidget(speech)
+        outer.addStretch(1)
+        return page
+
     def _build_general_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
@@ -571,6 +653,21 @@ class SettingsDialog(QDialog):
         except (KeyError, ValueError):
             self._wake_idle_timeout.setValue(5)
 
+        # TTS / Speech
+        self._tts_enabled.setChecked(_truthy(c["tts"].get("enabled", "false")))
+        self._tts_voice_en.setText(c["tts"].get("voice_en", "en_US-amy-medium"))
+        self._tts_voice_pl.setText(c["tts"].get("voice_pl", "pl_PL-darkman-medium"))
+        try:
+            self._tts_speed.setValue(float(c["tts"].get("speed", "1.0")))
+        except (KeyError, ValueError):
+            self._tts_speed.setValue(1.0)
+        self._tts_suppress_when_playing.setChecked(
+            _truthy(c["tts"].get("suppress_when_playing", "true"))
+        )
+        self._tts_speak_action_progress.setChecked(
+            _truthy(c["tts"].get("speak_action_progress", "false"))
+        )
+
         # UI
         self._show_history_on_start.setChecked(_truthy(c["ui"]["show_history_on_start"]))
         self._auto_stop_after_action.setChecked(_truthy(c["ui"]["auto_stop_after_action"]))
@@ -612,6 +709,17 @@ class SettingsDialog(QDialog):
         c["wake"]["phrase"] = self._wake_phrase.currentText().strip() or "hey_jarvis"
         c["wake"]["sensitivity"] = f"{self._wake_sensitivity.value():.2f}"
         c["wake"]["idle_timeout_s"] = str(self._wake_idle_timeout.value())
+
+        c["tts"]["enabled"] = "true" if self._tts_enabled.isChecked() else "false"
+        c["tts"]["voice_en"] = self._tts_voice_en.text().strip() or "en_US-amy-medium"
+        c["tts"]["voice_pl"] = self._tts_voice_pl.text().strip() or "pl_PL-darkman-medium"
+        c["tts"]["speed"] = f"{self._tts_speed.value():.2f}"
+        c["tts"]["suppress_when_playing"] = (
+            "true" if self._tts_suppress_when_playing.isChecked() else "false"
+        )
+        c["tts"]["speak_action_progress"] = (
+            "true" if self._tts_speak_action_progress.isChecked() else "false"
+        )
 
         c["ui"]["show_history_on_start"] = "true" if self._show_history_on_start.isChecked() else "false"
         c["ui"]["auto_stop_after_action"] = "true" if self._auto_stop_after_action.isChecked() else "false"

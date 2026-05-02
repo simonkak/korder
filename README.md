@@ -58,7 +58,7 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
     - Shortcuts: Ctrl+Backspace (delete word), Ctrl+A (select all), Ctrl+Z (undo), Shift+Home/End (select line)
     - Media playback: play/pause, stop, next/previous track (via kernel media keycodes — KDE routes them to whichever MPRIS player is active)
     - System volume: up/down/mute via `wpctl` directly (kernel keycodes raced with the auto-duck through KDE's separate volume cache and lost increments). Supports magnitude qualifiers — *"much louder"* steps 20%, *"a bit quieter"* steps 2%, *"louder by 20%"* takes the explicit number. Default step is 5%.
-    - Now playing: ask *"what's playing"* / *"co teraz gra"* and Korder reads MPRIS metadata from the active player (Spotify, Firefox, mpv, …) and pops a desktop notification with track + artist
+    - Now playing: ask *"what's playing"* / *"co teraz gra"* and Korder reads MPRIS metadata from the active player (Spotify, Firefox, mpv, …) and pops a desktop notification with track + artist. With the optional TTS extra enabled, also reads the answer aloud (Polish or English voice picked per-utterance).
     - Spotify: search and play albums, tracks, artists, or playlists via the Web API (free Client Credentials flow, no Premium required for search). When you don't say what kind ("Spotify play *Pink Floyd*"), one request fans out across all four types and the closest name match wins — artist > album > track > playlist within each match tier.
     - Web actions (xdg-routed, opens default browser): web search (DuckDuckGo / Google / Bing / Startpage / Ecosia), YouTube search, Wikipedia (auto-picks language from system locale), Maps
     - System: lock screen via `xdg-screensaver lock`; shutdown / reboot / sleep via `systemctl` (each gated behind voice confirmation — saying just *"shutdown computer"* doesn't fire it, you have to say *"yes"* / *"tak"* to a follow-up question)
@@ -149,6 +149,32 @@ uv sync --extra wake
 The IPC accepts `wake-toggle`, `wake-on`, and `wake-off` if you want a
 hotkey to flip wake-mode without opening the dialog (or you'd rather the
 mic isn't listening 24/7 and only enable it on demand).
+
+For spoken responses (e.g. *"co teraz gra"* read aloud through a
+synthesized voice), install the TTS extra and enable it in the
+Settings dialog's **Speech** tab:
+
+```bash
+uv sync --extra tts
+# Pre-fetch voice models. --data-dir matters: Korder reads from
+# ~/.local/share/piper, but the downloader defaults to CWD. Run via
+# `uv run` so the project's venv (where piper-tts lives) is used.
+mkdir -p ~/.local/share/piper
+uv run python -m piper.download_voices \
+  --data-dir ~/.local/share/piper \
+  en_US-amy-medium pl_PL-darkman-medium
+```
+
+Korder uses [Piper](https://github.com/OHF-Voice/piper1-gpl) — neural
+TTS that runs in real time on CPU. Polish + English voices are the
+defaults; any voice from the [Piper voices catalogue](https://huggingface.co/rhasspy/piper-voices)
+works, configured per-language in `[tts]`. Auto-detected per
+utterance from text content. While speaking, Korder pauses any
+playing MPRIS player (Spotify, mpv, browser MPRIS bridges) for a
+clean dropout, then resumes; flip `suppress_when_playing = true` to
+just stay silent during music instead. Today only `now_playing`
+opts in to spoken output; future actions add a call to
+`emit_progress_speak` to participate.
 
 ## Configuration
 
@@ -316,7 +342,7 @@ across whichever language Whisper transcribes.
 ## Development
 
 ```bash
-uv run pytest                                    # 186 tests, no external services required
+uv run pytest                                    # 206 tests, no external services required
 uv run pytest -m ollama                          # +44 integration tests against a live Gemma
 uv run python -m korder.intent_bench             # 21-case headless benchmark vs the current model
 uv run python -m korder.intent_bench --thinking  # …with Gemma's thinking step engaged

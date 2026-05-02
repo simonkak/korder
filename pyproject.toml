@@ -37,6 +37,17 @@ wake = [
     "onnxruntime>=1.16",
 ]
 
+# Spoken responses (issue #2). Piper is a fast, neural, ONNX-based TTS
+# (the ONNX runtime is shared with the wake extra). Voice models
+# auto-download on first use to ~/.local/share/piper. Polish + English
+# are the default voice set, but Piper supports many more languages —
+# voice IDs are configurable in [tts]. Users on the dictation-only
+# path don't need any of this.
+tts = [
+    "piper-tts>=1.2",
+    "onnxruntime>=1.16",
+]
+
 [tool.uv]
 # Side-step openwakeword's hard tflite-runtime requirement. We run
 # inference through onnxruntime instead, so tflite-runtime is dead

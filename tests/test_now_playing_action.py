@@ -1,6 +1,10 @@
 """Tests for the now_playing action — picker logic + qdbus parsing +
-notify-send fan-out. All subprocess calls are mocked so no real D-Bus
-or notification daemon is needed."""
+notify-send fan-out + TTS speak hook. All subprocess calls are mocked
+so no real D-Bus or notification daemon is needed.
+
+MPRIS helpers were extracted into korder.audio._mpris (issue #2);
+tests target that module for picker / list / status, and the
+now_playing module for parse_metadata / short-name / end-to-end."""
 from __future__ import annotations
 import subprocess
 from unittest.mock import patch
@@ -8,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from korder.actions import now_playing as np_mod
+from korder.audio import _mpris
 from korder.actions.base import get_action
 
 
@@ -17,7 +22,7 @@ def _completed(stdout: str = "", returncode: int = 0):
     )
 
 
-# --- Picker ----------------------------------------------------------------
+# --- Picker (now in audio/_mpris.py) ---------------------------------------
 
 
 def test_picker_prefers_playing_over_paused():
@@ -31,8 +36,8 @@ def test_picker_prefers_playing_over_paused():
         "org.mpris.MediaPlayer2.spotify": "Playing",
         "org.mpris.MediaPlayer2.mpv": "Stopped",
     }
-    with patch.object(np_mod, "_player_status", side_effect=lambda s: statuses[s]):
-        assert np_mod._pick_active_player(services) == "org.mpris.MediaPlayer2.spotify"
+    with patch.object(_mpris, "player_status", side_effect=lambda s: statuses[s]):
+        assert _mpris.pick_active_player(services) == "org.mpris.MediaPlayer2.spotify"
 
 
 def test_picker_falls_back_to_paused_when_nothing_playing():
@@ -41,21 +46,21 @@ def test_picker_falls_back_to_paused_when_nothing_playing():
         "org.mpris.MediaPlayer2.firefox": "Stopped",
         "org.mpris.MediaPlayer2.spotify": "Paused",
     }
-    with patch.object(np_mod, "_player_status", side_effect=lambda s: statuses[s]):
-        assert np_mod._pick_active_player(services) == "org.mpris.MediaPlayer2.spotify"
+    with patch.object(_mpris, "player_status", side_effect=lambda s: statuses[s]):
+        assert _mpris.pick_active_player(services) == "org.mpris.MediaPlayer2.spotify"
 
 
 def test_picker_falls_back_to_first_when_no_known_status():
     services = ["org.mpris.MediaPlayer2.foo", "org.mpris.MediaPlayer2.bar"]
-    with patch.object(np_mod, "_player_status", return_value=""):
-        assert np_mod._pick_active_player(services) == "org.mpris.MediaPlayer2.foo"
+    with patch.object(_mpris, "player_status", return_value=""):
+        assert _mpris.pick_active_player(services) == "org.mpris.MediaPlayer2.foo"
 
 
 def test_picker_returns_none_when_no_players():
-    assert np_mod._pick_active_player([]) is None
+    assert _mpris.pick_active_player([]) is None
 
 
-# --- Metadata parsing ------------------------------------------------------
+# --- Metadata parsing (still in now_playing.py) ----------------------------
 
 
 def test_parse_metadata_title_artist_album():
@@ -68,7 +73,7 @@ def test_parse_metadata_title_artist_album():
         "xesam:title: Stressed Out\n"
         "xesam:trackNumber: 2\n"
     )
-    with patch.object(np_mod, "_qdbus", return_value=out):
+    with patch.object(_mpris, "qdbus", return_value=out):
         md = np_mod._player_metadata("org.mpris.MediaPlayer2.spotify")
     assert md == {
         "album": "Blurryface",
@@ -80,17 +85,17 @@ def test_parse_metadata_title_artist_album():
 def test_parse_metadata_handles_missing_fields():
     """If MPRIS reports only a title, we don't fabricate other fields."""
     out = "xesam:title: Just the title\n"
-    with patch.object(np_mod, "_qdbus", return_value=out):
+    with patch.object(_mpris, "qdbus", return_value=out):
         md = np_mod._player_metadata("org.mpris.MediaPlayer2.x")
     assert md == {"title": "Just the title"}
 
 
 def test_parse_metadata_returns_empty_when_qdbus_fails():
-    with patch.object(np_mod, "_qdbus", return_value=None):
+    with patch.object(_mpris, "qdbus", return_value=None):
         assert np_mod._player_metadata("any") == {}
 
 
-# --- Service listing -------------------------------------------------------
+# --- Service listing (in audio/_mpris.py) ----------------------------------
 
 
 def test_list_mpris_players_filters_to_mpris_services():
@@ -100,8 +105,8 @@ def test_list_mpris_players_filters_to_mpris_services():
         " org.mpris.MediaPlayer2.firefox.instance_1_14161\n"
         " org.kde.plasmashell\n"
     )
-    with patch.object(np_mod, "_qdbus", return_value=out):
-        players = np_mod._list_mpris_players()
+    with patch.object(_mpris, "qdbus", return_value=out):
+        players = _mpris.list_players()
     assert players == [
         "org.mpris.MediaPlayer2.spotify",
         "org.mpris.MediaPlayer2.firefox.instance_1_14161",
@@ -109,8 +114,8 @@ def test_list_mpris_players_filters_to_mpris_services():
 
 
 def test_list_mpris_players_returns_empty_when_qdbus_missing():
-    with patch.object(np_mod, "_qdbus", return_value=None):
-        assert np_mod._list_mpris_players() == []
+    with patch.object(_mpris, "qdbus", return_value=None):
+        assert _mpris.list_players() == []
 
 
 # --- Short player names ----------------------------------------------------
@@ -128,6 +133,24 @@ def test_short_player_name(service, expected):
     assert np_mod._short_player_name(service) == expected
 
 
+# --- Lang detection (issue #2) --------------------------------------------
+
+
+def test_detect_lang_polish_diacritics():
+    assert np_mod._detect_lang("Małomiasteczkowy") == "pl"
+    assert np_mod._detect_lang("Stressed Out") == "en"
+    assert np_mod._detect_lang("Idź na żywo") == "pl"
+
+
+def test_spoken_form_uses_natural_separator():
+    assert np_mod._spoken_form("Stressed Out — Twenty One Pilots", "en") == \
+        "Stressed Out by Twenty One Pilots"
+    assert np_mod._spoken_form("Małomiasteczkowy — Dawid Podsiadło", "pl") == \
+        "Małomiasteczkowy, Dawid Podsiadło"
+    # No em-dash → return as-is (only a title is available)
+    assert np_mod._spoken_form("Solo Track", "en") == "Solo Track"
+
+
 # --- End-to-end _now_playing flow -----------------------------------------
 
 
@@ -138,12 +161,11 @@ def test_now_playing_fires_notify_with_track_info():
         if cmd[0] == "notify-send":
             notif_calls.append(list(cmd))
             return _completed()
-        # qdbus6 is mocked at higher levels
         raise AssertionError(f"unexpected subprocess call: {cmd!r}")
 
     with (
-        patch.object(np_mod, "_list_mpris_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
-        patch.object(np_mod, "_player_status", return_value="Playing"),
+        patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
+        patch.object(_mpris, "player_status", return_value="Playing"),
         patch.object(np_mod, "_player_metadata", return_value={
             "title": "Overcompensate", "artist": "Twenty One Pilots", "album": "Clancy",
         }),
@@ -152,7 +174,6 @@ def test_now_playing_fires_notify_with_track_info():
         np_mod._now_playing()
 
     assert len(notif_calls) == 1
-    # notify-send called with the right title (player + status icon) and body
     args = notif_calls[0]
     title_arg = args[-2]
     body_arg = args[-1]
@@ -171,7 +192,7 @@ def test_now_playing_says_nothing_playing_when_no_players():
         raise AssertionError(f"unexpected subprocess call: {cmd!r}")
 
     with (
-        patch.object(np_mod, "_list_mpris_players", return_value=[]),
+        patch.object(_mpris, "list_players", return_value=[]),
         patch.object(np_mod.subprocess, "run", side_effect=fake_run),
     ):
         np_mod._now_playing()
@@ -190,8 +211,8 @@ def test_now_playing_handles_paused_player():
         raise AssertionError(f"unexpected subprocess call: {cmd!r}")
 
     with (
-        patch.object(np_mod, "_list_mpris_players", return_value=["org.mpris.MediaPlayer2.mpv"]),
-        patch.object(np_mod, "_player_status", return_value="Paused"),
+        patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.mpv"]),
+        patch.object(_mpris, "player_status", return_value="Paused"),
         patch.object(np_mod, "_player_metadata", return_value={
             "title": "Some Track", "artist": "Some Artist",
         }),
@@ -212,8 +233,8 @@ def test_now_playing_handles_metadata_with_only_title():
         raise AssertionError(f"unexpected subprocess call: {cmd!r}")
 
     with (
-        patch.object(np_mod, "_list_mpris_players", return_value=["org.mpris.MediaPlayer2.x"]),
-        patch.object(np_mod, "_player_status", return_value="Playing"),
+        patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.x"]),
+        patch.object(_mpris, "player_status", return_value="Playing"),
         patch.object(np_mod, "_player_metadata", return_value={"title": "Solo Track"}),
         patch.object(np_mod.subprocess, "run", side_effect=fake_run),
     ):
@@ -228,12 +249,55 @@ def test_now_playing_survives_missing_notify_send():
         raise FileNotFoundError(cmd[0])
 
     with (
-        patch.object(np_mod, "_list_mpris_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
-        patch.object(np_mod, "_player_status", return_value="Playing"),
+        patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
+        patch.object(_mpris, "player_status", return_value="Playing"),
         patch.object(np_mod, "_player_metadata", return_value={"title": "X", "artist": "Y"}),
         patch.object(np_mod.subprocess, "run", side_effect=raise_fnf),
     ):
         np_mod._now_playing()  # must not raise
+
+
+# --- TTS speak hook (issue #2) --------------------------------------------
+
+
+def test_now_playing_emits_speak_when_track_resolved():
+    """The action should fire emit_progress_speak with the spoken
+    form so MainWindow can route to TTS when enabled."""
+    speak_calls: list[tuple[str, str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        return _completed()
+
+    with (
+        patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
+        patch.object(_mpris, "player_status", return_value="Playing"),
+        patch.object(np_mod, "_player_metadata", return_value={
+            "title": "Overcompensate", "artist": "Twenty One Pilots",
+        }),
+        patch.object(np_mod.subprocess, "run", side_effect=fake_run),
+        patch.object(np_mod, "emit_progress_speak", side_effect=lambda t, l: speak_calls.append((t, l))),
+    ):
+        np_mod._now_playing()
+
+    assert speak_calls == [("Overcompensate by Twenty One Pilots", "en")]
+
+
+def test_now_playing_does_not_speak_when_nothing_playing():
+    """No metadata → no speak call. The desktop notification covers
+    the diagnostic; voicing 'nothing is playing' would be noise."""
+    speak_calls: list[tuple[str, str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        return _completed()
+
+    with (
+        patch.object(_mpris, "list_players", return_value=[]),
+        patch.object(np_mod.subprocess, "run", side_effect=fake_run),
+        patch.object(np_mod, "emit_progress_speak", side_effect=lambda t, l: speak_calls.append((t, l))),
+    ):
+        np_mod._now_playing()
+
+    assert speak_calls == []
 
 
 # --- Action registration ---------------------------------------------------

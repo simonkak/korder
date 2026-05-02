@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import os
 import re
 import sys
@@ -25,9 +26,13 @@ from korder.audio.ducker import VolumeDucker
 from korder.audio.vad import SpeechDetector
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import YdotoolBackend, InjectError
+from korder.audio import _mpris
+from korder.audio.tts import SpeechEngine
 from korder.ui.osd import OSDWindow
 from korder.ui.i18n import t
-from korder.ui.progress import progress_signal
+from korder.ui.progress import progress_signal, progress_speak_signal
+
+log = logging.getLogger(__name__)
 
 
 class _TranscribeWorker(QThread):
@@ -193,6 +198,9 @@ class MainWindow(QMainWindow):
         ducker: VolumeDucker | None = None,
         wake_detector=None,
         wake_idle_timeout_s: float = 5.0,
+        tts: SpeechEngine | None = None,
+        tts_suppress_when_playing: bool = True,
+        tts_speak_action_progress: bool = False,
     ):
         super().__init__()
         self.setWindowTitle("Korder — transcript history")
@@ -262,6 +270,27 @@ class MainWindow(QMainWindow):
         # actions like spotify_play push "Searching for X" / "Found Y" /
         # "Playing Y" into the OSD center text while we're in Executing.
         progress_signal().connect(self._on_executing_progress)
+
+        # Spoken responses (issue #2). Off by default; enabled via
+        # [tts] enabled. The speak signal carries (text, lang) and
+        # routes to the SpeechEngine after MPRIS suppression /
+        # pause-resume coordination.
+        self._tts = tts
+        self._tts_suppress_when_playing = tts_suppress_when_playing
+        self._tts_speak_action_progress = tts_speak_action_progress
+        self._tts_paused_services: list[str] = []
+        # When set, a conversational-answer reset is gated on TTS
+        # finishing rather than the visual read-window timer. Avoids
+        # the OSD jumping back to "Listening" while the voice is
+        # still mid-sentence on long answers (TTS plays at ~90 ms/char
+        # vs the visual reading curve's 50 ms/char). Cleared when
+        # _resume_after_tts fires post-playback, or by the fallback
+        # timer if playback never reports finished.
+        self._await_tts_for_answer_reset = False
+        progress_speak_signal().connect(self._on_speak_text)
+        if self._tts is not None:
+            self._tts.playback_finished.connect(self._resume_after_tts)
+            self._tts.playback_finished.connect(self._on_tts_done_check_answer_reset)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -376,9 +405,14 @@ class MainWindow(QMainWindow):
         Called from the IPC server when the user binds a global hotkey
         (typically Esc) to ``korder cancel``. Discards the audio buffer,
         stops timers, hides the OSD. No-op if not currently recording.
+        Also stops any in-flight TTS — Esc means stop everything.
         """
         if not self._recorder.is_recording:
             return
+        if self._tts is not None:
+            self._tts.cancel()
+            self._resume_after_tts()
+        self._await_tts_for_answer_reset = False
         self._partial_timer.stop()
         self._osd_throttle_timer.stop()
         self._wake_idle_timer.stop()
@@ -406,6 +440,11 @@ class MainWindow(QMainWindow):
     def _start_recording(self) -> None:
         if self._recorder.is_recording:
             return
+        # If a TTS utterance is mid-playback, cancel it — user
+        # speaking is implicit "interrupt and listen to me".
+        if self._tts is not None and self._tts.is_playing():
+            self._tts.cancel()
+            self._resume_after_tts()
         try:
             self._recorder.start()
         except Exception as e:
@@ -850,11 +889,42 @@ class MainWindow(QMainWindow):
             return
         print(f"[korder] conversational answer: {answer!r}", flush=True)
         self._osd.set_executing_progress(answer)
-        # Read window: ~50 ms per character + 1.5 s minimum + 7 s
-        # ceiling. Long enough for Polish multi-clause sentences, short
-        # enough that an absent user doesn't sit on a stale answer.
+        # Visual read window: ~50 ms per character + 1.5 s minimum,
+        # 7 s ceiling. Long enough for Polish multi-clause sentences,
+        # short enough that an absent user doesn't sit on a stale
+        # answer. Used directly when TTS won't play, and as a floor
+        # for the fallback timer when TTS will play.
         read_ms = max(1500, min(7000, 1500 + 50 * len(answer)))
-        QTimer.singleShot(read_ms, self._reset_to_listening_after_answer)
+
+        # Speak the answer too (issue #2). Conversational answers
+        # are the most useful TTS use case — eyes-busy users want to
+        # hear factual replies, not glance at the OSD. Route through
+        # _on_speak_text directly (not emit_progress_speak) because
+        # the OSD render already happened above; bus would re-render
+        # redundantly. _on_speak_text gives us the MPRIS pause/resume
+        # + suppress_when_playing coordination for free.
+        if self._tts is not None and not self._is_tts_suppressed():
+            lang = "pl" if any(c in answer for c in "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ") else "en"
+            self._await_tts_for_answer_reset = True
+            self._on_speak_text(answer, lang)
+            # Fallback: if playback_finished never fires (engine
+            # error mid-synth, sounddevice hiccup), reset anyway
+            # after a generous window. read_ms + 8 s covers even
+            # long Polish sentences with conservative TTS rate.
+            QTimer.singleShot(read_ms + 8000, self._fallback_answer_reset)
+        else:
+            QTimer.singleShot(read_ms, self._reset_to_listening_after_answer)
+
+    def _fallback_answer_reset(self) -> None:
+        """Belt-and-suspenders companion to _on_tts_done_check_answer_reset.
+        If TTS never reported finished (engine fault, suppression
+        race), this expires after a generous window and triggers
+        the reset anyway. No-op when TTS already cleared the flag."""
+        if not self._await_tts_for_answer_reset:
+            return
+        self._await_tts_for_answer_reset = False
+        log.info("tts: playback_finished never fired — falling back to timer reset")
+        self._reset_to_listening_after_answer()
 
     def _reset_to_listening_after_answer(self) -> None:
         """Mirror of _reset_to_listening_after_miss but for the path
@@ -933,10 +1003,15 @@ class MainWindow(QMainWindow):
         already aborted the inject batch (no text typed, no actions
         fired). Tear down the recorder + OSD the same way the ESC-key
         cancel path does, and clear any pending-action / auto-stop
-        bookkeeping so the next session starts fresh."""
+        bookkeeping so the next session starts fresh. Also stops any
+        in-flight TTS — cancel means cancel everything."""
         print("[korder] cancel_session: aborting recording on user request", flush=True)
         self._auto_stop_pending = False
         self._pending_action = None
+        if self._tts is not None:
+            self._tts.cancel()
+            self._resume_after_tts()  # restore music if we paused it
+        self._await_tts_for_answer_reset = False
         self.cancel_recording()
 
     def _on_inject_failed(self, msg: str) -> None:
@@ -958,6 +1033,83 @@ class MainWindow(QMainWindow):
         if not text:
             return
         self._osd.set_executing_progress(text)
+
+    def _on_speak_text(self, text: str, lang: str) -> None:
+        """TTS-routed counterpart to _on_executing_progress. Triggered
+        by emit_progress_speak() from any action that wants spoken
+        output. Suppressed when:
+          - TTS engine is None / disabled
+          - suppress_when_playing is true and an MPRIS player is Playing
+          - speak_action_progress is false AND the source isn't a
+            speakable_response (we can't tell yet — for v1 every speak
+            signal is honored when TTS is enabled)
+        Pauses any Playing MPRIS service for the synth+playback window
+        and resumes after, so the synthesized voice isn't drowned
+        under music."""
+        if self._tts is None or not text:
+            return
+        if not self._tts.is_available():
+            return
+        if self._tts_suppress_when_playing and _mpris.any_playing():
+            log.info("tts: suppressed (something is playing)")
+            return
+        # Pause music, queue the utterance, resume on playback_finished.
+        # We can't keep the with-block open across the async say()
+        # because the worker thread synthesizes asynchronously. Using
+        # a two-step: pause now, schedule resume on playback_finished.
+        # For v1 simplicity, do it inline: pause, queue, return — the
+        # SpeechEngine's playback_finished signal handles resume.
+        self._mpris_pause_for_tts()
+        self._tts.say(text, lang)
+
+    def _mpris_pause_for_tts(self) -> None:
+        """Pause every Playing MPRIS service and remember which ones
+        we paused so _resume_after_tts can put them back. Idempotent —
+        if we already paused this turn, the second call is a no-op."""
+        if getattr(self, "_tts_paused_services", None):
+            return
+        paused: list[str] = []
+        for svc in _mpris.list_players():
+            if _mpris.player_status(svc) == "Playing":
+                if _mpris.qdbus(svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Pause") is not None:
+                    paused.append(svc)
+        self._tts_paused_services = paused
+        if paused:
+            log.info("tts: paused %d MPRIS service(s) for speech", len(paused))
+
+    def _resume_after_tts(self) -> None:
+        """Slot for SpeechEngine.playback_finished. Resume whatever
+        we paused for this utterance."""
+        services = getattr(self, "_tts_paused_services", None)
+        if not services:
+            return
+        for svc in services:
+            _mpris.qdbus(svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Play")
+        log.info("tts: resumed %d MPRIS service(s)", len(services))
+        self._tts_paused_services = []
+
+    def _on_tts_done_check_answer_reset(self) -> None:
+        """Second slot bound to playback_finished. When a
+        conversational-answer reset is pending (set by
+        _show_conversational_answer when TTS will play), this is
+        the trigger that flips the OSD back to listening — exactly
+        synchronized with voice playback ending instead of the
+        visual read-window timer guessing wrong on long answers."""
+        if not self._await_tts_for_answer_reset:
+            return
+        self._await_tts_for_answer_reset = False
+        self._reset_to_listening_after_answer()
+
+    def _is_tts_suppressed(self) -> bool:
+        """Mirrors the suppression test inside _on_speak_text. Used
+        by callers that need to know in advance whether TTS will
+        actually play (e.g. to choose between the playback-finished
+        reset path and the visual-only timer path)."""
+        if self._tts is None or not self._tts.is_available():
+            return True
+        if self._tts_suppress_when_playing and _mpris.any_playing():
+            return True
+        return False
 
     def _auto_stop(self) -> None:
         """Quietly stop recording — used after a command finishes.
