@@ -102,7 +102,8 @@ _SYSTEM_PROMPT = (
     "- The `phrase` field must be a substring that appears verbatim in the user input.\n"
     "- The `name` field must be one of the action names listed in the user message.\n"
     "- Multiple actions in one input are allowed; return them in the order they appear.\n"
-    "- Descriptive prose about a command (e.g., 'she pressed enter on the keyboard') is NOT an action.\n"
+    "- Descriptive prose about a command (e.g., 'the docs say to press enter after each line', 'pressing enter felt satisfying') is NOT an action.\n"
+    "- Song / album / artist names that incidentally contain a verb the user did NOT issue ARE NOT descriptions — they're query content. 'Odtwórz w Spotify all the things she said' is a Spotify command with query='all the things she said', not narrative.\n"
     "- For parameterized actions, extract relevant fields into `params`. If a required parameter "
     "is not present in the input, leave `params` empty or omit it — do NOT invent values.\n"
     "\n"
@@ -210,7 +211,8 @@ def _build_user_prompt(
         '  "Odtwórz utwór Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz utwór Lose Yourself w Spotify", "name": "spotify_search", "params": {"query": "Lose Yourself", "kind": "track"}}]}\n'
         '  "Play Bohemian Rhapsody on Spotify" → {"actions": [{"phrase": "Play Bohemian Rhapsody on Spotify", "name": "spotify_search", "params": {"query": "Bohemian Rhapsody"}}]}\n'
         '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
-        '  "she pressed enter on the keyboard" → {"actions": []}\n'
+        '  "the docs say to press enter after each line" → {"actions": []}\n'
+        '  "Odtwórz all the things she said w Spotify" → {"actions": [{"phrase": "Odtwórz all the things she said w Spotify", "name": "spotify_search", "params": {"query": "all the things she said"}}]}\n'
         '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
         '  "uśpij komputer" → {"actions": [{"phrase": "uśpij komputer", "name": "sleep"}], "response": "Czy uśpić komputer? Powiedz tak lub nie."}\n'
         '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
