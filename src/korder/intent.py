@@ -203,9 +203,8 @@ def _build_user_prompt(
         '  "wikipedia, Paryż" → {"actions": [{"phrase": "wikipedia, Paryż", "name": "wikipedia_search", "params": {"query": "Paryż"}}]}\n'
         '  "Zakończę." → {"actions": [{"phrase": "Zakończę.", "name": "cancel_session"}]}\n'
         "  Follow-ups (use prior turn's topic — for both factual answers AND action params,\n"
-        "  do NOT grab structural nouns like 'strona', 'miasto', 'page'):\n"
-        '    prior: User "Co powiesz o mieście Warszawa?" / Assistant "Warszawa to duże miasto..."\n'
-        '    now:   "ile ma mieszkańców?" → {"actions": [], "response": "Warszawa ma ponad 1,8 miliona mieszkańców."}\n'
+        "  do NOT grab structural nouns like 'strona', 'miasto', 'page'.\n"
+        "  The TOPIC comes from the prior turn, NOT from the example below):\n"
         '    prior: User "Jaka jest stolica Francji?" / Assistant "Paryż."\n'
         '    now:   "A Polski?" → {"actions": [], "response": "Warszawa."}\n'
         '    prior: User "Co możesz powiedzieć o Gdańsku?" / Assistant "Gdańsk to piękne miasto..."\n'
