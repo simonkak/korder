@@ -1041,6 +1041,16 @@ class MainWindow(QMainWindow):
             write_mode=self._write_mode,
             placeholder_key="didnt_get_that",
         )
+        # Speak it too (issue #2). The "didn't get that" feedback is
+        # an eyes-busy signal — user said something Korder didn't
+        # understand; without TTS they have no idea whether their
+        # command was processed. Lang from system locale since this
+        # is a static i18n string.
+        if self._tts is not None:
+            from korder.ui.i18n import current_locale
+            phrase = t("didnt_get_that")
+            lang = "pl" if current_locale() == "pl" else "en"
+            self._on_speak_text(phrase, lang)
 
     def _on_parse_started(self, prompt: str) -> None:
         """LLM parse is starting (only fires for the slow LLM parser)."""
