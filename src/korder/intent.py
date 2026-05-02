@@ -20,9 +20,28 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 
 from korder.actions.base import all_actions, get_action
 from korder.actions.parser import split_into_ops
+
+
+@dataclass(frozen=True)
+class Turn:
+    """One past exchange in the current dictation session: what the
+    user said, what action (if any) fired, and what natural-language
+    reply the LLM produced. Used as conversation context for
+    follow-up resolution — e.g. 'A Polski?' after asking about
+    France's capital."""
+    user_text: str
+    action_name: str  # main action name fired, "" if none
+    response: str  # last_response from that turn, "" if none
+
+
+# Number of past turns to feed into the parser as context. 4 covers
+# typical Q&A → follow-up → follow-up patterns without bloating the
+# prompt enough to risk a meaningful latency or accuracy regression.
+_MAX_HISTORY_TURNS = 4
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
 _OLLAMA_PS_URL = "http://localhost:11434/api/ps"
@@ -101,7 +120,13 @@ _SYSTEM_PROMPT = (
     "you'll only hallucinate.\n"
     "Always write `response` in the same language as the input transcript. "
     "For pure dictation (description, narrative, prose with no question "
-    "and no command), leave `response` empty."
+    "and no command), leave `response` empty.\n"
+    "\n"
+    "When previous turns are provided as context, USE them to resolve "
+    "follow-up questions like 'and Poland?' after 'what is the capital "
+    "of France?' — treat the new input as if its referring expressions "
+    "point at the prior turns. Don't repeat the entire prior question "
+    "back; just answer."
 )
 
 
@@ -122,14 +147,39 @@ def _render_action_catalogue(*, show_triggers: bool) -> str:
     return "\n".join(lines)
 
 
-def _build_user_prompt(transcript: str, *, show_triggers: bool) -> str:
-    """Per-call user message: action catalogue + transcript + reminder of
-    the JSON output format."""
+def _render_history(history: list[Turn]) -> str:
+    """Format prior turns as a 'Recent conversation' block to prepend to
+    the analysis section of the user prompt. Empty string when there's
+    no history. Each turn is one User: + Assistant: pair, trimmed of
+    empty fields so action-only turns don't print blank Assistant lines."""
+    if not history:
+        return ""
+    lines = ["Recent conversation in this session (oldest first):"]
+    for turn in history:
+        lines.append(f"  User: {turn.user_text!r}")
+        if turn.response:
+            lines.append(f"  Assistant: {turn.response!r}")
+        elif turn.action_name:
+            lines.append(f"  (Korder fired action: {turn.action_name})")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_user_prompt(
+    transcript: str,
+    history: list[Turn] | None = None,
+    *,
+    show_triggers: bool,
+) -> str:
+    """Per-call user message: action catalogue + optional conversation
+    history + transcript + reminder of the JSON output format."""
     catalogue = _render_action_catalogue(show_triggers=show_triggers)
+    history_block = _render_history(history or [])
     return (
         "Available actions:\n"
         f"{catalogue}\n"
         "\n"
+        + history_block +
         "A few examples to anchor your output shape:\n"
         '  "hello world" → {"actions": []}\n'
         '  "Naciśnij Enter." → {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}\n'
@@ -175,6 +225,12 @@ class IntentParser:
         # ground for future conversational/TTS features. Empty string
         # when the LLM didn't include a response (the common case).
         self.last_response: str = ""
+        # Rolling conversation history, fed back into the parser prompt
+        # so follow-up questions ('A Polski?' after the France-capital
+        # question) resolve against prior turns. Cleared by
+        # clear_history() on dictation-session boundaries
+        # (auto-stop, cancel, hotkey toggle-off).
+        self._history: list[Turn] = []
 
     def warm_up(self) -> None:
         """Fire-and-forget: tell ollama to page the model into VRAM,
@@ -247,6 +303,33 @@ class IntentParser:
                 return True
         return False
 
+    def clear_history(self) -> None:
+        """Drop the conversation context. Called by main_window at
+        dictation-session boundaries (recorder stops, cancel) so the
+        next session starts fresh — yesterday's 'and Polish?' shouldn't
+        resolve against last week's France question."""
+        if self._history:
+            print(f"[korder] history cleared ({len(self._history)} turns)", flush=True, file=sys.stderr)
+        self._history = []
+
+    def _push_turn(self, transcript: str, actions: list, response: str) -> None:
+        """Append a Turn for this parse to history, trimmed to the most
+        recent _MAX_HISTORY_TURNS entries. Action-only turns (no
+        response) still get recorded for context — 'press enter' →
+        'and now backspace?' should plausibly work."""
+        action_name = ""
+        if isinstance(actions, list) and actions:
+            first = actions[0]
+            if isinstance(first, dict):
+                action_name = first.get("name") or ""
+        self._history.append(Turn(
+            user_text=transcript,
+            action_name=action_name,
+            response=response,
+        ))
+        if len(self._history) > _MAX_HISTORY_TURNS:
+            self._history = self._history[-_MAX_HISTORY_TURNS:]
+
     def parse(self, transcript: str) -> list[tuple]:
         if not transcript:
             return []
@@ -255,6 +338,10 @@ class IntentParser:
         except Exception as e:
             print(f"[korder] intent LLM failed, falling back to regex: {e}", flush=True, file=sys.stderr)
             return split_into_ops(transcript)
+        # Record this turn BEFORE the regex-supplement / segmentation
+        # path forks — history is about what the LLM saw and produced,
+        # which is the input to the next round's resolution.
+        self._push_turn(transcript, actions, self.last_response)
 
         # Safety net: clear hallucinated `confirm` params. Smaller
         # models (e2b) sometimes invent a confirm value even when the
@@ -302,7 +389,9 @@ class IntentParser:
 
     def _call_ollama(self, transcript: str) -> list:
         user_prompt = _build_user_prompt(
-            transcript, show_triggers=self.show_triggers_in_prompt
+            transcript,
+            self._history,
+            show_triggers=self.show_triggers_in_prompt,
         )
         payload: dict = {
             "model": self.model,

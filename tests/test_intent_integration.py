@@ -36,6 +36,18 @@ def parser(integration_model: str) -> IntentParser:
     )
 
 
+@pytest.fixture(autouse=True)
+def _reset_parser_history(request):
+    """The parser is module-scoped (to keep ollama warm) but
+    accumulates conversation history across parses. Without a reset,
+    a later test sees prior tests' transcripts in its prompt, which
+    degrades accuracy. Clear before each test."""
+    p = request.getfixturevalue("parser") if "parser" in request.fixturenames else None
+    if p is not None:
+        p.clear_history()
+    yield
+
+
 # ---- Synonym recognition (the core user complaint) -----------------------
 
 @pytest.mark.parametrize("phrase", [

@@ -408,6 +408,12 @@ class MainWindow(QMainWindow):
             self._dictation_via_wake = False
             return
         self._begin_dictation_lifecycle()
+        # Defensive: clear any history left behind by a parse that
+        # completed on the worker thread after the previous
+        # _stop_recording cleared. Cheap, idempotent — typically a
+        # no-op since stop already cleared.
+        if self._injector is not None:
+            self._injector.clear_op_parser_history()
         self._status.setText(t("status_listening"))
         self._osd.set_listening(write_mode=self._write_mode)
         # Opportunistic preload — kick the model load now (fire-and-
@@ -470,6 +476,13 @@ class MainWindow(QMainWindow):
         # transcription proceeds or short-circuits below. Whisper runs
         # off-thread; we don't want playback held down for the duration.
         self._end_dictation_lifecycle()
+        # End-of-session: drop the parser's conversation history so the
+        # next 'hey jarvis' (or hotkey toggle) starts fresh. Within ONE
+        # session, follow-ups like 'A Polski?' resolve against prior
+        # turns; across sessions, that resolution would be more
+        # confusing than helpful.
+        if self._injector is not None:
+            self._injector.clear_op_parser_history()
         self._emit_tray_state()
         if not transcribe_tail:
             self._status.setText(t("status_idle"))
