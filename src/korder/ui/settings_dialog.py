@@ -157,6 +157,7 @@ class SettingsDialog(QDialog):
         self._tabs.addTab(self._build_actions_tab(), "Actions && Output")
         self._tabs.addTab(self._build_spotify_tab(), "Spotify")
         self._tabs.addTab(self._build_wake_tab(), "Wake word")
+        self._tabs.addTab(self._build_speech_tab(), "Speech")
         self._tabs.addTab(self._build_general_tab(), "General")
         layout.addWidget(self._tabs, 1)
 
@@ -219,6 +220,16 @@ class SettingsDialog(QDialog):
             "30 % is usually enough to prevent bleed without going silent."
         )
         af.addRow("Duck to:", self._duck_volume_pct)
+
+        self._start_chime = QCheckBox("Play soft chime when dictation starts")
+        self._start_chime.setToolTip(
+            "Plays a 200 ms two-tone cue when the mic opens (hotkey "
+            "or wake-word). Mic capture is deliberately deferred until "
+            "the chime finishes so Whisper doesn't transcribe it via "
+            "speaker bleed. Adds ~250 ms perceived latency in exchange "
+            "for an audible 'go' signal."
+        )
+        af.addRow("", self._start_chime)
         outer.addWidget(audio)
 
         # Whisper group
@@ -460,6 +471,106 @@ class SettingsDialog(QDialog):
         outer.addStretch(1)
         return page
 
+    def _build_speech_tab(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
+        outer.setSpacing(_SPACING * 2)
+
+        info = _InfoBanner(
+            "Spoken responses: certain actions (like \"what's playing\") "
+            "can read their result aloud. Uses Piper, a local neural TTS "
+            "engine — voices auto-download to <code>~/.local/share/piper</code> "
+            "on first use. Requires the <code>tts</code> optional extra: "
+            "install with <code>uv sync --extra tts</code>."
+        )
+        outer.addWidget(info)
+
+        speech = QGroupBox("Speech")
+        f = _make_form(speech)
+
+        self._tts_enabled = QCheckBox("Speak action responses aloud")
+        self._tts_enabled.setToolTip(
+            "When checked, actions that produce a spoken response "
+            "(now_playing today; future weather/time/date) read their "
+            "result through TTS. Off by default."
+        )
+        f.addRow("", self._tts_enabled)
+
+        # Voice pickers — editable combo boxes auto-populated from
+        # ~/.local/share/piper at dialog-open time. User can also
+        # type a voice ID that isn't downloaded yet (Korder logs a
+        # missing-voice error on first use rather than at config
+        # save, so unknown IDs are valid input here).
+        try:
+            from korder.audio.tts import voices_available_on_disk
+            en_voices = voices_available_on_disk("en")
+            pl_voices = voices_available_on_disk("pl")
+        except Exception:
+            en_voices, pl_voices = [], []
+
+        self._tts_voice_en = QComboBox()
+        self._tts_voice_en.setEditable(True)
+        if en_voices:
+            self._tts_voice_en.addItems(en_voices)
+        self._tts_voice_en.setToolTip(
+            "Piper voice ID for English. The list shows voices "
+            "currently downloaded under ~/.local/share/piper; type "
+            "another ID to use a voice not on disk yet (download via "
+            "`uv run python -m piper.download_voices --data-dir "
+            "~/.local/share/piper VOICE_ID`). Catalogue: "
+            "https://huggingface.co/rhasspy/piper-voices"
+        )
+        f.addRow("English voice:", self._tts_voice_en)
+
+        self._tts_voice_pl = QComboBox()
+        self._tts_voice_pl.setEditable(True)
+        if pl_voices:
+            self._tts_voice_pl.addItems(pl_voices)
+        self._tts_voice_pl.setToolTip(
+            "Piper voice ID for Polish. Same lookup as English; "
+            "pl_PL voices are scarcer than en_US — pl_PL-darkman-medium "
+            "and pl_PL-gosia-medium are the common picks."
+        )
+        f.addRow("Polish voice:", self._tts_voice_pl)
+
+        self._tts_speed = QDoubleSpinBox()
+        self._tts_speed.setRange(0.5, 2.0)
+        self._tts_speed.setSingleStep(0.1)
+        self._tts_speed.setDecimals(2)
+        self._tts_speed.setToolTip(
+            "Playback speed multiplier. 1.0 is the voice's natural rate; "
+            "increase to ~1.3 for faster delivery, decrease for slower. "
+            "Piper applies this via length-scale internally."
+        )
+        f.addRow("Speed:", self._tts_speed)
+
+        self._tts_suppress_when_playing = QCheckBox(
+            "Stay silent when something is already playing"
+        )
+        self._tts_suppress_when_playing.setToolTip(
+            "When checked, TTS doesn't fire if any MPRIS player is "
+            "currently Playing. Avoids talking over music. With this "
+            "off, TTS pauses the player, speaks, and resumes it — "
+            "clean dropout window but more invasive."
+        )
+        f.addRow("", self._tts_suppress_when_playing)
+
+        self._tts_speak_action_progress = QCheckBox(
+            "Also voice action progress narration"
+        )
+        self._tts_speak_action_progress.setToolTip(
+            "When checked, every progress narration emitted via the "
+            "speak bus is voiced (not just speakable_response actions). "
+            "Off by default — keeps TTS scoped to query answers rather "
+            "than chatty 'Searching Spotify…' lines."
+        )
+        f.addRow("", self._tts_speak_action_progress)
+
+        outer.addWidget(speech)
+        outer.addStretch(1)
+        return page
+
     def _build_general_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
@@ -517,6 +628,7 @@ class SettingsDialog(QDialog):
             self._duck_volume_pct.setValue(int(c["audio"].get("duck_volume_pct", "30")))
         except (KeyError, ValueError):
             self._duck_volume_pct.setValue(30)
+        self._start_chime.setChecked(_truthy(c["audio"].get("start_chime", "true")))
 
         # Whisper
         self._model.setCurrentText(c["whisper"]["model"])
@@ -571,6 +683,23 @@ class SettingsDialog(QDialog):
         except (KeyError, ValueError):
             self._wake_idle_timeout.setValue(5)
 
+        # TTS / Speech
+        self._tts_enabled.setChecked(_truthy(c["tts"].get("enabled", "false")))
+        # Voice combo boxes are editable — setCurrentText accepts any
+        # value (including ones not in the dropdown list).
+        self._tts_voice_en.setCurrentText(c["tts"].get("voice_en", "en_US-amy-medium"))
+        self._tts_voice_pl.setCurrentText(c["tts"].get("voice_pl", "pl_PL-darkman-medium"))
+        try:
+            self._tts_speed.setValue(float(c["tts"].get("speed", "1.0")))
+        except (KeyError, ValueError):
+            self._tts_speed.setValue(1.0)
+        self._tts_suppress_when_playing.setChecked(
+            _truthy(c["tts"].get("suppress_when_playing", "true"))
+        )
+        self._tts_speak_action_progress.setChecked(
+            _truthy(c["tts"].get("speak_action_progress", "false"))
+        )
+
         # UI
         self._show_history_on_start.setChecked(_truthy(c["ui"]["show_history_on_start"]))
         self._auto_stop_after_action.setChecked(_truthy(c["ui"]["auto_stop_after_action"]))
@@ -584,6 +713,7 @@ class SettingsDialog(QDialog):
             "true" if self._duck_during_recording.isChecked() else "false"
         )
         c["audio"]["duck_volume_pct"] = str(self._duck_volume_pct.value())
+        c["audio"]["start_chime"] = "true" if self._start_chime.isChecked() else "false"
 
         c["whisper"]["model"] = self._model.currentText().strip()
         c["whisper"]["language"] = (self._language.currentData() or self._language.currentText()).strip()
@@ -612,6 +742,17 @@ class SettingsDialog(QDialog):
         c["wake"]["phrase"] = self._wake_phrase.currentText().strip() or "hey_jarvis"
         c["wake"]["sensitivity"] = f"{self._wake_sensitivity.value():.2f}"
         c["wake"]["idle_timeout_s"] = str(self._wake_idle_timeout.value())
+
+        c["tts"]["enabled"] = "true" if self._tts_enabled.isChecked() else "false"
+        c["tts"]["voice_en"] = self._tts_voice_en.currentText().strip() or "en_US-amy-medium"
+        c["tts"]["voice_pl"] = self._tts_voice_pl.currentText().strip() or "pl_PL-darkman-medium"
+        c["tts"]["speed"] = f"{self._tts_speed.value():.2f}"
+        c["tts"]["suppress_when_playing"] = (
+            "true" if self._tts_suppress_when_playing.isChecked() else "false"
+        )
+        c["tts"]["speak_action_progress"] = (
+            "true" if self._tts_speak_action_progress.isChecked() else "false"
+        )
 
         c["ui"]["show_history_on_start"] = "true" if self._show_history_on_start.isChecked() else "false"
         c["ui"]["auto_stop_after_action"] = "true" if self._auto_stop_after_action.isChecked() else "false"

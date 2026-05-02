@@ -58,7 +58,7 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
     - Shortcuts: Ctrl+Backspace (delete word), Ctrl+A (select all), Ctrl+Z (undo), Shift+Home/End (select line)
     - Media playback: play/pause, stop, next/previous track (via kernel media keycodes — KDE routes them to whichever MPRIS player is active)
     - System volume: up/down/mute via `wpctl` directly (kernel keycodes raced with the auto-duck through KDE's separate volume cache and lost increments). Supports magnitude qualifiers — *"much louder"* steps 20%, *"a bit quieter"* steps 2%, *"louder by 20%"* takes the explicit number. Default step is 5%.
-    - Now playing: ask *"what's playing"* / *"co teraz gra"* and Korder reads MPRIS metadata from the active player (Spotify, Firefox, mpv, …) and pops a desktop notification with track + artist
+    - Now playing: ask *"what's playing"* / *"co teraz gra"* and Korder reads MPRIS metadata from the active player (Spotify, Firefox, mpv, …) and pops a desktop notification with track + artist. With the optional TTS extra enabled, also reads the answer aloud (Polish or English voice picked per-utterance).
     - Spotify: search and play albums, tracks, artists, or playlists via the Web API (free Client Credentials flow, no Premium required for search). When you don't say what kind ("Spotify play *Pink Floyd*"), one request fans out across all four types and the closest name match wins — artist > album > track > playlist within each match tier.
     - Web actions (xdg-routed, opens default browser): web search (DuckDuckGo / Google / Bing / Startpage / Ecosia), YouTube search, Wikipedia (auto-picks language from system locale), Maps
     - System: lock screen via `xdg-screensaver lock`; shutdown / reboot / sleep via `systemctl` (each gated behind voice confirmation — saying just *"shutdown computer"* doesn't fire it, you have to say *"yes"* / *"tak"* to a follow-up question)
@@ -72,6 +72,7 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
 - **Opportunistic LLM preload** — when the hotkey opens the mic, Korder fires a fire-and-forget load request to ollama in parallel with your speech + Whisper. By the time the transcript is ready the model is usually resident, so the LLM call jumps straight to *Thinking* even when `keep_alive_s` had expired. Cold-load logging on stderr shows whether warm-up beat Whisper to the finish.
 - **Auto-duck system volume while listening** (default on) — drops the default PipeWire sink to 30 % when the mic opens and restores the original level on stop, so speaker bleed stops confusing Whisper. Skipped if you're already quieter than the target; restored on crash via `atexit`. Volume commands ("louder", "quieter", "mute") restore the duck snapshot *before* the wpctl step lands, so an increment isn't silently overwritten by the post-action restore. Requires `wpctl`.
 - **Wake-word activation** (off by default, opt-in via the **Wake word** Settings tab) — when enabled, the mic stays open and the configured phrase ("hey jarvis", "alexa", "hey mycroft", or "hey rhasspy" from openWakeWord's pretrained catalog) fires a dictation session as if you'd pressed the hotkey. Hotkey path keeps working alongside. Tray icon flips to a soft-blue waveform while wake-listening, warm accent while dictating; tooltip changes too so you always know whether the mic is open and why. Auto-cancels back to wake-listening on accidental wakes (configurable idle-timeout). Requires the optional dep — install with `uv sync --extra wake`. Detector runs on CPU via ONNX, ~5 % of one core when idle.
+- **Spoken responses** (off by default, opt-in via the **Speech** Settings tab) — when enabled, conversational answers and `now_playing` results read aloud through a [Piper](https://github.com/OHF-Voice/piper1-gpl) voice. Polish + English defaults; per-utterance language switching driven by diacritic detection (so *"Stressed Out by Twenty One Pilots"* speaks in EN and *"Małomiasteczkowy"* speaks in PL even within the same session). While speaking, Korder pauses any active MPRIS player (Spotify, mpv, browser MPRIS bridges) for a clean dropout, then resumes. Requires the optional dep + voice models — install with `uv sync --extra tts` and pre-fetch voices (see Run section below). Real-time on CPU; per-utterance synthesis ~200–500 ms.
 
 ## OS dependencies
 
@@ -83,6 +84,11 @@ names will differ but the binaries are the same.
 ```bash
 # Input synthesis (Wayland-friendly)
 sudo pacman -S ydotool wl-clipboard
+
+# Audio decode (for the start-listening chime — soundfile binds to
+# libsndfile; current libsndfile reads Opus). Pre-installed on most
+# desktop distros; included for completeness.
+sudo pacman -S libsndfile
 
 # Build deps for whisper.cpp Vulkan backend (pywhispercpp builds from source)
 sudo pacman -S cmake gcc vulkan-headers vulkan-icd-loader shaderc
@@ -150,6 +156,32 @@ The IPC accepts `wake-toggle`, `wake-on`, and `wake-off` if you want a
 hotkey to flip wake-mode without opening the dialog (or you'd rather the
 mic isn't listening 24/7 and only enable it on demand).
 
+For spoken responses (e.g. *"co teraz gra"* read aloud through a
+synthesized voice), install the TTS extra and enable it in the
+Settings dialog's **Speech** tab:
+
+```bash
+uv sync --extra tts
+# Pre-fetch voice models. --data-dir matters: Korder reads from
+# ~/.local/share/piper, but the downloader defaults to CWD. Run via
+# `uv run` so the project's venv (where piper-tts lives) is used.
+mkdir -p ~/.local/share/piper
+uv run python -m piper.download_voices \
+  --data-dir ~/.local/share/piper \
+  en_US-amy-medium pl_PL-darkman-medium
+```
+
+Korder uses [Piper](https://github.com/OHF-Voice/piper1-gpl) — neural
+TTS that runs in real time on CPU. Polish + English voices are the
+defaults; any voice from the [Piper voices catalogue](https://huggingface.co/rhasspy/piper-voices)
+works, configured per-language in `[tts]`. Auto-detected per
+utterance from text content. While speaking, Korder pauses any
+playing MPRIS player (Spotify, mpv, browser MPRIS bridges) for a
+clean dropout, then resumes; flip `suppress_when_playing = true` to
+just stay silent during music instead. Today only `now_playing`
+opts in to spoken output; future actions add a call to
+`emit_progress_speak` to participate.
+
 ## Configuration
 
 The tray menu's **Settings…** entry exposes every key in a tabbed dialog —
@@ -168,6 +200,13 @@ gain = 0.7                      # software gain on captured audio; lower if mic 
 duck_during_recording = true    # lower system playback volume while listening
 duck_volume_pct = 30            # target volume (% of full) while ducked; no-op if
                                 # you're already quieter than this. Requires wpctl.
+start_chime = true              # play a soft chime (src/korder/audio/chime.opus)
+                                # when dictation starts. Mic capture is deferred
+                                # ~400 ms until the chime's loud body finishes so
+                                # Whisper doesn't transcribe it via speaker bleed.
+                                # The tail plays during early recording at sub-bleed
+                                # amplitude (combined with the ducker's drop, well
+                                # below ASR threshold). Set false to skip.
 
 [inject]
 action_parser = regex   # "regex" (fast, deterministic) or "llm" (smarter, slower)
@@ -221,6 +260,33 @@ idle_timeout_s = 5                # cancel dictation back to wake-listening
                                   # if no speech arrives within this many
                                   # seconds (catches accidental wakes); 0
                                   # disables the auto-cancel
+
+# Optional — spoken responses (issue #2). Off by default. When enabled,
+# actions that produce a spoken response (now_playing today; future
+# weather/time/date) plus conversational answers from Gemma read
+# their result aloud through a Piper voice. Requires
+# `uv sync --extra tts` and pre-fetched voice models — see the Run
+# section above for the download command.
+[tts]
+enabled = false
+engine = piper                    # only implemented backend today
+voice_en = en_US-amy-medium       # any voice ID from the Piper voices
+voice_pl = pl_PL-darkman-medium   # catalog (huggingface.co/rhasspy/piper-voices)
+speed = 1.0                       # playback speed multiplier (Piper's
+                                  # length_scale is the inverse, applied
+                                  # internally; 0.5–2.0× clamp range)
+suppress_when_playing = false     # true: stay silent when something is
+                                  # already playing audio. false (default):
+                                  # pause the active MPRIS player, speak,
+                                  # resume — clean dropout, but the marquee
+                                  # use case (now_playing) is precisely the
+                                  # case where music IS playing, so default
+                                  # off keeps the feature firing.
+speak_action_progress = false     # voice every emit_progress_speak call,
+                                  # not just speakable_response actions.
+                                  # Off by default — keeps TTS scoped to
+                                  # query answers rather than chatty
+                                  # "Searching Spotify…" lines.
 ```
 
 ## Picking your Gemma model
@@ -316,7 +382,7 @@ across whichever language Whisper transcribes.
 ## Development
 
 ```bash
-uv run pytest                                    # 186 tests, no external services required
+uv run pytest                                    # 220 tests, no external services required
 uv run pytest -m ollama                          # +44 integration tests against a live Gemma
 uv run python -m korder.intent_bench             # 21-case headless benchmark vs the current model
 uv run python -m korder.intent_bench --thinking  # …with Gemma's thinking step engaged

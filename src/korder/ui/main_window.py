@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import os
 import re
 import sys
@@ -25,9 +26,13 @@ from korder.audio.ducker import VolumeDucker
 from korder.audio.vad import SpeechDetector
 from korder.transcribe.whisper_engine import WhisperEngine
 from korder.inject import YdotoolBackend, InjectError
+from korder.audio import _mpris
+from korder.audio.tts import SpeechEngine
 from korder.ui.osd import OSDWindow
 from korder.ui.i18n import t
-from korder.ui.progress import progress_signal
+from korder.ui.progress import progress_signal, progress_speak_signal
+
+log = logging.getLogger(__name__)
 
 
 class _TranscribeWorker(QThread):
@@ -193,6 +198,10 @@ class MainWindow(QMainWindow):
         ducker: VolumeDucker | None = None,
         wake_detector=None,
         wake_idle_timeout_s: float = 5.0,
+        tts: SpeechEngine | None = None,
+        tts_suppress_when_playing: bool = True,
+        tts_speak_action_progress: bool = False,
+        start_chime: bool = True,
     ):
         super().__init__()
         self.setWindowTitle("Korder — transcript history")
@@ -262,6 +271,47 @@ class MainWindow(QMainWindow):
         # actions like spotify_play push "Searching for X" / "Found Y" /
         # "Playing Y" into the OSD center text while we're in Executing.
         progress_signal().connect(self._on_executing_progress)
+
+        # Spoken responses (issue #2). Off by default; enabled via
+        # [tts] enabled. The speak signal carries (text, lang) and
+        # routes to the SpeechEngine after MPRIS suppression /
+        # pause-resume coordination.
+        self._tts = tts
+        self._tts_suppress_when_playing = tts_suppress_when_playing
+        self._tts_speak_action_progress = tts_speak_action_progress
+        self._tts_paused_services: list[str] = []
+        # Ref count of in-flight TTS utterances. Increments on every
+        # _mpris_pause_for_tts call, decrements on every
+        # _resume_after_tts call. Music is paused on the 0→1
+        # transition and resumed only on the N→0 transition. Without
+        # this, two TTS calls queued in rapid succession (the first
+        # already paused music) would race: when the first
+        # playback_finished fired, music would resume while the
+        # second utterance was still synthesizing/playing — producing
+        # bleed into the recording or audible bleed during speech.
+        self._tts_active_count = 0
+        # Soft "go" chime on dictation start (mirrors the Plasma
+        # "ready" cue users expect from voice assistants). Audible
+        # signal that mic just opened — but transcription is
+        # deliberately deferred until the chime finishes so Whisper
+        # doesn't hear it via speaker bleed. self._chime_pending_timer
+        # tracks the QTimer that fires _begin_capture; cancel paths
+        # stop it so a cancel during the chime doesn't leak into a
+        # delayed mic-open.
+        self._start_chime_enabled = bool(start_chime)
+        self._chime_pending_timer: QTimer | None = None
+        # When set, a conversational-answer reset is gated on TTS
+        # finishing rather than the visual read-window timer. Avoids
+        # the OSD jumping back to "Listening" while the voice is
+        # still mid-sentence on long answers (TTS plays at ~90 ms/char
+        # vs the visual reading curve's 50 ms/char). Cleared when
+        # _resume_after_tts fires post-playback, or by the fallback
+        # timer if playback never reports finished.
+        self._await_tts_for_answer_reset = False
+        progress_speak_signal().connect(self._on_speak_text)
+        if self._tts is not None:
+            self._tts.playback_finished.connect(self._resume_after_tts)
+            self._tts.playback_finished.connect(self._on_tts_done_check_answer_reset)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -371,12 +421,41 @@ class MainWindow(QMainWindow):
         self.tray_state_changed.emit(state)
 
     def cancel_recording(self) -> None:
-        """Abort the current recording without transcribing or injecting.
+        """Abort the current recording AND any in-flight chime / TTS.
 
         Called from the IPC server when the user binds a global hotkey
-        (typically Esc) to ``korder cancel``. Discards the audio buffer,
-        stops timers, hides the OSD. No-op if not currently recording.
+        (typically Esc) to ``korder cancel``. Esc means stop
+        everything — including TTS that's still speaking after the
+        recorder already auto-stopped (e.g. now_playing fires →
+        auto_stop closes mic → voice reads track → user hits Esc:
+        the voice MUST shut up, even though there's no recording
+        to abort).
         """
+        # Always-stop bits, regardless of recorder state.
+        if self._tts is not None:
+            self._tts.cancel()
+            self._force_resume_after_cancel()
+        self._await_tts_for_answer_reset = False
+        # Cancel during the chime window: mic isn't open yet, but the
+        # deferred _begin_capture is queued. Kill the timer and the
+        # chime audio so neither lands later.
+        if self._chime_pending_timer is not None:
+            self._chime_pending_timer.stop()
+            self._chime_pending_timer = None
+            try:
+                from korder.audio.chime import cancel_chime
+                cancel_chime()
+            except Exception:
+                pass
+            self._dictation_via_wake = False
+            self._status.setText(t("status_cancelled"))
+            self._sync_button()
+            self._emit_tray_state()
+            return
+        # Recorder-specific cleanup only when there's actually a
+        # recording in progress. TTS / chime were already handled
+        # above so users still get silenced even when the mic
+        # already closed (post-auto-stop case).
         if not self._recorder.is_recording:
             return
         self._partial_timer.stop()
@@ -404,6 +483,38 @@ class MainWindow(QMainWindow):
     OSD_PARTIAL_THROTTLE_MS = 250  # max OSD update rate for streaming partials
 
     def _start_recording(self) -> None:
+        if self._recorder.is_recording:
+            return
+        # If a TTS utterance is mid-playback, cancel it — user
+        # speaking is implicit "interrupt and listen to me".
+        if self._tts is not None and self._tts.is_playing():
+            self._tts.cancel()
+            self._force_resume_after_cancel()
+        # Soft "go" chime, then start capture once it finishes.
+        # Transcription begins AFTER the chime so Whisper doesn't
+        # hear it via speaker bleed. When the chime is disabled or
+        # the OutputStream fails to open, fall through immediately.
+        if self._start_chime_enabled:
+            from korder.audio.chime import play_start_chime
+            duration_ms = play_start_chime()
+            if duration_ms > 0:
+                # Slack: 50 ms to cover stream-tail latency and the
+                # small gap between QTimer firing and PortAudio
+                # opening the input stream.
+                self._chime_pending_timer = QTimer(self)
+                self._chime_pending_timer.setSingleShot(True)
+                self._chime_pending_timer.timeout.connect(self._begin_capture)
+                self._chime_pending_timer.start(duration_ms + 50)
+                return
+        self._begin_capture()
+
+    def _begin_capture(self) -> None:
+        """Open the mic stream and start the dictation lifecycle.
+        Factored out of _start_recording so the start-chime path can
+        defer this until chime playback finishes — Whisper would
+        otherwise hear the chime via speaker bleed and try to
+        transcribe its tones."""
+        self._chime_pending_timer = None
         if self._recorder.is_recording:
             return
         try:
@@ -850,11 +961,42 @@ class MainWindow(QMainWindow):
             return
         print(f"[korder] conversational answer: {answer!r}", flush=True)
         self._osd.set_executing_progress(answer)
-        # Read window: ~50 ms per character + 1.5 s minimum + 7 s
-        # ceiling. Long enough for Polish multi-clause sentences, short
-        # enough that an absent user doesn't sit on a stale answer.
+        # Visual read window: ~50 ms per character + 1.5 s minimum,
+        # 7 s ceiling. Long enough for Polish multi-clause sentences,
+        # short enough that an absent user doesn't sit on a stale
+        # answer. Used directly when TTS won't play, and as a floor
+        # for the fallback timer when TTS will play.
         read_ms = max(1500, min(7000, 1500 + 50 * len(answer)))
-        QTimer.singleShot(read_ms, self._reset_to_listening_after_answer)
+
+        # Speak the answer too (issue #2). Conversational answers
+        # are the most useful TTS use case — eyes-busy users want to
+        # hear factual replies, not glance at the OSD. Route through
+        # _on_speak_text directly (not emit_progress_speak) because
+        # the OSD render already happened above; bus would re-render
+        # redundantly. _on_speak_text gives us the MPRIS pause/resume
+        # + suppress_when_playing coordination for free.
+        if self._tts is not None and not self._is_tts_suppressed():
+            lang = "pl" if any(c in answer for c in "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ") else "en"
+            self._await_tts_for_answer_reset = True
+            self._on_speak_text(answer, lang)
+            # Fallback: if playback_finished never fires (engine
+            # error mid-synth, sounddevice hiccup), reset anyway
+            # after a generous window. read_ms + 8 s covers even
+            # long Polish sentences with conservative TTS rate.
+            QTimer.singleShot(read_ms + 8000, self._fallback_answer_reset)
+        else:
+            QTimer.singleShot(read_ms, self._reset_to_listening_after_answer)
+
+    def _fallback_answer_reset(self) -> None:
+        """Belt-and-suspenders companion to _on_tts_done_check_answer_reset.
+        If TTS never reported finished (engine fault, suppression
+        race), this expires after a generous window and triggers
+        the reset anyway. No-op when TTS already cleared the flag."""
+        if not self._await_tts_for_answer_reset:
+            return
+        self._await_tts_for_answer_reset = False
+        log.info("tts: playback_finished never fired — falling back to timer reset")
+        self._reset_to_listening_after_answer()
 
     def _reset_to_listening_after_answer(self) -> None:
         """Mirror of _reset_to_listening_after_miss but for the path
@@ -899,6 +1041,16 @@ class MainWindow(QMainWindow):
             write_mode=self._write_mode,
             placeholder_key="didnt_get_that",
         )
+        # Speak it too (issue #2). The "didn't get that" feedback is
+        # an eyes-busy signal — user said something Korder didn't
+        # understand; without TTS they have no idea whether their
+        # command was processed. Lang from system locale since this
+        # is a static i18n string.
+        if self._tts is not None:
+            from korder.ui.i18n import current_locale
+            phrase = t("didnt_get_that")
+            lang = "pl" if current_locale() == "pl" else "en"
+            self._on_speak_text(phrase, lang)
 
     def _on_parse_started(self, prompt: str) -> None:
         """LLM parse is starting (only fires for the slow LLM parser)."""
@@ -933,10 +1085,15 @@ class MainWindow(QMainWindow):
         already aborted the inject batch (no text typed, no actions
         fired). Tear down the recorder + OSD the same way the ESC-key
         cancel path does, and clear any pending-action / auto-stop
-        bookkeeping so the next session starts fresh."""
+        bookkeeping so the next session starts fresh. Also stops any
+        in-flight TTS — cancel means cancel everything."""
         print("[korder] cancel_session: aborting recording on user request", flush=True)
         self._auto_stop_pending = False
         self._pending_action = None
+        if self._tts is not None:
+            self._tts.cancel()
+            self._force_resume_after_cancel()  # restore music if we paused it
+        self._await_tts_for_answer_reset = False
         self.cancel_recording()
 
     def _on_inject_failed(self, msg: str) -> None:
@@ -958,6 +1115,115 @@ class MainWindow(QMainWindow):
         if not text:
             return
         self._osd.set_executing_progress(text)
+
+    def _on_speak_text(self, text: str, lang: str) -> None:
+        """TTS-routed counterpart to _on_executing_progress. Triggered
+        by emit_progress_speak() from any action that wants spoken
+        output. Suppressed when:
+          - TTS engine is None / disabled
+          - suppress_when_playing is true and an MPRIS player is Playing
+          - speak_action_progress is false AND the source isn't a
+            speakable_response (we can't tell yet — for v1 every speak
+            signal is honored when TTS is enabled)
+        Pauses any Playing MPRIS service for the synth+playback window
+        and resumes after, so the synthesized voice isn't drowned
+        under music."""
+        if self._tts is None or not text:
+            return
+        if not self._tts.is_available():
+            return
+        if self._tts_suppress_when_playing and _mpris.any_playing():
+            log.info("tts: suppressed (something is playing)")
+            return
+        # Pause music, queue the utterance, resume on playback_finished.
+        # We can't keep the with-block open across the async say()
+        # because the worker thread synthesizes asynchronously. Using
+        # a two-step: pause now, schedule resume on playback_finished.
+        # For v1 simplicity, do it inline: pause, queue, return — the
+        # SpeechEngine's playback_finished signal handles resume.
+        self._mpris_pause_for_tts()
+        self._tts.say(text, lang)
+
+    def _mpris_pause_for_tts(self) -> None:
+        """Pause every Playing MPRIS service for the duration of
+        TTS playback. Ref-counts in-flight utterances so concurrent
+        speech keeps music paused across the whole burst — only the
+        last finishing utterance resumes."""
+        self._tts_active_count += 1
+        if self._tts_active_count > 1:
+            # Earlier utterance already paused; piggyback on its
+            # paused-services list (we'll release together).
+            return
+        paused: list[str] = []
+        for svc in _mpris.list_players():
+            if _mpris.player_status(svc) == "Playing":
+                if _mpris.qdbus(svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Pause") is not None:
+                    paused.append(svc)
+        self._tts_paused_services = paused
+        if paused:
+            log.info("tts: paused %d MPRIS service(s) for speech", len(paused))
+
+    def _resume_after_tts(self) -> None:
+        """Slot for SpeechEngine.playback_finished. Decrements the
+        ref count; resumes paused MPRIS services only when the count
+        reaches zero (last utterance done). Always called via the
+        playback_finished signal which the SpeechEngine emits exactly
+        once per queued job — succeeded, cancelled, or failed."""
+        self._tts_active_count = max(0, self._tts_active_count - 1)
+        if self._tts_active_count > 0:
+            return  # more TTS in flight; keep music paused
+        services = self._tts_paused_services
+        self._tts_paused_services = []
+        if not services:
+            return
+        for svc in services:
+            _mpris.qdbus(svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Play")
+        log.info("tts: resumed %d MPRIS service(s)", len(services))
+
+    def _force_resume_after_cancel(self) -> None:
+        """Cancel-path counterpart to _resume_after_tts.
+
+        ``tts.cancel()`` drains queued utterances WITHOUT pulling
+        them through the worker's finally-emit, so playback_finished
+        fires only for the currently-playing job (if any), not for
+        the N-1 still queued. That'd leave the ref count unbalanced
+        and music paused forever.
+
+        This method force-releases: zero the count, resume every
+        paused service, and rely on the at-most-one stale
+        playback_finished from the in-flight job to be a no-op
+        (count already 0; services list empty)."""
+        self._tts_active_count = 0
+        services = self._tts_paused_services
+        self._tts_paused_services = []
+        if not services:
+            return
+        for svc in services:
+            _mpris.qdbus(svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Play")
+        log.info("tts: resumed %d MPRIS service(s) (cancel)", len(services))
+
+    def _on_tts_done_check_answer_reset(self) -> None:
+        """Second slot bound to playback_finished. When a
+        conversational-answer reset is pending (set by
+        _show_conversational_answer when TTS will play), this is
+        the trigger that flips the OSD back to listening — exactly
+        synchronized with voice playback ending instead of the
+        visual read-window timer guessing wrong on long answers."""
+        if not self._await_tts_for_answer_reset:
+            return
+        self._await_tts_for_answer_reset = False
+        self._reset_to_listening_after_answer()
+
+    def _is_tts_suppressed(self) -> bool:
+        """Mirrors the suppression test inside _on_speak_text. Used
+        by callers that need to know in advance whether TTS will
+        actually play (e.g. to choose between the playback-finished
+        reset path and the visual-only timer path)."""
+        if self._tts is None or not self._tts.is_available():
+            return True
+        if self._tts_suppress_when_playing and _mpris.any_playing():
+            return True
+        return False
 
     def _auto_stop(self) -> None:
         """Quietly stop recording — used after a command finishes.
@@ -1022,6 +1288,16 @@ class MainWindow(QMainWindow):
             f"Pending: {action_name} waiting for parameter",
             int(self.PENDING_ACTION_TIMEOUT_S * 1000),
         )
+        # Speak the prompt too (issue #2). Pending-action prompts ARE
+        # the eyes-busy use case — Korder is asking the user a
+        # question; if it can't be heard, the silence reads as the
+        # action breaking. Same diacritic-based lang heuristic
+        # used everywhere else (the hint can be Polish or English
+        # regardless of system locale because Gemma writes
+        # response in the user's input language).
+        if self._tts is not None and hint:
+            lang = "pl" if any(c in hint for c in "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ") else "en"
+            self._on_speak_text(hint, lang)
 
     def _resolve_pending_action(self, action_name: str, param_text: str) -> bool:
         """Build params from the follow-up text and dispatch the action.

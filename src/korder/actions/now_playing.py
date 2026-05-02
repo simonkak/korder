@@ -2,84 +2,31 @@
 
 Reads track metadata via D-Bus from any active MPRIS player (Spotify,
 Firefox, mpv, browser MPRIS-bridge, …) and surfaces it as a desktop
-notification via notify-send. Pure D-Bus + notify-send — no API keys, no
-OAuth, no extra dependencies beyond what KDE already ships.
+notification via notify-send. With TTS enabled, also speaks the same
+text — see speakable_response below.
 
-Picker: prefers a player currently in PlaybackStatus="Playing"; falls
-back to "Paused"; final fallback is the first MPRIS service we see.
-This matches how a user thinks about "what's playing" — the music
-actually coming out of the speakers, not whatever happens to be loaded
-in a long-paused tab.
+MPRIS plumbing (player enumeration, status, pause/resume) lives in
+korder.audio._mpris and is shared with the TTS suppression and
+pause-during-speak paths.
 """
 from __future__ import annotations
+import logging
 import re
 import subprocess
 
 from korder.actions.base import Action, register
+from korder.audio import _mpris
+from korder.ui.progress import emit_progress_speak
 
+log = logging.getLogger(__name__)
 
-_QDBUS_TIMEOUT_S = 2.0
 _NOTIFY_TIMEOUT_S = 3.0
-_MPRIS_PREFIX = "org.mpris.MediaPlayer2."
-_MPRIS_OBJECT = "/org/mpris/MediaPlayer2"
-_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
-
-
-def _qdbus(*args: str) -> str | None:
-    """Run qdbus6 and return stdout, or None on any failure (missing
-    binary, service gone, timeout, non-zero exit)."""
-    try:
-        result = subprocess.run(
-            ["qdbus6", *args],
-            capture_output=True,
-            text=True,
-            timeout=_QDBUS_TIMEOUT_S,
-            check=True,
-        )
-        return result.stdout
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-
-
-def _list_mpris_players() -> list[str]:
-    """Return service names like ['org.mpris.MediaPlayer2.spotify', …]."""
-    out = _qdbus()
-    if out is None:
-        return []
-    return [
-        line.strip()
-        for line in out.splitlines()
-        if line.strip().startswith(_MPRIS_PREFIX)
-    ]
-
-
-def _player_status(service: str) -> str:
-    """Returns 'Playing' / 'Paused' / 'Stopped' / '' (unknown)."""
-    out = _qdbus(service, _MPRIS_OBJECT, f"{_PLAYER_IFACE}.PlaybackStatus")
-    return (out or "").strip()
-
-
-def _pick_active_player(services: list[str]) -> str | None:
-    """Pick the most likely 'what the user means' player. Playing > Paused
-    > anything that's at least responsive."""
-    if not services:
-        return None
-    statuses: dict[str, str] = {s: _player_status(s) for s in services}
-    for s in services:
-        if statuses.get(s) == "Playing":
-            return s
-    for s in services:
-        if statuses.get(s) == "Paused":
-            return s
-    # Last resort: any player at all, even if its status query failed —
-    # we might still get useful metadata out of it.
-    return services[0]
 
 
 def _player_metadata(service: str) -> dict[str, str]:
     """Returns {'title', 'artist', 'album'} where present. Each value is
     the empty string if MPRIS didn't report that field."""
-    out = _qdbus(service, _MPRIS_OBJECT, f"{_PLAYER_IFACE}.Metadata")
+    out = _mpris.qdbus(service, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Metadata")
     if out is None:
         return {}
     md: dict[str, str] = {}
@@ -105,9 +52,8 @@ def _player_metadata(service: str) -> dict[str, str]:
 def _short_player_name(service: str) -> str:
     """'org.mpris.MediaPlayer2.spotify' → 'Spotify'.
     'org.mpris.MediaPlayer2.firefox.instance_1_1234' → 'Firefox'."""
-    tail = service[len(_MPRIS_PREFIX):]
+    tail = service[len(_mpris.MPRIS_PREFIX):]
     head = tail.split(".", 1)[0]
-    # Special-cased prettifications that look better than .title()
     pretty = {
         "spotify": "Spotify",
         "firefox": "Firefox",
@@ -117,6 +63,37 @@ def _short_player_name(service: str) -> str:
         "plasma-browser-integration": "Browser",
     }
     return pretty.get(head, head.replace("-", " ").title())
+
+
+def _detect_lang(text: str) -> str:
+    """Two-state heuristic: 'pl' if Polish-only diacritics are present,
+    else 'en'. Good enough for track titles + artist names — gets
+    'Małomiasteczkowy' right without misclassifying 'Stressed Out'."""
+    if any(ch in text for ch in "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"):
+        return "pl"
+    return "en"
+
+
+def _compose_now_playing() -> tuple[str, str, str] | None:
+    """Resolve the currently active player + metadata into a
+    (title-line, body-line, lang) triple. Returns None when no MPRIS
+    player is available — caller decides what to show in that case.
+    Used by both the desktop notification and the TTS speakable.
+    """
+    services = _mpris.list_players()
+    player = _mpris.pick_active_player(services)
+    if player is None:
+        return None
+    md = _player_metadata(player)
+    title = md.get("title", "")
+    artist = md.get("artist", "")
+    if not title and not artist:
+        return None
+    body = f"{title} — {artist}" if title and artist else (title or artist)
+    status = _mpris.player_status(player)
+    prefix = "▶  " if status == "Playing" else ("⏸  " if status == "Paused" else "")
+    headline = f"{prefix}{_short_player_name(player)}"
+    return headline, body, _detect_lang(body)
 
 
 def _notify(title: str, body: str) -> None:
@@ -136,28 +113,51 @@ def _notify(title: str, body: str) -> None:
             check=False,
         )
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-        print(f"[korder] now_playing: notify-send failed: {e}", flush=True)
+        log.error("now_playing: notify-send failed: %s", e)
+
+
+def _spoken_form(body: str, lang: str) -> str:
+    """Convert the en-dash-separated notification body into something
+    natural for TTS. 'Stressed Out — Twenty One Pilots' →
+    'Stressed Out by Twenty One Pilots' in EN,
+    'Stressed Out, Twenty One Pilots' in PL."""
+    if " — " not in body:
+        return body
+    title, _, artist = body.partition(" — ")
+    return f"{title} by {artist}" if lang == "en" else f"{title}, {artist}"
 
 
 def _now_playing() -> None:
-    services = _list_mpris_players()
-    player = _pick_active_player(services)
-    if player is None:
-        _notify("Nothing playing", "No media player is running.")
+    composed = _compose_now_playing()
+    if composed is None:
+        # Nothing playable. Speak too — eyes-busy users wouldn't see
+        # the notification, and "no answer" feels like the action
+        # broke. Lang heuristic uses the system locale via i18n.
+        from korder.ui.i18n import current_locale
+        lang = "pl" if current_locale() == "pl" else "en"
+        services = _mpris.list_players()
+        if services:
+            player = _mpris.pick_active_player(services) or services[0]
+            headline = f"{_short_player_name(player)}: nothing playing"
+            body = "Player is open but no track metadata is available."
+            spoken = (
+                "Odtwarzacz jest otwarty, ale nie ma żadnego utworu."
+                if lang == "pl" else
+                "A media player is open but nothing is playing."
+            )
+        else:
+            headline = "Nothing playing"
+            body = "No media player is running."
+            spoken = "Nic nie gra." if lang == "pl" else "Nothing is playing."
+        _notify(headline, body)
+        emit_progress_speak(spoken, lang)
         return
-    md = _player_metadata(player)
-    title = md.get("title", "")
-    artist = md.get("artist", "")
-    if not title and not artist:
-        _notify(
-            f"{_short_player_name(player)}: nothing playing",
-            "Player is open but no track metadata is available.",
-        )
-        return
-    body = f"{title} — {artist}" if title and artist else (title or artist)
-    status = _player_status(player)
-    prefix = "▶  " if status == "Playing" else ("⏸  " if status == "Paused" else "")
-    _notify(f"{prefix}{_short_player_name(player)}", body)
+    headline, body, lang = composed
+    _notify(headline, body)
+    # Also push to the speak bus — MainWindow routes to TTS when
+    # [tts] enabled. The OSD line shows the same body verbatim so
+    # eyes-on users see exactly what the voice is reading.
+    emit_progress_speak(_spoken_form(body, lang), lang)
 
 
 register(Action(

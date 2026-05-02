@@ -106,7 +106,51 @@ def _try_forward(cmd: str, timeout_s: float = 0.5) -> bool:
             pass
 
 
+def _setup_logging() -> None:
+    """Wire Python's logging to stderr so modules using
+    logging.getLogger() are actually visible. Otherwise INFO/DEBUG
+    messages silently route through Python's lastResort handler
+    (WARNING+ only). Honors KORDER_LOG_LEVEL (DEBUG/INFO/WARNING/
+    ERROR; default INFO). Format mirrors the legacy `[korder] message`
+    convention so the new logger output reads alongside historical
+    print statements.
+
+    Third-party loggers that are chatty at INFO (pywhispercpp's
+    per-segment "Transcribing... / Inference time: 0.18s" lines,
+    PIL's stream-debug spam) are clamped to WARNING when our level
+    is above DEBUG — they show up at DEBUG only. Stops them from
+    drowning out korder's own INFO output by default while keeping
+    everything visible when actually debugging.
+
+    This branch carries TTS + MPRIS code that uses the logging
+    module; without this setup, voice / pause / resume diagnostics
+    are silent in stderr while older print()-based code (intent.py,
+    main_window.py, etc.) keeps emitting. Backporting the full
+    print→logging migration is a separate concern."""
+    import logging
+    level_name = (os.environ.get("KORDER_LOG_LEVEL") or "INFO").strip().upper()
+    level = getattr(logging, level_name, logging.INFO)
+    if not isinstance(level, int):
+        level = logging.INFO
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=level,
+            format="[%(name)s] %(message)s",
+            stream=sys.stderr,
+        )
+    logging.getLogger("korder").setLevel(level)
+    # Quiet down chatty third-party loggers that emit per-segment /
+    # per-frame INFO messages. Restored to default at DEBUG so they
+    # remain available for actual debugging. Names enumerated
+    # explicitly rather than catch-all so we don't accidentally
+    # suppress something useful from a future dependency.
+    if level > logging.DEBUG:
+        for noisy in ("pywhispercpp", "pywhispercpp.model", "pywhispercpp.utils", "PIL"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
 def main() -> int:
+    _setup_logging()
     parser = argparse.ArgumentParser(prog="korder")
     parser.add_argument(
         "cmd",
@@ -234,6 +278,8 @@ def _run_app() -> int:
     except (KeyError, ValueError):
         wake_idle_timeout_s = 5.0
 
+    tts_engine = _build_tts_engine(cfg) if _bool(cfg["tts"]["enabled"]) else None
+
     window = MainWindow(
         engine=engine,
         recorder=recorder,
@@ -244,6 +290,10 @@ def _run_app() -> int:
         ducker=ducker,
         wake_detector=wake_detector,
         wake_idle_timeout_s=wake_idle_timeout_s,
+        tts=tts_engine,
+        tts_suppress_when_playing=_bool(cfg["tts"]["suppress_when_playing"]),
+        tts_speak_action_progress=_bool(cfg["tts"]["speak_action_progress"]),
+        start_chime=_bool(cfg["audio"]["start_chime"]),
     )
 
     tray = _make_tray(window)
@@ -259,6 +309,8 @@ def _run_app() -> int:
     def _on_quit() -> None:
         server.close()
         window.shutdown()
+        if tts_engine is not None:
+            tts_engine.shutdown()
         osd.hide_now()
         tray.hide()
 
@@ -289,6 +341,30 @@ def _build_wake_detector(cfg, recorder: MicRecorder):
         print(f"[korder] wake: detector init failed: {e}", file=sys.stderr)
         return None
     return detector
+
+
+def _build_tts_engine(cfg):
+    """Construct the SpeechEngine if [tts] is enabled. Failures are
+    logged and return None so the app boots in text-only mode rather
+    than crashing — Piper not being installed is a configuration
+    issue, not a fatal error."""
+    from korder.audio.tts import SpeechEngine
+
+    try:
+        speed = float(cfg["tts"]["speed"])
+    except (KeyError, ValueError):
+        speed = 1.0
+    try:
+        engine = SpeechEngine(
+            enabled=True,
+            voice_en=cfg["tts"]["voice_en"].strip() or "en_US-amy-medium",
+            voice_pl=cfg["tts"]["voice_pl"].strip() or "pl_PL-darkman-medium",
+            speed=speed,
+        )
+    except Exception as e:
+        print(f"[korder] tts: engine init failed: {e}", file=sys.stderr)
+        return None
+    return engine
 
 
 def _make_tray(window: MainWindow) -> QSystemTrayIcon:

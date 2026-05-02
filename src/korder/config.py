@@ -15,6 +15,13 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # the level (no-op if you're already below the target).
         "duck_during_recording": "true",
         "duck_volume_pct": "30",
+        # Play a soft 200ms "go" chime when dictation starts. Mic
+        # capture is deliberately deferred until the chime finishes so
+        # Whisper doesn't transcribe the chime via speaker bleed.
+        # Adds ~250ms perceived latency from hotkey/wake to actually-
+        # listening; in exchange the user has an audible confirmation
+        # the mic just opened.
+        "start_chime": "true",
     },
     "whisper": {
         "model": "medium",
@@ -102,6 +109,43 @@ DEFAULTS: dict[str, dict[str, str]] = {
     # google, bing, startpage, ecosia. Unknown values fall back to duckduckgo.
     "web": {
         "search_engine": "duckduckgo",
+    },
+    # Spoken responses (issue #2). Optional — opt in with `enabled = true`
+    # AND `uv sync --extra tts`. Off by default: most users don't want
+    # their computer talking back. When on, only actions that declare a
+    # `speakable_response` (e.g. now_playing) speak; flip
+    # speak_action_progress = true to also voice progress narration.
+    "tts": {
+        "enabled": "false",
+        # Backend. 'piper' is the only implemented engine today; the
+        # knob is here so future additions (espeak-ng, RHVoice) can
+        # slot in without a config rename.
+        "engine": "piper",
+        # Per-language voice IDs (Piper voice catalogue —
+        # https://huggingface.co/rhasspy/piper-voices). Models
+        # auto-download on first use; pre-fetch with
+        # `python -m piper.download_voices VOICE_ID`.
+        "voice_en": "en_US-amy-medium",
+        "voice_pl": "pl_PL-darkman-medium",
+        # Playback speed multiplier (1.0 = normal). Piper's length-
+        # scale is the inverse, applied internally.
+        "speed": "1.0",
+        # Don't speak when something else is already playing audio
+        # (Spotify, mpv, browser MPRIS bridges). Default false: the
+        # marquee TTS use case (now_playing → "what's playing") is
+        # specifically the situation where music IS playing, so
+        # suppressing under that condition would silence the feature
+        # whenever it's most useful. With suppress on, TTS stays
+        # silent during music; with it off (default), TTS pauses
+        # the active player, speaks, then resumes it — clean but
+        # noticeable dropout window.
+        "suppress_when_playing": "false",
+        # When true, every progress narration emitted via
+        # emit_progress_speak() is voiced too. When false (default),
+        # only actions that declare speakable_response speak — keeps
+        # TTS scoped to query-style answers (now_playing) instead of
+        # chatty "Searching Spotify…" lines.
+        "speak_action_progress": "false",
     },
 }
 

@@ -18,6 +18,12 @@ class Action:
     op_factory: produces the (kind, value) op tuple to execute. Takes a
                 params dict so future parameterized actions (volume_set,
                 workspace_switch) can pass values through.
+
+    Actions that produce spoken output (issue #2) opt in by calling
+    ``emit_progress_speak(text, lang)`` from inside their callable —
+    mirrors the existing ``emit_progress`` pattern. No flag on the
+    Action itself; whether-to-speak is part of the action's runtime
+    behavior, not its registration metadata.
     """
     name: str
     description: str

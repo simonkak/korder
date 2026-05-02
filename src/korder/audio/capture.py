@@ -12,6 +12,7 @@ the dictation flow.
 from __future__ import annotations
 import sys
 import threading
+import time
 from typing import Callable
 
 import numpy as np
@@ -19,6 +20,15 @@ import sounddevice as sd
 
 
 FrameCallback = Callable[[np.ndarray], None]
+
+
+# PortAudio's RT-thread init occasionally times out when PipeWire/
+# WirePlumber are still settling — typical right after boot or after
+# pipewire restart. The error is paTimedOut (-9987). It's transient:
+# a 250–500 ms wait usually clears it. We retry the open up to 4
+# times with backoff before giving up; total worst case ~3.5s, which
+# is acceptable for a one-shot startup cost.
+_PA_OPEN_RETRY_DELAYS_S = (0.25, 0.5, 1.0, 1.75)
 
 
 class MicRecorder:
@@ -58,24 +68,101 @@ class MicRecorder:
         """Attach a frame consumer. Opens the audio stream on the first
         subscriber. The same callable can be subscribed multiple times
         and will then receive each frame multiple times — pair every
-        subscribe with a matching unsubscribe."""
-        stream_to_start: sd.InputStream | None = None
+        subscribe with a matching unsubscribe.
+
+        Raises sd.PortAudioError if the audio engine fails to come up
+        even after retrying — this is rare in steady state and the
+        caller surfaces it as 'mic error' to the user."""
+        opening_first_stream = False
         with self._lock:
             self._subscribers.append(fn)
             if self._stream is None:
-                self._stream = sd.InputStream(
+                opening_first_stream = True
+        # PortAudio init and start happen outside the lock — they can
+        # be slow (and on a cold pipewire come back paTimedOut a few
+        # times). Constructing the InputStream before holding the
+        # ref means a failed open can be retried cleanly without
+        # leaving self._stream pointing at a half-initialized object.
+        if opening_first_stream:
+            try:
+                stream = self._open_stream_with_retry()
+            except Exception:
+                # Roll back the subscriber so the next subscribe call
+                # (or a retry from the caller) starts from a clean
+                # state instead of accumulating a phantom subscription
+                # that the audio callback will eventually call into.
+                with self._lock:
+                    try:
+                        self._subscribers.remove(fn)
+                    except ValueError:
+                        pass
+                raise
+            with self._lock:
+                self._stream = stream
+
+    def _open_stream_with_retry(self) -> sd.InputStream:
+        """Construct + start an InputStream, retrying on paTimedOut.
+
+        PipeWire / WirePlumber occasionally aren't ready to spin up
+        an RT thread when Korder launches right after boot or after
+        a pipewire restart. The error surfaces as paTimedOut from
+        PaUnixThread_New. A short backoff usually clears it on the
+        next attempt."""
+        last_exc: Exception | None = None
+        for delay in (0.0,) + _PA_OPEN_RETRY_DELAYS_S:
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                stream = sd.InputStream(
                     samplerate=self.sample_rate,
                     channels=1,
                     dtype="float32",
                     device=self.device,
                     callback=self._callback,
                 )
-                stream_to_start = self._stream
-        # PortAudio start() is fast but we keep slow audio-engine calls
-        # outside the lock to mirror unsubscribe (where holding the lock
-        # would deadlock with the audio thread).
-        if stream_to_start is not None:
-            stream_to_start.start()
+            except Exception as e:
+                last_exc = e
+                if not self._is_transient_pa_error(e):
+                    raise
+                print(
+                    f"[korder] mic: InputStream construct failed (transient): {e}",
+                    flush=True, file=sys.stderr,
+                )
+                continue
+            try:
+                stream.start()
+                return stream
+            except Exception as e:
+                last_exc = e
+                # Failed start leaks the stream; close it before
+                # retrying so PortAudio doesn't hold the device.
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                if not self._is_transient_pa_error(e):
+                    raise
+                print(
+                    f"[korder] mic: InputStream start failed (transient, will retry): {e}",
+                    flush=True, file=sys.stderr,
+                )
+                continue
+        # All retries exhausted.
+        assert last_exc is not None
+        raise last_exc
+
+    @staticmethod
+    def _is_transient_pa_error(e: Exception) -> bool:
+        """Heuristic: paTimedOut (-9987) and 'wait timed out' are the
+        flaky-startup symptoms we retry. Other PortAudio errors
+        (device missing, format unsupported) are deterministic and
+        retrying just delays the eventual failure."""
+        msg = str(e).lower()
+        return (
+            "timed out" in msg
+            or "-9987" in msg
+            or "patimedout" in msg
+        )
 
     def unsubscribe(self, fn: FrameCallback) -> None:
         """Remove the first matching subscription. Closes the stream if

@@ -14,3 +14,9 @@ bench-results/*
 # The bundled .desktop in src/korder/ui/icons/ is the one shipped to
 # end users; this one stays personal.
 /korder.desktop
+
+# Piper voice models. `python -m piper.download_voices` defaults to
+# CWD when --data-dir isn't passed; the canonical location is
+# ~/.local/share/piper. Don't commit accidentally-downloaded copies.
+/*.onnx
+/*.onnx.json

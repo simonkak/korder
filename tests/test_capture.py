@@ -127,6 +127,87 @@ def test_unsubscribe_unknown_callable_is_noop(recorder):
     rec.unsubscribe(lambda c: None)  # different lambda; must not raise
 
 
+def test_subscribe_retries_on_patimedout(monkeypatch):
+    """First two start() attempts raise paTimedOut, third succeeds —
+    subscribe should sleep + retry transparently, leaving the stream
+    open with the subscriber attached. Verifies the PipeWire-startup-
+    race hardening."""
+    from korder.audio import capture
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(capture.time, "sleep", lambda s: sleeps.append(s))
+
+    streams: list[MagicMock] = []
+    def fake_factory(**kwargs):
+        m = MagicMock()
+        # First two streams' start() raise; the third succeeds.
+        if len(streams) < 2:
+            m.start.side_effect = RuntimeError("Wait timed out [PaErrorCode -9987]")
+        streams.append(m)
+        return m
+
+    monkeypatch.setattr(capture.sd, "InputStream", fake_factory)
+    rec = MicRecorder(sample_rate=16000, gain=1.0)
+
+    consumer = lambda _c: None
+    rec.subscribe(consumer)  # must not raise
+
+    # Three streams constructed (two failed, one good); the live one
+    # is on rec, the other two had close() called.
+    assert len(streams) == 3
+    assert streams[0].close.called
+    assert streams[1].close.called
+    # Sleeps grew per retry (first delay is 0, then backoff)
+    assert sleeps[0] > 0  # first retry waits
+
+
+def test_subscribe_does_not_retry_on_non_transient_error(monkeypatch):
+    """Permanent errors (no such device, bad format) must not be
+    retried — we'd just delay the eventual failure."""
+    from korder.audio import capture
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(capture.time, "sleep", lambda s: sleeps.append(s))
+
+    def fake_factory(**kwargs):
+        m = MagicMock()
+        m.start.side_effect = RuntimeError("Invalid sample rate")
+        return m
+
+    monkeypatch.setattr(capture.sd, "InputStream", fake_factory)
+    rec = MicRecorder(sample_rate=16000, gain=1.0)
+
+    with pytest.raises(RuntimeError, match="Invalid sample rate"):
+        rec.subscribe(lambda _c: None)
+
+    # No backoff sleeps — we bailed on the first attempt
+    assert sleeps == []
+    # Subscriber rolled back — list is clean for the next try
+    assert rec._subscribers == []
+
+
+def test_subscribe_rolls_back_subscriber_on_terminal_failure(monkeypatch):
+    """When all retries fail, the subscriber must be removed from the
+    list so a follow-up subscribe call starts from a clean state."""
+    from korder.audio import capture
+
+    monkeypatch.setattr(capture.time, "sleep", lambda s: None)
+
+    def fake_factory(**kwargs):
+        m = MagicMock()
+        m.start.side_effect = RuntimeError("Wait timed out")
+        return m
+
+    monkeypatch.setattr(capture.sd, "InputStream", fake_factory)
+    rec = MicRecorder(sample_rate=16000, gain=1.0)
+
+    with pytest.raises(RuntimeError):
+        rec.subscribe(lambda _c: None)
+
+    assert rec._subscribers == []
+    assert rec._stream is None
+
+
 def test_double_start_is_idempotent(recorder):
     """start() while already recording should not re-open the stream
     or re-install the dictation collector."""
