@@ -11,9 +11,12 @@ from korder.actions.codes import (
 register(Action(
     name="press_enter",
     description=(
-        "Press the Enter / Return key. Use when the user asks to submit, "
-        "send, confirm, or insert a newline-as-key (the kind that submits "
-        "a form, sends a chat message, or runs a command line)."
+        "Press the Enter / Return key. Use ONLY for explicit Enter-key "
+        "requests — phrasings that name the key or an explicit submit "
+        "action. Do NOT fire for bare conversational affirmations "
+        "('yes', 'tak', 'ok', 'continue') on their own, even when "
+        "context could make them imply 'submit' — the user has to "
+        "actually name the action."
     ),
     triggers={
         "en": ["press enter", "press return"],
