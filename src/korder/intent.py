@@ -87,10 +87,15 @@ _SYSTEM_PROMPT = (
     "- For parameterized actions, extract relevant fields into `params`. If a required parameter "
     "is not present in the input, leave `params` empty or omit it — do NOT invent values.\n"
     "\n"
-    "Optionally include `response` — a brief 'are you sure?' question — "
-    "ONLY when the action has a `confirm` parameter and the user did not "
-    "supply it. Write `response` in the same language as the input transcript. "
-    "Otherwise omit `response`."
+    "Optionally include `response` — a brief natural-language question — "
+    "ONLY when the action has parameters that the user did not supply. "
+    "Tailor the question to which parameter is missing:\n"
+    "  - For a `confirm` parameter: 'are you sure?' style — make it obvious "
+    "what is about to happen and ask for yes/no.\n"
+    "  - For other parameters (`query`, `kind`, etc.): ask WHAT the user "
+    "wants — e.g. 'What do you want to play?' for a search query.\n"
+    "Write `response` in the same language as the input transcript. "
+    "Otherwise omit `response` (most non-pending commands fire silently)."
 )
 
 
@@ -128,6 +133,8 @@ def _build_user_prompt(transcript: str, *, show_triggers: bool) -> str:
         '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
         '  "uśpij komputer" → {"actions": [{"phrase": "uśpij komputer", "name": "sleep"}], "response": "Czy uśpić komputer? Powiedz tak lub nie."}\n'
         '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
+        '  "Spotify zagraj" → {"actions": [{"phrase": "Spotify zagraj", "name": "spotify_search"}], "response": "Co chcesz odtworzyć w Spotify?"}\n'
+        '  "play on Spotify" → {"actions": [{"phrase": "play on Spotify", "name": "spotify_search"}], "response": "What do you want to play on Spotify?"}\n'
         "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
