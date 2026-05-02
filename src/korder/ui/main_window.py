@@ -488,6 +488,16 @@ class MainWindow(QMainWindow):
         # confusing than helpful.
         if self._injector is not None:
             self._injector.clear_op_parser_history()
+        # Same scope rule for write mode — flip back to preview-only at
+        # session end so the next session opens with the safer default.
+        # If a Whisper / LLM glitch had toggled it on (rare but
+        # observed), the user isn't stuck with persistent text-typing
+        # across unrelated sessions; if they actually want write mode,
+        # 'pisz' / 'start writing' re-enables it for the new session.
+        # Direct mutation, not via mode_changed.emit — that path
+        # surfaces a status-bar message intended for user-driven
+        # toggles only.
+        self._write_mode = False
         self._emit_tray_state()
         if not transcribe_tail:
             self._status.setText(t("status_idle"))
