@@ -15,6 +15,13 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # the level (no-op if you're already below the target).
         "duck_during_recording": "true",
         "duck_volume_pct": "30",
+        # Play a soft 200ms "go" chime when dictation starts. Mic
+        # capture is deliberately deferred until the chime finishes so
+        # Whisper doesn't transcribe the chime via speaker bleed.
+        # Adds ~250ms perceived latency from hotkey/wake to actually-
+        # listening; in exchange the user has an audible confirmation
+        # the mic just opened.
+        "start_chime": "true",
     },
     "whisper": {
         "model": "medium",

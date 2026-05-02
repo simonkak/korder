@@ -195,6 +195,11 @@ gain = 0.7                      # software gain on captured audio; lower if mic 
 duck_during_recording = true    # lower system playback volume while listening
 duck_volume_pct = 30            # target volume (% of full) while ducked; no-op if
                                 # you're already quieter than this. Requires wpctl.
+start_chime = true              # play a soft 200 ms two-tone chime when dictation
+                                # starts. Mic capture is deliberately deferred until
+                                # the chime finishes so Whisper doesn't transcribe it
+                                # via speaker bleed. Adds ~250 ms perceived latency
+                                # in exchange for an audible "go" signal.
 
 [inject]
 action_parser = regex   # "regex" (fast, deterministic) or "llm" (smarter, slower)
@@ -370,7 +375,7 @@ across whichever language Whisper transcribes.
 ## Development
 
 ```bash
-uv run pytest                                    # 209 tests, no external services required
+uv run pytest                                    # 217 tests, no external services required
 uv run pytest -m ollama                          # +44 integration tests against a live Gemma
 uv run python -m korder.intent_bench             # 21-case headless benchmark vs the current model
 uv run python -m korder.intent_bench --thinking  # …with Gemma's thinking step engaged

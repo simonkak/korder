@@ -220,6 +220,16 @@ class SettingsDialog(QDialog):
             "30 % is usually enough to prevent bleed without going silent."
         )
         af.addRow("Duck to:", self._duck_volume_pct)
+
+        self._start_chime = QCheckBox("Play soft chime when dictation starts")
+        self._start_chime.setToolTip(
+            "Plays a 200 ms two-tone cue when the mic opens (hotkey "
+            "or wake-word). Mic capture is deliberately deferred until "
+            "the chime finishes so Whisper doesn't transcribe it via "
+            "speaker bleed. Adds ~250 ms perceived latency in exchange "
+            "for an audible 'go' signal."
+        )
+        af.addRow("", self._start_chime)
         outer.addWidget(audio)
 
         # Whisper group
@@ -599,6 +609,7 @@ class SettingsDialog(QDialog):
             self._duck_volume_pct.setValue(int(c["audio"].get("duck_volume_pct", "30")))
         except (KeyError, ValueError):
             self._duck_volume_pct.setValue(30)
+        self._start_chime.setChecked(_truthy(c["audio"].get("start_chime", "true")))
 
         # Whisper
         self._model.setCurrentText(c["whisper"]["model"])
@@ -681,6 +692,7 @@ class SettingsDialog(QDialog):
             "true" if self._duck_during_recording.isChecked() else "false"
         )
         c["audio"]["duck_volume_pct"] = str(self._duck_volume_pct.value())
+        c["audio"]["start_chime"] = "true" if self._start_chime.isChecked() else "false"
 
         c["whisper"]["model"] = self._model.currentText().strip()
         c["whisper"]["language"] = (self._language.currentData() or self._language.currentText()).strip()

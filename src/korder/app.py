@@ -278,6 +278,7 @@ def _run_app() -> int:
         tts=tts_engine,
         tts_suppress_when_playing=_bool(cfg["tts"]["suppress_when_playing"]),
         tts_speak_action_progress=_bool(cfg["tts"]["speak_action_progress"]),
+        start_chime=_bool(cfg["audio"]["start_chime"]),
     )
 
     tray = _make_tray(window)

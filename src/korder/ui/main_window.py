@@ -201,6 +201,7 @@ class MainWindow(QMainWindow):
         tts: SpeechEngine | None = None,
         tts_suppress_when_playing: bool = True,
         tts_speak_action_progress: bool = False,
+        start_chime: bool = True,
     ):
         super().__init__()
         self.setWindowTitle("Korder — transcript history")
@@ -279,6 +280,16 @@ class MainWindow(QMainWindow):
         self._tts_suppress_when_playing = tts_suppress_when_playing
         self._tts_speak_action_progress = tts_speak_action_progress
         self._tts_paused_services: list[str] = []
+        # Soft "go" chime on dictation start (mirrors the Plasma
+        # "ready" cue users expect from voice assistants). Audible
+        # signal that mic just opened — but transcription is
+        # deliberately deferred until the chime finishes so Whisper
+        # doesn't hear it via speaker bleed. self._chime_pending_timer
+        # tracks the QTimer that fires _begin_capture; cancel paths
+        # stop it so a cancel during the chime doesn't leak into a
+        # delayed mic-open.
+        self._start_chime_enabled = bool(start_chime)
+        self._chime_pending_timer: QTimer | None = None
         # When set, a conversational-answer reset is gated on TTS
         # finishing rather than the visual read-window timer. Avoids
         # the OSD jumping back to "Listening" while the voice is
@@ -404,9 +415,25 @@ class MainWindow(QMainWindow):
 
         Called from the IPC server when the user binds a global hotkey
         (typically Esc) to ``korder cancel``. Discards the audio buffer,
-        stops timers, hides the OSD. No-op if not currently recording.
-        Also stops any in-flight TTS — Esc means stop everything.
+        stops timers, hides the OSD. Also stops any in-flight TTS or
+        start-chime — Esc means stop everything.
         """
+        # Cancel during the chime window: mic isn't open yet, but the
+        # deferred _begin_capture is queued. Kill the timer and the
+        # chime audio so neither lands later.
+        if self._chime_pending_timer is not None:
+            self._chime_pending_timer.stop()
+            self._chime_pending_timer = None
+            try:
+                from korder.audio.chime import cancel_chime
+                cancel_chime()
+            except Exception:
+                pass
+            self._dictation_via_wake = False
+            self._status.setText(t("status_cancelled"))
+            self._sync_button()
+            self._emit_tray_state()
+            return
         if not self._recorder.is_recording:
             return
         if self._tts is not None:
@@ -445,6 +472,33 @@ class MainWindow(QMainWindow):
         if self._tts is not None and self._tts.is_playing():
             self._tts.cancel()
             self._resume_after_tts()
+        # Soft "go" chime, then start capture once it finishes.
+        # Transcription begins AFTER the chime so Whisper doesn't
+        # hear it via speaker bleed. When the chime is disabled or
+        # the OutputStream fails to open, fall through immediately.
+        if self._start_chime_enabled:
+            from korder.audio.chime import play_start_chime
+            duration_ms = play_start_chime()
+            if duration_ms > 0:
+                # Slack: 50 ms to cover stream-tail latency and the
+                # small gap between QTimer firing and PortAudio
+                # opening the input stream.
+                self._chime_pending_timer = QTimer(self)
+                self._chime_pending_timer.setSingleShot(True)
+                self._chime_pending_timer.timeout.connect(self._begin_capture)
+                self._chime_pending_timer.start(duration_ms + 50)
+                return
+        self._begin_capture()
+
+    def _begin_capture(self) -> None:
+        """Open the mic stream and start the dictation lifecycle.
+        Factored out of _start_recording so the start-chime path can
+        defer this until chime playback finishes — Whisper would
+        otherwise hear the chime via speaker bleed and try to
+        transcribe its tones."""
+        self._chime_pending_timer = None
+        if self._recorder.is_recording:
+            return
         try:
             self._recorder.start()
         except Exception as e:
