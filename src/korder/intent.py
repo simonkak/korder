@@ -29,13 +29,20 @@ from korder.actions.parser import split_into_ops
 @dataclass(frozen=True)
 class Turn:
     """One past exchange in the current dictation session: what the
-    user said, what action (if any) fired, and what natural-language
-    reply the LLM produced. Used as conversation context for
-    follow-up resolution — e.g. 'A Polski?' after asking about
-    France's capital."""
+    user said, what action (if any) fired, what natural-language
+    reply the LLM produced, and what the LLM identified as the
+    conversation's current subject. Used as conversation context
+    for follow-up resolution — e.g. 'A Polski?' after asking about
+    France's capital. The `context` field is the structured
+    counterpart to free-text `response`: where response is the
+    LLM's reply prose, context is the topic it's reasoning about
+    ('Francja', 'Linkin Park'). Subsequent prompts surface it as a
+    'Current topic:' line so follow-ups have an explicit subject
+    to bind to."""
     user_text: str
     action_name: str  # main action name fired, "" if none
     response: str  # last_response from that turn, "" if none
+    context: str  # last_context — short topic phrase, "" if none
 
 
 # Number of past turns to feed into the parser as context. 4 covers
@@ -92,7 +99,8 @@ _SYSTEM_PROMPT = (
     "\n"
     "Return ONE JSON object with this exact shape:\n"
     '  {"actions": [{"phrase": "<verbatim substring of input>", "name": "<action_name>", "params": {...}}],\n'
-    '   "response": "<optional natural-language reply, same language as input>"}\n'
+    '   "response": "<optional natural-language reply, same language as input>",\n'
+    '   "context": "<short topic phrase, or empty>"}\n'
     "\n"
     "Rules:\n"
     "- Plain dictation with no command → `{\"actions\": []}`.\n"
@@ -133,7 +141,19 @@ _SYSTEM_PROMPT = (
     "explicitly says to open a browser / look something up. Use prior "
     "turns (when shown) to resolve follow-ups like 'and Poland?' against "
     "the prior question — answer in the same mode (response vs action) "
-    "as the prior turn."
+    "as the prior turn.\n"
+    "\n"
+    "`context` field: populate with the primary subject of THIS turn — "
+    "a short phrase (proper noun / place / topic), NOT a sentence. "
+    "Examples: 'Budapeszt', 'Linkin Park', 'Bohemian Rhapsody'. When "
+    "the input doesn't introduce a new subject, CARRY FORWARD the prior "
+    "turn's topic (visible above as 'Current topic:'). For pure "
+    "commands ('press enter', 'shutdown computer') and dictation with "
+    "no clear subject, leave `context` empty. The 'Current topic:' "
+    "line is your authoritative reference — when the input is a bare "
+    "follow-up ('Ile ma mieszkańców?', 'A Polski?'), treat it as a "
+    "question ABOUT that topic and fill `response` with the answer "
+    "for that subject."
 )
 
 
@@ -158,7 +178,14 @@ def _render_history(history: list[Turn]) -> str:
     """Format prior turns as a 'Recent conversation' block to prepend to
     the analysis section of the user prompt. Empty string when there's
     no history. Each turn is one User: + Assistant: pair, trimmed of
-    empty fields so action-only turns don't print blank Assistant lines."""
+    empty fields so action-only turns don't print blank Assistant lines.
+
+    Adds an explicit 'Current topic:' line (when the most recent turn
+    populated `context`) AFTER the per-turn block. This is the
+    structured signal that complements raw history — gives bare
+    follow-ups like 'Ile ma mieszkańców?' an unambiguous subject to
+    bind to, instead of relying on the LLM to extract topic from
+    free-text assistant prose."""
     if not history:
         return ""
     lines = ["Recent conversation in this session (oldest first):"]
@@ -168,6 +195,9 @@ def _render_history(history: list[Turn]) -> str:
             lines.append(f"  Assistant: {turn.response!r}")
         elif turn.action_name:
             lines.append(f"  (Korder fired action: {turn.action_name})")
+    last_context = history[-1].context if history else ""
+    if last_context:
+        lines.append(f"Current topic: {last_context}")
     lines.append("")
     return "\n".join(lines)
 
@@ -197,23 +227,20 @@ def _build_user_prompt(
         '  "Spotify zagraj" → {"actions": [{"phrase": "Spotify zagraj", "name": "spotify_search"}], "response": "Co chcesz odtworzyć w Spotify?"}\n'
         '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
         '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
-        '  "what is the capital of France" → {"actions": [], "response": "Paris."}\n'
+        '  "what is the capital of France" → {"actions": [], "response": "Paris.", "context": "France"}\n'
+        '  "co powiesz o Budapeszcie?" → {"actions": [], "response": "Budapeszt to piękne miasto...", "context": "Budapeszt"}\n'
         '  "ile to siedem razy osiem" → {"actions": [], "response": "Pięćdziesiąt sześć."}\n'
         '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
         '  "wikipedia, Paryż" → {"actions": [{"phrase": "wikipedia, Paryż", "name": "wikipedia_search", "params": {"query": "Paryż"}}]}\n'
         '  "Zakończę." → {"actions": [{"phrase": "Zakończę.", "name": "cancel_session"}]}\n'
-        "  Follow-ups (use prior turn's topic — for both factual answers AND action params,\n"
-        "  do NOT grab structural nouns like 'strona', 'miasto', 'page'.\n"
-        "  The TOPIC comes from the prior turn, NOT from the example below):\n"
-        '    prior: User "Jaka jest stolica Francji?" / Assistant "Paryż."\n'
-        '    now:   "A Polski?" → {"actions": [], "response": "Warszawa."}\n'
-        '    prior: User "Co możesz powiedzieć o Gdańsku?" / Assistant "Gdańsk to piękne miasto..."\n'
-        '    now:   "Pokaż stronę na Wikipedii" → {"actions": [{"phrase": "Pokaż stronę na Wikipedii", "name": "wikipedia_search", "params": {"query": "Gdańsk"}}]}\n'
-        '    prior: User "Co powiesz o Warszawie?" / Assistant "Warszawa to duże miasto..."\n'
-        '    now:   "Pokaż stronę miasta w wikipedii" → {"actions": [{"phrase": "Pokaż stronę miasta w wikipedii", "name": "wikipedia_search", "params": {"query": "Warszawa"}}]}\n'
-        '           (NOT query="miasta" — \'miasta\' is structural, the subject from the prior turn is Warszawa)\n'
-        '    prior: User "what is Bohemian Rhapsody?" / Assistant "It\'s a 1975 Queen song..."\n'
-        '    now:   "play it on Spotify" → {"actions": [{"phrase": "play it on Spotify", "name": "spotify_search", "params": {"query": "Bohemian Rhapsody"}}]}\n'
+        "  Follow-ups (use 'Current topic:' from history block as the implicit subject;\n"
+        "  the TOPIC value below is illustrative only — bind to whatever the actual prior turn established):\n"
+        '    Current topic: Francja\n'
+        '    now:   "A Polski?" → {"actions": [], "response": "Warszawa.", "context": "Polska"}\n'
+        '    Current topic: Gdańsk\n'
+        '    now:   "Pokaż stronę na Wikipedii" → {"actions": [{"phrase": "Pokaż stronę na Wikipedii", "name": "wikipedia_search", "params": {"query": "Gdańsk"}}], "context": "Gdańsk"}\n'
+        '    Current topic: Bohemian Rhapsody\n'
+        '    now:   "play it on Spotify" → {"actions": [{"phrase": "play it on Spotify", "name": "spotify_search", "params": {"query": "Bohemian Rhapsody"}}], "context": "Bohemian Rhapsody"}\n'
         "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
@@ -245,6 +272,13 @@ class IntentParser:
         # ground for future conversational/TTS features. Empty string
         # when the LLM didn't include a response (the common case).
         self.last_response: str = ""
+        # Structured topic the LLM identified as the conversation's
+        # current subject ('Francja', 'Linkin Park'). Surfaced back
+        # into the next prompt as a 'Current topic:' line — gives
+        # follow-ups like 'A Polski?' or 'Ilu ma członków?' an
+        # explicit subject to bind to, instead of relying on the
+        # LLM to extract topic from raw assistant prose.
+        self.last_context: str = ""
         # Rolling conversation history, fed back into the parser prompt
         # so follow-up questions ('A Polski?' after the France-capital
         # question) resolve against prior turns. Cleared by
@@ -332,7 +366,13 @@ class IntentParser:
             print(f"[korder] history cleared ({len(self._history)} turns)", flush=True, file=sys.stderr)
         self._history = []
 
-    def _push_turn(self, transcript: str, actions: list, response: str) -> None:
+    def _push_turn(
+        self,
+        transcript: str,
+        actions: list,
+        response: str,
+        context: str,
+    ) -> None:
         """Append a Turn for this parse to history, trimmed to the most
         recent _MAX_HISTORY_TURNS entries. Action-only turns (no
         response) still get recorded for context — 'press enter' →
@@ -346,6 +386,7 @@ class IntentParser:
             user_text=transcript,
             action_name=action_name,
             response=response,
+            context=context,
         ))
         if len(self._history) > _MAX_HISTORY_TURNS:
             self._history = self._history[-_MAX_HISTORY_TURNS:]
@@ -361,7 +402,7 @@ class IntentParser:
         # Record this turn BEFORE the regex-supplement / segmentation
         # path forks — history is about what the LLM saw and produced,
         # which is the input to the next round's resolution.
-        self._push_turn(transcript, actions, self.last_response)
+        self._push_turn(transcript, actions, self.last_response, self.last_context)
 
         # Safety net: clear hallucinated `confirm` params. Smaller
         # models (e2b) sometimes invent a confirm value even when the
@@ -481,12 +522,23 @@ class IntentParser:
         # Reset last_response — if the new parse omits it, we don't
         # want to surface a stale message from the previous turn.
         self.last_response = ""
+        # Reset last_context too. New parses with no context field
+        # default to empty; only an explicit non-empty value carries
+        # forward (via _push_turn → next render's 'Current topic:').
+        self.last_context = ""
         if isinstance(parsed, dict):
             response_field = parsed.get("response")
             if isinstance(response_field, str) and response_field.strip():
                 self.last_response = response_field.strip()
                 print(
                     f"[korder] LLM response for {transcript!r}: {self.last_response!r}",
+                    flush=True, file=sys.stderr,
+                )
+            context_field = parsed.get("context")
+            if isinstance(context_field, str) and context_field.strip():
+                self.last_context = context_field.strip()
+                print(
+                    f"[korder] LLM context for {transcript!r}: {self.last_context!r}",
                     flush=True, file=sys.stderr,
                 )
             if isinstance(parsed.get("actions"), list):

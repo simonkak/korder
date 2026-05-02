@@ -173,3 +173,87 @@ def test_last_response_strips_whitespace():
     with mock_urlopen:
         p.parse("anything")
     assert p.last_response == "Confirm shutdown?"
+
+
+# ---- `context` field tests ------------------------------------------------
+
+def test_last_context_populated_when_llm_supplies_field():
+    """The new `context` field carries the conversation's current
+    subject. Same plumbing pattern as `response`: extracted in
+    _call_ollama, stashed on self.last_context, recorded in the
+    Turn so future renders surface it as a 'Current topic:' line."""
+    p, mock_urlopen = _patched_parser({
+        "actions": [],
+        "response": "Budapeszt to piękne miasto.",
+        "context": "Budapeszt",
+    })
+    with mock_urlopen:
+        p.parse("Co powiesz o Budapeszcie?")
+    assert p.last_context == "Budapeszt"
+
+
+def test_last_context_empty_when_llm_omits_field():
+    """Most parses (commands, dictation) won't have a topic — leave
+    last_context empty."""
+    p, mock_urlopen = _patched_parser({
+        "actions": [{"phrase": "press enter", "name": "press_enter"}],
+    })
+    with mock_urlopen:
+        p.parse("press enter")
+    assert p.last_context == ""
+
+
+def test_context_carries_into_history_render():
+    """End-to-end: a parse that emits context populates the Turn,
+    and the next prompt's history block surfaces 'Current topic:'."""
+    from korder.intent import _render_history
+    p, mock1 = _patched_parser({
+        "actions": [],
+        "response": "Linkin Park to amerykański zespół rockowy.",
+        "context": "Linkin Park",
+    })
+    with mock1:
+        p.parse("Co powiesz o zespole Linkin Park?")
+    rendered = _render_history(p._history)
+    assert "Current topic: Linkin Park" in rendered, (
+        f"expected 'Current topic:' line in rendered history; got:\n{rendered}"
+    )
+
+
+def test_context_resets_between_parses():
+    """A new parse with no context field must clear last_context —
+    same race-protection as last_response. The TURN record retains
+    the prior context (history is intact), but the live attribute
+    must reflect the most recent parse."""
+    p = IntentParser()
+    with patch(
+        "korder.intent.urllib.request.urlopen",
+        return_value=_FakeResp({
+            "actions": [],
+            "response": "Budapeszt to piękne miasto.",
+            "context": "Budapeszt",
+        }),
+    ):
+        p.parse("Co powiesz o Budapeszcie?")
+    assert p.last_context == "Budapeszt"
+    with patch(
+        "korder.intent.urllib.request.urlopen",
+        return_value=_FakeResp({
+            "actions": [{"phrase": "press enter", "name": "press_enter"}],
+        }),
+    ):
+        p.parse("press enter")
+    assert p.last_context == ""
+
+
+def test_context_ignores_non_string_field():
+    """Defensive: if the LLM emits non-string context (number, list,
+    null), treat as missing rather than crashing."""
+    p, mock_urlopen = _patched_parser({
+        "actions": [],
+        "response": "Paris.",
+        "context": ["unexpected", "shape"],
+    })
+    with mock_urlopen:
+        p.parse("what is the capital of France")
+    assert p.last_context == ""
