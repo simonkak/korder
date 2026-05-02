@@ -114,10 +114,8 @@ _SYSTEM_PROMPT = (
     "narrative — even if it contains pronouns or verbs.\n"
     "\n"
     "`response` cases (optional, same language as input):\n"
-    "- Confirmation needed: ask 'are you sure?' with yes/no hint ONLY "
-    "when you ARE emitting an action with a missing `confirm` param. "
-    "Never as a free-floating yes/no gate without a corresponding "
-    "action — the user has nothing to confirm.\n"
+    "- Confirmation needed (`confirm` param missing): 'are you sure?' "
+    "with yes/no hint.\n"
     "- Other parameter missing (`query`, etc.) AND no prior turn names "
     "the topic to infer from: ask what the user wants. If the prior "
     "turn DOES name the topic, fill the param from context instead — "
@@ -135,13 +133,7 @@ _SYSTEM_PROMPT = (
     "explicitly says to open a browser / look something up. Use prior "
     "turns (when shown) to resolve follow-ups like 'and Poland?' against "
     "the prior question — answer in the same mode (response vs action) "
-    "as the prior turn.\n"
-    "\n"
-    "Words match deeds: if `response` commits to taking an action ('I'll "
-    "search for that', 'mogę znaleźć w internecie', 'sprawdzę to'), "
-    "ALSO emit the corresponding action in `actions` with the topic "
-    "filled from context. Don't promise to do something and emit "
-    "`actions: []` — the user expects words to back actions."
+    "as the prior turn."
 )
 
 
