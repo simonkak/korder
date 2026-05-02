@@ -99,17 +99,23 @@ _SYSTEM_PROMPT = (
     "- `phrase` must appear verbatim in the input. `name` must be one of "
     "the listed action names. Multiple actions allowed, in order.\n"
     "- For parameterized actions, extract values into `params`. Pull from "
-    "the input first; if the input refers back to a topic from a prior "
-    "turn ('open Wikipedia' after asking about Gdańsk → query='Gdańsk'), "
-    "use that topic. Leave the value out only when neither input nor "
-    "context names it — do NOT invent.\n"
+    "the input first. When the input is a bare action verb without a "
+    "stated subject ('open Wikipedia', 'pokaż na Wikipedii', 'search "
+    "Google', 'play it on Spotify') AND a prior turn discussed a "
+    "specific topic, USE THAT TOPIC as the value — don't make the user "
+    "repeat themselves. Leave the value out only when neither input nor "
+    "context names it. Do NOT invent values without basis in the "
+    "conversation.\n"
     "- A song / album / artist name in a query is query content, NOT "
     "narrative — even if it contains pronouns or verbs.\n"
     "\n"
     "`response` cases (optional, same language as input):\n"
     "- Confirmation needed (`confirm` param missing): 'are you sure?' "
     "with yes/no hint.\n"
-    "- Other parameter missing (`query`, etc.): ask what the user wants.\n"
+    "- Other parameter missing (`query`, etc.) AND no prior turn names "
+    "the topic to infer from: ask what the user wants. If the prior "
+    "turn DOES name the topic, fill the param from context instead — "
+    "don't ask.\n"
     "- Factual question, no action match, you know the answer from "
     "training (math, geography, definitions, etc.): answer directly, "
     "briefly. Don't answer about live data (time, today's weather). "
@@ -192,9 +198,11 @@ def _build_user_prompt(
         '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
         '  "wikipedia, Paryż" → {"actions": [{"phrase": "wikipedia, Paryż", "name": "wikipedia_search", "params": {"query": "Paryż"}}]}\n'
         '  "Zakończę." → {"actions": [{"phrase": "Zakończę.", "name": "cancel_session"}]}\n'
-        "  Context inference example (when prior turn shown):\n"
-        '    prior: User "Jak stary jest Gdańsk?" / Assistant "Gdańsk istnieje od X wieku."\n'
-        '    now:   "otwórz stronę na Wikipedii" → {"actions": [{"phrase": "otwórz stronę na Wikipedii", "name": "wikipedia_search", "params": {"query": "Gdańsk"}}]}\n'
+        "  Context inference (use prior turn's topic for missing params):\n"
+        '    prior: User "Co możesz powiedzieć o Gdańsku?" / Assistant "Gdańsk to piękne miasto w Polsce..."\n'
+        '    now:   "Pokaż stronę na Wikipedii" → {"actions": [{"phrase": "Pokaż stronę na Wikipedii", "name": "wikipedia_search", "params": {"query": "Gdańsk"}}]}\n'
+        '    prior: User "what is Bohemian Rhapsody?" / Assistant "It\'s a 1975 Queen song..."\n'
+        '    now:   "play it on Spotify" → {"actions": [{"phrase": "play it on Spotify", "name": "spotify_search", "params": {"query": "Bohemian Rhapsody"}}]}\n'
         "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
