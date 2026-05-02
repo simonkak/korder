@@ -87,15 +87,21 @@ _SYSTEM_PROMPT = (
     "- For parameterized actions, extract relevant fields into `params`. If a required parameter "
     "is not present in the input, leave `params` empty or omit it — do NOT invent values.\n"
     "\n"
-    "Optionally include `response` — a brief natural-language question — "
-    "ONLY when the action has parameters that the user did not supply. "
-    "Tailor the question to which parameter is missing:\n"
-    "  - For a `confirm` parameter: 'are you sure?' style — make it obvious "
-    "what is about to happen and ask for yes/no.\n"
-    "  - For other parameters (`query`, `kind`, etc.): ask WHAT the user "
-    "wants — e.g. 'What do you want to play?' for a search query.\n"
-    "Write `response` in the same language as the input transcript. "
-    "Otherwise omit `response` (most non-pending commands fire silently)."
+    "Optionally include `response` — a brief natural-language reply to the "
+    "user. Three cases where `response` should be populated:\n"
+    "  - Action has a `confirm` parameter the user did not supply: ask "
+    "'are you sure?' in second person, end with yes/no hint.\n"
+    "  - Action has another missing parameter (`query`, `kind`, etc.): ask "
+    "WHAT the user wants — e.g. 'What do you want to play?'.\n"
+    "  - Conversational query (no action match) with a clear factual "
+    "answer YOU know from your training — math, definitions, "
+    "translations, general knowledge, geography, history. Write the "
+    "answer directly. Do NOT answer questions about live data (current "
+    "time, today's weather, news) — leave `response` empty for those, "
+    "you'll only hallucinate.\n"
+    "Always write `response` in the same language as the input transcript. "
+    "For pure dictation (description, narrative, prose with no question "
+    "and no command), leave `response` empty."
 )
 
 
@@ -135,6 +141,9 @@ def _build_user_prompt(transcript: str, *, show_triggers: bool) -> str:
         '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
         '  "Spotify zagraj" → {"actions": [{"phrase": "Spotify zagraj", "name": "spotify_search"}], "response": "Co chcesz odtworzyć w Spotify?"}\n'
         '  "play on Spotify" → {"actions": [{"phrase": "play on Spotify", "name": "spotify_search"}], "response": "What do you want to play on Spotify?"}\n'
+        '  "what is the capital of France" → {"actions": [], "response": "Paris."}\n'
+        '  "ile to siedem razy osiem" → {"actions": [], "response": "Pięćdziesiąt sześć."}\n'
+        '  "what time is it" → {"actions": []}    (live data — no response, model would hallucinate)\n'
         "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
@@ -266,7 +275,15 @@ class IntentParser:
         # mode toggles in particular). LLM still wins for "she pressed
         # enter on the keyboard" because regex would also classify that
         # as text-only thanks to the word-boundary trigger phrasing.
+        #
+        # Exception: when last_response is populated, the LLM intentionally
+        # chose to answer the user conversationally rather than dispatch
+        # an action. Skipping the regex supplement preserves that choice
+        # — otherwise a fuzzy trigger match like "what is" → wikipedia
+        # would overshadow Gemma's direct answer.
         if not actions:
+            if self.last_response:
+                return [("text", transcript)] if transcript else []
             regex_ops = split_into_ops(transcript)
             if any(op[0] != "text" for op in regex_ops):
                 print(
