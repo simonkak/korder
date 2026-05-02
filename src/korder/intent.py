@@ -98,14 +98,18 @@ _SYSTEM_PROMPT = (
     "- Plain dictation with no command → `{\"actions\": []}`.\n"
     "- `phrase` must appear verbatim in the input. `name` must be one of "
     "the listed action names. Multiple actions allowed, in order.\n"
-    "- For parameterized actions, extract values into `params`. Pull from "
-    "the input first. When the input is a bare action verb without a "
-    "stated subject ('open Wikipedia', 'pokaż na Wikipedii', 'search "
-    "Google', 'play it on Spotify') AND a prior turn discussed a "
-    "specific topic, USE THAT TOPIC as the value — don't make the user "
-    "repeat themselves. Leave the value out only when neither input nor "
-    "context names it. Do NOT invent values without basis in the "
-    "conversation.\n"
+    "- For parameterized actions, extract values into `params`. The "
+    "value is the SUBJECT of the search/play — a proper noun, name, "
+    "or topic, NOT structural nouns describing what to do with it "
+    "('strona/page', 'artykuł/article', 'miasto/city', 'utwór/track', "
+    "'wynik/result' etc., when used like 'show the page', 'play the "
+    "track'). When the input has only structural nouns or a bare "
+    "action verb ('show its page', 'pokaż stronę miasta', 'play it on "
+    "Spotify') AND a prior turn named a specific topic, USE THE PRIOR "
+    "TOPIC as the value — don't make the user repeat themselves, and "
+    "don't grab a structural noun as if it were the subject. Leave "
+    "the value out only when neither input nor context names a real "
+    "subject. Do NOT invent.\n"
     "- A song / album / artist name in a query is query content, NOT "
     "narrative — even if it contains pronouns or verbs.\n"
     "\n"
@@ -198,9 +202,13 @@ def _build_user_prompt(
         '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
         '  "wikipedia, Paryż" → {"actions": [{"phrase": "wikipedia, Paryż", "name": "wikipedia_search", "params": {"query": "Paryż"}}]}\n'
         '  "Zakończę." → {"actions": [{"phrase": "Zakończę.", "name": "cancel_session"}]}\n'
-        "  Context inference (use prior turn's topic for missing params):\n"
-        '    prior: User "Co możesz powiedzieć o Gdańsku?" / Assistant "Gdańsk to piękne miasto w Polsce..."\n'
+        "  Context inference (use prior turn's topic for missing params,\n"
+        "  do NOT grab structural nouns like 'strona', 'miasto', 'page'):\n"
+        '    prior: User "Co możesz powiedzieć o Gdańsku?" / Assistant "Gdańsk to piękne miasto..."\n'
         '    now:   "Pokaż stronę na Wikipedii" → {"actions": [{"phrase": "Pokaż stronę na Wikipedii", "name": "wikipedia_search", "params": {"query": "Gdańsk"}}]}\n'
+        '    prior: User "Co powiesz o Warszawie?" / Assistant "Warszawa to duże miasto..."\n'
+        '    now:   "Pokaż stronę miasta w wikipedii" → {"actions": [{"phrase": "Pokaż stronę miasta w wikipedii", "name": "wikipedia_search", "params": {"query": "Warszawa"}}]}\n'
+        '           (NOT query="miasta" — \'miasta\' is structural, the subject from the prior turn is Warszawa)\n'
         '    prior: User "what is Bohemian Rhapsody?" / Assistant "It\'s a 1975 Queen song..."\n'
         '    now:   "play it on Spotify" → {"actions": [{"phrase": "play it on Spotify", "name": "spotify_search", "params": {"query": "Bohemian Rhapsody"}}]}\n'
         "\n"
