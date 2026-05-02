@@ -125,6 +125,54 @@ def test_force_resume_after_cancel_releases_count_and_services():
     assert stub._tts_paused_services == []
 
 
+def test_cancel_recording_stops_tts_even_when_recorder_idle(monkeypatch):
+    """Regression: now_playing triggers auto_stop, recorder closes,
+    TTS keeps speaking. User hits Esc — cancel_recording must stop
+    TTS even though the recorder is no longer recording.
+
+    Previous bug: cancel_recording early-returned on `not is_recording`
+    BEFORE calling tts.cancel(), so the voice kept yapping past
+    user's stop signal."""
+    import types
+    from unittest.mock import MagicMock
+    from korder.ui import main_window as mw
+
+    tts = MagicMock()
+    tts.is_playing.return_value = True
+
+    recorder = MagicMock()
+    recorder.is_recording = False  # auto_stop already closed it
+
+    class _Stub:
+        _recorder = recorder
+        _tts = tts
+        _chime_pending_timer = None
+        _tts_paused_services = []
+        _tts_active_count = 0
+        _await_tts_for_answer_reset = False
+        _dictation_via_wake = False
+        _partial_timer = MagicMock()
+        _osd_throttle_timer = MagicMock()
+        _wake_idle_timer = MagicMock()
+        _osd = MagicMock()
+        _status = MagicMock()
+        _pending_partial_text = None
+        def _sync_button(self): pass
+        def _emit_tray_state(self): pass
+
+    stub = _Stub()
+    stub._force_resume_after_cancel = types.MethodType(
+        mw.MainWindow._force_resume_after_cancel, stub,
+    )
+    stub.cancel_recording = types.MethodType(mw.MainWindow.cancel_recording, stub)
+
+    with patch.object(_mpris, "qdbus", return_value=""):
+        stub.cancel_recording()
+
+    # TTS.cancel() ran even though recorder wasn't recording
+    assert tts.cancel.called, "TTS must be silenced on cancel even when recorder is idle"
+
+
 def test_late_playback_finished_after_force_resume_is_noop():
     """If a stale playback_finished arrives after force-resume
     (because the worker was mid-play when cancel hit), the count

@@ -421,13 +421,21 @@ class MainWindow(QMainWindow):
         self.tray_state_changed.emit(state)
 
     def cancel_recording(self) -> None:
-        """Abort the current recording without transcribing or injecting.
+        """Abort the current recording AND any in-flight chime / TTS.
 
         Called from the IPC server when the user binds a global hotkey
-        (typically Esc) to ``korder cancel``. Discards the audio buffer,
-        stops timers, hides the OSD. Also stops any in-flight TTS or
-        start-chime — Esc means stop everything.
+        (typically Esc) to ``korder cancel``. Esc means stop
+        everything — including TTS that's still speaking after the
+        recorder already auto-stopped (e.g. now_playing fires →
+        auto_stop closes mic → voice reads track → user hits Esc:
+        the voice MUST shut up, even though there's no recording
+        to abort).
         """
+        # Always-stop bits, regardless of recorder state.
+        if self._tts is not None:
+            self._tts.cancel()
+            self._force_resume_after_cancel()
+        self._await_tts_for_answer_reset = False
         # Cancel during the chime window: mic isn't open yet, but the
         # deferred _begin_capture is queued. Kill the timer and the
         # chime audio so neither lands later.
@@ -444,12 +452,12 @@ class MainWindow(QMainWindow):
             self._sync_button()
             self._emit_tray_state()
             return
+        # Recorder-specific cleanup only when there's actually a
+        # recording in progress. TTS / chime were already handled
+        # above so users still get silenced even when the mic
+        # already closed (post-auto-stop case).
         if not self._recorder.is_recording:
             return
-        if self._tts is not None:
-            self._tts.cancel()
-            self._force_resume_after_cancel()
-        self._await_tts_for_answer_reset = False
         self._partial_timer.stop()
         self._osd_throttle_timer.stop()
         self._wake_idle_timer.stop()
@@ -1270,6 +1278,16 @@ class MainWindow(QMainWindow):
             f"Pending: {action_name} waiting for parameter",
             int(self.PENDING_ACTION_TIMEOUT_S * 1000),
         )
+        # Speak the prompt too (issue #2). Pending-action prompts ARE
+        # the eyes-busy use case — Korder is asking the user a
+        # question; if it can't be heard, the silence reads as the
+        # action breaking. Same diacritic-based lang heuristic
+        # used everywhere else (the hint can be Polish or English
+        # regardless of system locale because Gemma writes
+        # response in the user's input language).
+        if self._tts is not None and hint:
+            lang = "pl" if any(c in hint for c in "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ") else "en"
+            self._on_speak_text(hint, lang)
 
     def _resolve_pending_action(self, action_name: str, param_text: str) -> bool:
         """Build params from the follow-up text and dispatch the action.
