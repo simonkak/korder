@@ -29,18 +29,30 @@ def test_build_chime_returns_sane_buffer():
     _reset_chime_state()
     audio, sr, dur_ms = chime_mod.build_start_chime()
     assert sr == 44100
-    assert dur_ms == 200
-    # Mono float32, length matches duration
+    # Third return is the DEFERRAL window for the caller — the audio
+    # itself is longer (bell rings out past the mic-open point at
+    # sub-bleed amplitude). dur_ms = 280 ms; audio = ~550 ms.
+    assert dur_ms == 280
     assert audio.dtype == np.float32
     assert audio.ndim == 1
-    assert audio.shape[0] == int(0.2 * 44100)
-    # Peak amplitude bounded by the documented headroom (-12 dBFS ≈ 0.25)
+    expected_n = int(0.55 * 44100)
+    # Allow ±1 sample tolerance on the linspace boundary
+    assert abs(audio.shape[0] - expected_n) <= 1
+    # Peak amplitude bounded by the documented headroom (~ -13 dBFS)
     peak = float(np.max(np.abs(audio)))
-    assert 0.0 < peak <= 0.30, f"peak {peak} outside expected range"
-    # Fade-in: first sample should be near zero, not full peak
+    assert 0.0 < peak <= 0.25, f"peak {peak} outside expected range"
+    # Soft attack: first sample near zero (avoids speaker pop)
     assert abs(audio[0]) < peak * 0.5
-    # Fade-out: last sample should be near zero
-    assert abs(audio[-1]) < peak * 0.1
+    # Bell ringdown: the last 50 ms must be substantially quieter
+    # than the loud body (~first 100 ms). Sanity check that the
+    # exponential envelope is wired up — not a precise acoustic
+    # claim. Real speaker-bleed margin is provided by the ducker
+    # taking system volume to 30 % at mic-open.
+    body_peak = float(np.max(np.abs(audio[: int(0.10 * 44100)])))
+    tail_peak = float(np.max(np.abs(audio[-int(0.05 * 44100):])))
+    assert tail_peak < body_peak * 0.5, (
+        f"tail {tail_peak} should be much quieter than body {body_peak}"
+    )
 
 
 def test_build_chime_caches_buffer():
@@ -69,7 +81,7 @@ def test_play_chime_uses_dedicated_output_stream(monkeypatch):
     monkeypatch.setattr(chime_mod.sd, "play", MagicMock(side_effect=AssertionError("chime must not use sd.play")))
 
     duration_ms = chime_mod.play_start_chime()
-    assert duration_ms == 200
+    assert duration_ms == 280
     # OutputStream constructed exactly once with the right format
     assert len(constructed) == 1
     # start() called on it
