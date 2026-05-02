@@ -103,6 +103,22 @@ DEFAULTS: dict[str, dict[str, str]] = {
     "web": {
         "search_engine": "duckduckgo",
     },
+    # click_by_label action — voice-controlled clicking via the AT-SPI
+    # accessibility tree, with an optional Gemma vision fallback when no
+    # accessible widget matches the spoken label. Requires `uv sync
+    # --extra a11y`. Both knobs no-op when the dep isn't installed.
+    "click": {
+        # Engage the vision-grounding fallback when AT-SPI returns no
+        # match. Set false to make click_by_label AT-SPI-only — fails
+        # cleanly on Electron / Chromium subtrees / canvas UIs instead
+        # of paying the ~2-3s vision-call latency.
+        "vision_fallback": "true",
+        # Gemma image-token budget for the vision fallback call. One of
+        # 70, 140, 280, 560, 1120 (per Google's vision docs). Higher =
+        # better localization on small UI elements at the cost of
+        # latency. 560 is a balanced default.
+        "vision_token_budget": "560",
+    },
 }
 
 

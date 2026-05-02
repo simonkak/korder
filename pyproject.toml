@@ -37,6 +37,16 @@ wake = [
     "onnxruntime>=1.16",
 ]
 
+# Voice-controlled clicking (issue: click_by_label action). Optional
+# because PyGObject pulls in the GTK introspection stack and is only
+# useful on Linux desktops where AT-SPI is the click target. Pillow is
+# needed for the vision-fallback screenshot resize step. Users on the
+# transcription-only path don't need either.
+a11y = [
+    "PyGObject>=3.46",
+    "Pillow>=10.0",
+]
+
 [tool.uv]
 # Side-step openwakeword's hard tflite-runtime requirement. We run
 # inference through onnxruntime instead, so tflite-runtime is dead

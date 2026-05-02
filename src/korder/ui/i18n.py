@@ -73,6 +73,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_locking_screen": "Blokuję ekran…",
         "progress_lock_failed": "Blokada nieudana: {error}",
         "progress_xdg_failed": "xdg-open nie powiódł się: {error}",
+        # click_by_label action narration. {name} is the matched widget
+        # label (echoed back so the user can correct mismatches);
+        # {label} is what the user originally said.
+        "progress_clicking": "Klikam: {name}",
+        "progress_no_match_button": "Nie znaleziono przycisku: {label}",
+        "progress_a11y_missing": "Brak biblioteki a11y — uruchom `uv sync --extra a11y`",
         # Power-state actions (shutdown / reboot / sleep) — confirmation
         # required via the pending_action flow before they fire.
         "progress_shutting_down": "Wyłączam komputer…",
@@ -138,6 +144,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_locking_screen": "Locking screen…",
         "progress_lock_failed": "Lock failed: {error}",
         "progress_xdg_failed": "xdg-open failed: {error}",
+        "progress_clicking": "Clicking: {name}",
+        "progress_no_match_button": "No button matching: {label}",
+        "progress_a11y_missing": "a11y libraries missing — run `uv sync --extra a11y`",
         "progress_shutting_down": "Shutting down…",
         "progress_rebooting": "Rebooting…",
         "progress_suspending": "Suspending…",

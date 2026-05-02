@@ -146,6 +146,22 @@ dialog's **Wake word** tab:
 uv sync --extra wake
 ```
 
+For voice-controlled clicking (*"click submit"* / *"kliknij wyślij"*),
+install the a11y extra:
+
+```bash
+uv sync --extra a11y
+```
+
+Korder walks the focused app's AT-SPI accessibility tree, fuzzy-matches
+the spoken label against widget names, and clicks. Native Qt/GTK apps
+on KDE Plasma 6 work out of the box. Electron apps (VSCode, Discord,
+Slack) need `--force-renderer-accessibility` on their command line — or
+fall through to the Gemma vision fallback (requires `gemma4:e4b` —
+which you already have if you're using LLM intent parsing). Web pages
+inside browsers benefit from enabling accessibility in browser settings,
+otherwise the vision fallback engages there too.
+
 The IPC accepts `wake-toggle`, `wake-on`, and `wake-off` if you want a
 hotkey to flip wake-mode without opening the dialog (or you'd rather the
 mic isn't listening 24/7 and only enable it on demand).
@@ -302,6 +318,7 @@ across whichever language Whisper transcribes.
 | YouTube           | "play X on YouTube"                               |
 | Wikipedia         | "wikipedia X", "look up X on Wikipedia"           |
 | Maps              | "navigate to X", "where is X"                     |
+| Click on screen   | "click submit", "kliknij wyślij" — finds the named control via AT-SPI, falls back to Gemma vision on Electron / web pages |
 | Lock screen       | "lock screen"                                     |
 | Shutdown          | "shutdown computer" (then "yes" to confirm)       |
 | Reboot            | "restart computer" (then "yes" to confirm)        |
@@ -316,7 +333,7 @@ across whichever language Whisper transcribes.
 ## Development
 
 ```bash
-uv run pytest                                    # 186 tests, no external services required
+uv run pytest                                    # 208 tests, no external services required
 uv run pytest -m ollama                          # +44 integration tests against a live Gemma
 uv run python -m korder.intent_bench             # 21-case headless benchmark vs the current model
 uv run python -m korder.intent_bench --thinking  # …with Gemma's thinking step engaged
