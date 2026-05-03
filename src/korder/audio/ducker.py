@@ -20,9 +20,12 @@ not ducked is a no-op.
 """
 from __future__ import annotations
 import atexit
+import logging
 import re
 import subprocess
 import threading
+
+log = logging.getLogger(__name__)
 
 
 _VOLUME_RE = re.compile(r"Volume:\s+([\d.]+)")
@@ -64,17 +67,14 @@ class VolumeDucker:
                 return
             if self._set_volume(self._target):
                 self._saved = current
-                print(
-                    f"[korder] ducker: {current:.2f} → {self._target:.2f}",
-                    flush=True,
-                )
+                log.info("ducker: %.2f → %.2f", current, self._target)
 
     def restore(self) -> None:
         with self._lock:
             if self._saved is None:
                 return
             if self._set_volume(self._saved):
-                print(f"[korder] ducker: restored {self._saved:.2f}", flush=True)
+                log.info("ducker: restored %.2f", self._saved)
             # Clear saved state regardless — a failed restore call shouldn't
             # leave us pinned in "ducked" forever; the next duck() can re-read
             # whatever the user left things at.
@@ -96,7 +96,7 @@ class VolumeDucker:
                 check=True,
             )
         except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-            print(f"[korder] ducker: get-volume failed: {e}", flush=True)
+            log.error("ducker: get-volume failed: %s", e)
             return None
         match = _VOLUME_RE.search(result.stdout)
         if match is None:
@@ -116,5 +116,5 @@ class VolumeDucker:
             )
             return True
         except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-            print(f"[korder] ducker: set-volume failed: {e}", flush=True)
+            log.error("ducker: set-volume failed: %s", e)
             return False

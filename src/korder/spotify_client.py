@@ -16,12 +16,15 @@ Setup (one-time, ~2 min):
 from __future__ import annotations
 import base64
 import json
+import logging
 import threading
 import time
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+
+log = logging.getLogger(__name__)
 
 
 _TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -157,7 +160,7 @@ class SpotifyClient:
             with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
-            print(f"[korder] Spotify search ({type_param}) failed: {e}", flush=True)
+            log.error("Spotify search (%s) failed: %s", type_param, e)
             return None
 
     # Backward-compat alias for callers that imported the old name.
@@ -185,7 +188,7 @@ class SpotifyClient:
                 with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
                     body = json.loads(resp.read().decode("utf-8"))
             except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
-                print(f"[korder] Spotify token fetch failed: {e}", flush=True)
+                log.error("Spotify token fetch failed: %s", e)
                 return None
             self._token = body.get("access_token")
             self._token_expires_at = now + float(body.get("expires_in", 3600))

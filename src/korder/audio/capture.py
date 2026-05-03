@@ -10,13 +10,15 @@ consumers (wake-word detector, VAD-on-tap, level meter, …) call
 the dictation flow.
 """
 from __future__ import annotations
-import sys
+import logging
 import threading
 import time
 from typing import Callable
 
 import numpy as np
 import sounddevice as sd
+
+log = logging.getLogger(__name__)
 
 
 FrameCallback = Callable[[np.ndarray], None]
@@ -62,7 +64,7 @@ class MicRecorder:
             try:
                 sub(chunk)
             except Exception as e:
-                print(f"[korder] mic subscriber error: {e}", flush=True, file=sys.stderr)
+                log.error("mic subscriber error: %s", e)
 
     def subscribe(self, fn: FrameCallback) -> None:
         """Attach a frame consumer. Opens the audio stream on the first
@@ -124,10 +126,7 @@ class MicRecorder:
                 last_exc = e
                 if not self._is_transient_pa_error(e):
                     raise
-                print(
-                    f"[korder] mic: InputStream construct failed (transient): {e}",
-                    flush=True, file=sys.stderr,
-                )
+                log.warning("mic: InputStream construct failed (transient): %s", e)
                 continue
             try:
                 stream.start()
@@ -142,10 +141,7 @@ class MicRecorder:
                     pass
                 if not self._is_transient_pa_error(e):
                     raise
-                print(
-                    f"[korder] mic: InputStream start failed (transient, will retry): {e}",
-                    flush=True, file=sys.stderr,
-                )
+                log.warning("mic: InputStream start failed (transient, will retry): %s", e)
                 continue
         # All retries exhausted.
         assert last_exc is not None
