@@ -15,7 +15,7 @@ or any phrase isn't found in the input.
 """
 from __future__ import annotations
 import json
-import sys
+import logging
 import threading
 import time
 import urllib.error
@@ -24,6 +24,8 @@ from dataclasses import dataclass
 
 from korder.actions.base import all_actions, get_action
 from korder.actions.parser import split_into_ops
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -296,17 +298,9 @@ class IntentParser:
         runs on a daemon thread."""
         already_loaded = self.is_model_loaded()
         if already_loaded:
-            print(
-                f"[korder] warm-up: {self.model} already resident — "
-                f"keep_alive bumped",
-                flush=True, file=sys.stderr,
-            )
+            log.info("warm-up: %s already resident — keep_alive bumped", self.model)
         else:
-            print(
-                f"[korder] warm-up: {self.model} not resident — "
-                f"kicking off background load",
-                flush=True, file=sys.stderr,
-            )
+            log.info("warm-up: %s not resident — kicking off background load", self.model)
         payload = {
             "model": self.model,
             "prompt": "",
@@ -326,17 +320,11 @@ class IntentParser:
             except Exception as e:
                 # Warm-up is opportunistic; failure here is fine —
                 # the actual parse call will surface a real error.
-                print(
-                    f"[korder] warm-up of {self.model} failed: {e}",
-                    flush=True, file=sys.stderr,
-                )
+                log.warning("warm-up of %s failed: %s", self.model, e)
                 return
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             verb = "bumped" if already_loaded else "loaded"
-            print(
-                f"[korder] warm-up: {self.model} {verb} in {elapsed_ms:.0f} ms",
-                flush=True, file=sys.stderr,
-            )
+            log.info("warm-up: %s %s in %.0f ms", self.model, verb, elapsed_ms)
         threading.Thread(target=_send, daemon=True).start()
 
     def is_model_loaded(self) -> bool:
@@ -363,7 +351,7 @@ class IntentParser:
         next session starts fresh — yesterday's 'and Polish?' shouldn't
         resolve against last week's France question."""
         if self._history:
-            print(f"[korder] history cleared ({len(self._history)} turns)", flush=True, file=sys.stderr)
+            log.info("history cleared (%d turns)", len(self._history))
         self._history = []
 
     def _push_turn(
@@ -397,7 +385,7 @@ class IntentParser:
         try:
             actions = self._call_ollama(transcript)
         except Exception as e:
-            print(f"[korder] intent LLM failed, falling back to regex: {e}", flush=True, file=sys.stderr)
+            log.warning("intent LLM failed, falling back to regex: %s", e)
             return split_into_ops(transcript)
         # Record this turn BEFORE the regex-supplement / segmentation
         # path forks — history is about what the LLM saw and produced,
@@ -415,7 +403,7 @@ class IntentParser:
         # to confirm or cancel.
         _scrub_hallucinated_confirm(transcript, actions)
 
-        print(f"[korder] LLM actions for {transcript!r}: {actions!r}", flush=True, file=sys.stderr)
+        log.info("LLM actions for %r: %r", transcript, actions)
 
         # Supplement: if LLM came back empty but the regex parser sees an
         # actual registered trigger phrase, use the regex result. Catches
@@ -434,16 +422,15 @@ class IntentParser:
                 return [("text", transcript)] if transcript else []
             regex_ops = split_into_ops(transcript)
             if any(op[0] != "text" for op in regex_ops):
-                print(
-                    f"[korder] LLM found no actions; regex caught triggers, using regex: {regex_ops!r}",
-                    flush=True,
-                    file=sys.stderr,
+                log.info(
+                    "LLM found no actions; regex caught triggers, using regex: %r",
+                    regex_ops,
                 )
                 return regex_ops
 
         ops = segment_input_by_actions(transcript, actions)
         if ops is None:
-            print(f"[korder] LLM action phrase not found in input, falling back to regex", flush=True, file=sys.stderr)
+            log.info("LLM action phrase not found in input, falling back to regex")
             return split_into_ops(transcript)
 
         # Second-chance regex backstop: LLM emitted SOMETHING in actions
@@ -458,14 +445,13 @@ class IntentParser:
         if actions and ops and all(op[0] == "text" for op in ops):
             regex_ops = split_into_ops(transcript)
             if any(op[0] != "text" for op in regex_ops):
-                print(
-                    f"[korder] LLM emitted malformed actions; regex caught triggers, using regex: {regex_ops!r}",
-                    flush=True,
-                    file=sys.stderr,
+                log.info(
+                    "LLM emitted malformed actions; regex caught triggers, using regex: %r",
+                    regex_ops,
                 )
                 return regex_ops
 
-        print(f"[korder] segmented ops: {ops!r}", flush=True, file=sys.stderr)
+        log.info("segmented ops: %r", ops)
         return ops
 
     def _call_ollama(self, transcript: str) -> list:
@@ -512,11 +498,7 @@ class IntentParser:
         thinking = (body.get("thinking") or "").strip()
         self.last_thinking = thinking
         if thinking:
-            print(
-                f"[korder] gemma thinking for {transcript!r}:\n  {thinking}",
-                flush=True,
-                file=sys.stderr,
-            )
+            log.info("gemma thinking for %r:\n  %s", transcript, thinking)
         raw = body.get("response", "").strip()
         parsed = _extract_json_object(raw)
         # Reset last_response — if the new parse omits it, we don't
@@ -530,17 +512,11 @@ class IntentParser:
             response_field = parsed.get("response")
             if isinstance(response_field, str) and response_field.strip():
                 self.last_response = response_field.strip()
-                print(
-                    f"[korder] LLM response for {transcript!r}: {self.last_response!r}",
-                    flush=True, file=sys.stderr,
-                )
+                log.info("LLM response for %r: %r", transcript, self.last_response)
             context_field = parsed.get("context")
             if isinstance(context_field, str) and context_field.strip():
                 self.last_context = context_field.strip()
-                print(
-                    f"[korder] LLM context for {transcript!r}: {self.last_context!r}",
-                    flush=True, file=sys.stderr,
-                )
+                log.info("LLM context for %r: %r", transcript, self.last_context)
             if isinstance(parsed.get("actions"), list):
                 return parsed["actions"]
         if isinstance(parsed, list):
@@ -568,10 +544,9 @@ def _scrub_hallucinated_confirm(transcript: str, actions: list) -> None:
         if not confirm or not isinstance(confirm, str):
             continue
         if confirm.strip().lower() not in lower:
-            print(
-                f"[korder] cleared hallucinated confirm={confirm!r} for "
-                f"action {action.get('name')!r} — not present in transcript",
-                flush=True, file=sys.stderr,
+            log.warning(
+                "cleared hallucinated confirm=%r for action %r — not present in transcript",
+                confirm, action.get("name"),
             )
             params["confirm"] = ""
 

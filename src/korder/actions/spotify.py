@@ -28,10 +28,13 @@ omits it (no explicit cue in the utterance), the client searches all
 four types in one request and picks the closest name match to the
 query — see SpotifyClient.search.
 """
+import logging
 import shlex
 import subprocess
 import time
 from urllib.parse import quote
+
+log = logging.getLogger(__name__)
 
 from korder import config
 from korder.actions.base import Action, register
@@ -110,13 +113,13 @@ def _spotify_play_query(query: str, kind: str) -> None:
             ))
             time.sleep(_PROGRESS_DWELL_S)
             emit_progress(tf("progress_playing", name=name))
-            print(f"[korder] Spotify: playing {result['uri']} (kind={result.get('kind')}) for query {query!r}", flush=True)
+            log.info("Spotify: playing %s (kind=%s) for query %r", result['uri'], result.get('kind'), query)
             _open_uri_via_dbus_or_xdg(result["uri"])
             return
     # Fallback: open search UI, user clicks
     fallback_uri = f"spotify:search:{quote(query)}"
     emit_progress(tf("progress_no_match", query=query))
-    print(f"[korder] Spotify: no API result; opening search {fallback_uri}", flush=True)
+    log.info("Spotify: no API result; opening search %s", fallback_uri)
     _open_uri_via_dbus_or_xdg(fallback_uri)
 
 

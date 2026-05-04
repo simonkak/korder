@@ -12,6 +12,7 @@ _confirm_op_factory below for the tri-state semantics.
 """
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from typing import Callable
@@ -19,6 +20,8 @@ from typing import Callable
 from korder.actions.base import Action, register
 from korder.ui.i18n import t, tf
 from korder.ui.progress import emit_progress
+
+log = logging.getLogger(__name__)
 
 
 def _do_lock_screen() -> None:
@@ -36,7 +39,7 @@ def _do_lock_screen() -> None:
         )
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
         emit_progress(tf("progress_lock_failed", error=str(e)))
-        print(f"[korder] lock_screen: xdg-screensaver failed: {e}", flush=True)
+        log.error("lock_screen: xdg-screensaver failed: %s", e)
 
 
 register(Action(
@@ -156,7 +159,7 @@ def _do_shutdown() -> None:
         subprocess.run(["systemctl", "poweroff"], check=False, capture_output=True, timeout=5)
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
         emit_progress(tf("progress_power_failed", action=t("progress_shutting_down"), error=str(e)))
-        print(f"[korder] shutdown: systemctl poweroff failed: {e}", flush=True)
+        log.error("shutdown: systemctl poweroff failed: %s", e)
 
 
 def _do_reboot() -> None:
@@ -165,7 +168,7 @@ def _do_reboot() -> None:
         subprocess.run(["systemctl", "reboot"], check=False, capture_output=True, timeout=5)
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
         emit_progress(tf("progress_power_failed", action=t("progress_rebooting"), error=str(e)))
-        print(f"[korder] reboot: systemctl reboot failed: {e}", flush=True)
+        log.error("reboot: systemctl reboot failed: %s", e)
 
 
 def _do_suspend() -> None:
@@ -174,7 +177,7 @@ def _do_suspend() -> None:
         subprocess.run(["systemctl", "suspend"], check=False, capture_output=True, timeout=5)
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
         emit_progress(tf("progress_power_failed", action=t("progress_suspending"), error=str(e)))
-        print(f"[korder] sleep: systemctl suspend failed: {e}", flush=True)
+        log.error("sleep: systemctl suspend failed: %s", e)
 
 
 register(_confirmable_action(

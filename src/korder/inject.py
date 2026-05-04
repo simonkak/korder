@@ -7,6 +7,7 @@ executes whatever op tuples come back. Backward compatibility shims
 the codebase and any external scripts keep working.
 """
 from __future__ import annotations
+import logging
 import shutil
 import subprocess
 import threading
@@ -14,6 +15,8 @@ import time
 
 from korder.actions.codes import KEY_LCTRL, KEY_V
 from korder.actions.parser import split_into_ops as _split_into_ops  # noqa: F401  (re-export)
+
+log = logging.getLogger(__name__)
 
 
 class InjectError(RuntimeError):
@@ -188,7 +191,7 @@ class YdotoolBackend:
         try:
             fn()
         except Exception as e:
-            print(f"[korder] callable action failed: {e}", flush=True)
+            log.error("callable action failed: %s", e)
 
     def _run_system_volume(self, payload) -> None:
         """Adjust the default audio sink directly via wpctl. Replaces the
@@ -205,7 +208,7 @@ class YdotoolBackend:
         try:
             direction, step_pct = payload
         except (TypeError, ValueError):
-            print(f"[korder] system_volume: bad payload {payload!r}", flush=True)
+            log.error("system_volume: bad payload %r", payload)
             return
         if direction == "up":
             args = ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{step_pct}%+"]
@@ -214,12 +217,12 @@ class YdotoolBackend:
         elif direction == "mute_toggle":
             args = ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]
         else:
-            print(f"[korder] system_volume: unknown direction {direction!r}", flush=True)
+            log.warning("system_volume: unknown direction %r", direction)
             return
         try:
             subprocess.run(args, check=False, capture_output=True, timeout=2.0)
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            print(f"[korder] system_volume {direction} failed: {e}", flush=True)
+            log.error("system_volume %s failed: %s", direction, e)
 
     def _run_subprocess(self, args: list[str]) -> None:
         """Issue a system command (volume, media, etc.) — fire and forget.
@@ -235,7 +238,7 @@ class YdotoolBackend:
                 timeout=5,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            print(f"[korder] subprocess action {args!r} failed: {e}", flush=True)
+            log.error("subprocess action %r failed: %s", args, e)
 
     def _should_paste(self, text: str) -> bool:
         if not self._has_wl_copy:

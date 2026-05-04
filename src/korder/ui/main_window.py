@@ -2,7 +2,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import sys
 import numpy as np
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QCloseEvent
@@ -97,10 +96,7 @@ class _InjectWorker(QThread):
                 # a separate Loading state so the user understands the
                 # extra second isn't reasoning, it's paging the model in.
                 if self._injector.is_slow_parser and not self._injector.is_op_parser_warm():
-                    print(
-                        "[korder] parse: model not resident — cold start, showing Loading",
-                        flush=True, file=sys.stderr,
-                    )
+                    log.info("parse: model not resident — cold start, showing Loading")
                     self.loading_started.emit()
                 else:
                     self.parse_started.emit()
@@ -123,10 +119,7 @@ class _InjectWorker(QThread):
                     response = last_response_fn() or ""
                 self.parse_response.emit(response)
                 if self._injector.is_slow_parser:
-                    print(
-                        f"[korder] parse: completed in {(time.perf_counter()-t0)*1000:.0f} ms",
-                        flush=True, file=sys.stderr,
-                    )
+                    log.info("parse: completed in %.0f ms", (time.perf_counter()-t0)*1000)
                 self.parse_done.emit()
             # Cancel takes priority over everything else in the batch.
             # When the user said 'cancel' / 'nevermind', drop any pending
@@ -135,10 +128,7 @@ class _InjectWorker(QThread):
             # the OSD has cleaned up its Thinking state; the main thread
             # handles the rest via cancel_requested.
             if any(op[0] == "cancel" for op in ops):
-                print(
-                    "[korder] cancel_session: aborting batch, signalling main thread",
-                    flush=True, file=sys.stderr,
-                )
+                log.info("cancel_session: aborting batch, signalling main thread")
                 self.cancel_requested.emit()
                 return
             filtered: list[tuple] = []
@@ -365,7 +355,7 @@ class MainWindow(QMainWindow):
         try:
             self._wake_detector.start()
         except Exception as e:
-            print(f"[korder] wake: failed to start: {e}", flush=True, file=sys.stderr)
+            log.error("wake: failed to start: %s", e)
             self.statusBar().showMessage(f"Wake-word: {e}", 8000)
             return
         self._emit_tray_state()
@@ -395,7 +385,7 @@ class MainWindow(QMainWindow):
         self._sync_button()
 
     def _on_wake_error(self, msg: str) -> None:
-        print(f"[korder] wake: {msg}", flush=True, file=sys.stderr)
+        log.error("wake: %s", msg)
 
     def _on_wake_idle_timeout(self) -> None:
         """No speech arrived within wake_idle_timeout_s of a wake fire.
@@ -403,10 +393,7 @@ class MainWindow(QMainWindow):
         so the OSD doesn't sit open on a false positive."""
         if not self._recorder.is_recording:
             return
-        print(
-            "[korder] wake: dictation idle-timeout — canceling, returning to wake-listen",
-            flush=True, file=sys.stderr,
-        )
+        log.info("wake: dictation idle-timeout — canceling, returning to wake-listen")
         self.cancel_recording()
 
     def _emit_tray_state(self) -> None:
@@ -734,13 +721,10 @@ class MainWindow(QMainWindow):
         if text is None or not self._recorder.is_recording:
             return
         locked, flux = _split_at_locked_prefix(self._last_displayed_partial, text)
-        if os.environ.get("KORDER_DEBUG_OSD") == "1":
-            print(
-                f"[korder.osd] locked={locked!r} flux={flux!r} "
-                f"(prev={self._last_displayed_partial!r}, curr={text!r})",
-                file=sys.stderr,
-                flush=True,
-            )
+        log.debug(
+            "osd locked=%r flux=%r (prev=%r, curr=%r)",
+            locked, flux, self._last_displayed_partial, text,
+        )
         # No usable lock yet (first partial of the segment, or revision):
         # fall back to single-color render.
         if locked:
@@ -821,17 +805,14 @@ class MainWindow(QMainWindow):
         # previous worker emits pending_action — losing the "next text
         # commit is my parameter" wiring. _reap_inject drains the queue.
         if self._inject_workers:
-            print(
-                f"[korder] commit {text!r} queued (workers in flight={len(self._inject_workers)}, pending={self._pending_action!r})",
-                flush=True,
+            log.info(
+                "commit %r queued (workers in flight=%d, pending=%r)",
+                text, len(self._inject_workers), self._pending_action,
             )
             self._commit_queue.append(text)
             return
 
-        print(
-            f"[korder] commit {text!r} immediate (pending={self._pending_action!r})",
-            flush=True,
-        )
+        log.info("commit %r immediate (pending=%r)", text, self._pending_action)
         self._process_commit(text)
 
     def _process_commit(self, text: str) -> None:
@@ -959,7 +940,7 @@ class MainWindow(QMainWindow):
             return
         if self._pending_action is not None:
             return
-        print(f"[korder] conversational answer: {answer!r}", flush=True)
+        log.info("conversational answer: %r", answer)
         self._osd.set_executing_progress(answer)
         # Visual read window: ~50 ms per character + 1.5 s minimum,
         # 7 s ceiling. Long enough for Polish multi-clause sentences,
@@ -1087,7 +1068,7 @@ class MainWindow(QMainWindow):
         cancel path does, and clear any pending-action / auto-stop
         bookkeeping so the next session starts fresh. Also stops any
         in-flight TTS — cancel means cancel everything."""
-        print("[korder] cancel_session: aborting recording on user request", flush=True)
+        log.info("cancel_session: aborting recording on user request")
         self._auto_stop_pending = False
         self._pending_action = None
         if self._tts is not None:
@@ -1232,7 +1213,7 @@ class MainWindow(QMainWindow):
         into) doesn't get flushed through Whisper as a spurious final
         commit when the mic closes."""
         if self._recorder.is_recording:
-            print("[korder] auto-stop after command", flush=True)
+            log.info("auto-stop after command")
             self._stop_recording(transcribe_tail=False)
             self._sync_button()
 
@@ -1247,7 +1228,7 @@ class MainWindow(QMainWindow):
     def _on_pending_action(self, action_name: str) -> None:
         """Worker reports a parameterized action with empty params —
         wait for the next commit and treat it as the parameter."""
-        print(f"[korder] pending action set: {action_name!r}", flush=True)
+        log.info("pending action set: %r", action_name)
         self._pending_action = action_name
         self._pending_action_time = time.time()
         action = get_action(action_name)
@@ -1337,10 +1318,7 @@ class MainWindow(QMainWindow):
         # worker to fully finish before starting the next.
         if not self._inject_workers and self._commit_queue:
             next_text = self._commit_queue.pop(0)
-            print(
-                f"[korder] draining queue: {next_text!r} (pending={self._pending_action!r})",
-                flush=True,
-            )
+            log.info("draining queue: %r (pending=%r)", next_text, self._pending_action)
             self._process_commit(next_text)
 
     def _on_fail(self, msg: str) -> None:
