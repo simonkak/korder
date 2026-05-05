@@ -142,14 +142,14 @@ def _resume_player_op(args: dict) -> tuple:
 _TARGET_PARAM = {
     "target": {
         "type": "string",
+        "required": True,
         "description": (
             "Player name and/or track-title fragment to pause / resume. "
             "Examples: 'Spotify', 'Firefox', 'Firefox How I Chose a Linux "
             "Distro' (matches the Firefox player whose current tab title "
-            "contains those words). Omit when the user didn't name a "
-            "specific player — Korder will pick a sensible default "
-            "(the currently-Playing one for pause, the currently-Paused "
-            "one for resume)."
+            "contains those words). REQUIRED — when the user doesn't name "
+            "a specific player, use play_pause (toggle) instead of "
+            "pause_player / resume_player."
         ),
     },
 }
@@ -158,14 +158,15 @@ _TARGET_PARAM = {
 register(Action(
     name="pause_player",
     description=(
-        "Pause a SPECIFIC media player or browser tab via MPRIS. Use when "
-        "the user names what they want paused — 'Pause Spotify', 'Pause "
-        "Firefox', 'Pause this YouTube video', 'Pause Firefox How I Chose "
-        "a Linux Distro'. Extract the named player and/or title fragment "
-        "into params.target. Distinct from play_pause: this action targets "
-        "a particular player while play_pause toggles the OS-routed "
-        "default. Prefer this over play_pause when the user's intent is "
-        "clearly to pause one player while leaving others alone."
+        "Pause a SPECIFIC NAMED media player or browser tab via MPRIS. "
+        "Use ONLY when the user explicitly names what they want paused — "
+        "'Pause Spotify', 'Pause Firefox', 'Pause Firefox How I Chose a "
+        "Linux Distro'. The target name is REQUIRED — without one, this "
+        "action does NOT apply. For a bare pause / stop verb with no "
+        "named player, use play_pause (toggle) or stop_playback (stop) "
+        "instead. Never pick this action just because the input mentions "
+        "audio or media — the user must be telling Korder which player "
+        "to act on by name."
     ),
     triggers={
         "en": [
@@ -192,14 +193,15 @@ register(Action(
 register(Action(
     name="resume_player",
     description=(
-        "Resume / start playback on a SPECIFIC media player or browser "
-        "tab via MPRIS. Use when the user names what they want resumed — "
-        "'Play Spotify', 'Resume Firefox', 'Play Firefox How I Chose a "
-        "Linux Distro'. Extract the named player and/or title fragment "
-        "into params.target. Distinct from play_pause: this action only "
-        "starts (never pauses) playback on the named player, so it composes "
-        "cleanly with pause_player when the user wants to swap "
-        "(pause one, play another)."
+        "Resume playback on a SPECIFIC NAMED media player or browser "
+        "tab via MPRIS. Use ONLY when the user explicitly names what they "
+        "want resumed — 'Play Spotify', 'Resume Firefox', 'Play Firefox "
+        "How I Chose a Linux Distro'. The target name is REQUIRED — "
+        "without one, this action does NOT apply. For a bare play / "
+        "resume verb with no named player, use play_pause (toggle) "
+        "instead. Never pick this action just because the input has "
+        "'play' or 'resume' verbs — the user must be telling Korder "
+        "which player to start by name."
     ),
     triggers={
         "en": [

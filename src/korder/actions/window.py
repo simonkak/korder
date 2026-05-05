@@ -80,6 +80,7 @@ register(Action(
     parameters={
         "target": {
             "type": "string",
+            "required": True,
             "description": (
                 "App name or window-title fragment to focus. Examples: "
                 "'Firefox', 'Kate', 'Spotify', 'Firefox How I Chose'. "
@@ -187,6 +188,7 @@ register(Action(
         "side": {
             "type": "string",
             "enum": list(_TILE_SIDES),
+            "required": True,
             "description": (
                 "Where to tile: 'left' / 'right' / 'top' / 'bottom' for "
                 "quick-tile to that screen edge, or 'maximize' for full-"
@@ -330,6 +332,7 @@ register(Action(
     parameters={
         "screen": {
             "type": "integer",
+            "required": True,
             "description": (
                 "1-indexed screen number to move the active window to. "
                 "Required."

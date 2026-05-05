@@ -151,7 +151,18 @@ def _params_schema_for_action(action) -> dict:
     the property level) into a full sub-schema for the params object.
     additionalProperties=False means the model can only emit params the
     action declares — `confirm` can't appear on a non-confirmable action,
-    and stray keys are rejected at sampling time."""
+    and stray keys are rejected at sampling time.
+
+    Note on `"required": True` markers in action parameters: tried
+    propagating these to schema-level `required` + `minLength: 1` so
+    the LLM couldn't pick pause_player / resume_player / focus_window
+    without a target. Result: Gemma E4B fabricates a target
+    (`target: "media"`) to satisfy the schema rather than picking the
+    appropriate target-less action (play_pause). Schema constraint
+    optimizes for satisfying-the-shape, not for picking-the-right-
+    action. Description-level guidance turned out to be more
+    effective. The `"required"` marker is read but ignored here for
+    now; left in actions/ as documentation of intent."""
     properties: dict = {}
     for param_name, param_def in action.parameters.items():
         if not isinstance(param_def, dict):
@@ -240,6 +251,13 @@ _EXAMPLES_BLOCK = (
     "Examples:\n"
     '  "hello world" → {"actions": []}\n'
     '  "Naciśnij Enter." → {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}\n'
+    "  Bare media verbs (no named player) → play_pause / stop_playback, NEVER pause_player / resume_player:\n"
+    '    "Wznów" → {"actions": [{"phrase": "Wznów", "name": "play_pause"}]}\n'
+    '    "wstrzymaj" → {"actions": [{"phrase": "wstrzymaj", "name": "play_pause"}]}\n'
+    '    "Pauzuj" → {"actions": [{"phrase": "Pauzuj", "name": "play_pause"}]}\n'
+    '    "Zatrzymaj odtwarzanie" → {"actions": [{"phrase": "Zatrzymaj odtwarzanie", "name": "stop_playback"}]}\n'
+    '    "play music" → {"actions": [{"phrase": "play music", "name": "play_pause"}]}\n'
+    '    "Pause Spotify" → {"actions": [{"phrase": "Pause Spotify", "name": "pause_player", "params": {"target": "Spotify"}}]}\n'
     '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
     '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_play", "params": {"query": "Linkin Park"}}]}\n'
     '  "Odtwórz Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz Lose Yourself w Spotify", "name": "spotify_play", "params": {"query": "Lose Yourself"}}]}\n'
