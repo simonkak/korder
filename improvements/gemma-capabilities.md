@@ -1,5 +1,7 @@
 # Gemma Capabilities — Improvement Opportunities
 
+> **Status:** all five "ship soon" items landed on `feat/gemma-capabilities` (commit `292b3ed`). Bench delta on the 21-case suite: 16/21 → 17/21 (76% → 81%); median latency 802 → 808 ms; schema mode adds 0 ms vs bare json. Streaming saves ~140 ms TTFT on conversational answers. KV-cache reuse on `/api/generate` did not show a measurable warm-call win (see annotated item below). The "evaluate with measurements" and "reject" buckets are unchanged.
+
 ## What Korder uses today
 
 Korder runs a single non-streaming `/api/generate` call per transcript at
@@ -43,7 +45,7 @@ as the fallback path for `click_by_label` when AT-SPI returns no match.
 
 ### High value, ship soon
 
-- **JSON Schema instead of `format: "json"`**
+- ✅ **~~JSON Schema instead of `format: "json"`~~** *Done in `292b3ed`.*
   *Where:* `intent.py:487` — replace `payload["format"] = "json"` with a
   full JSON Schema describing the response shape:
   `{"type": "object", "properties": {"actions": {...}, "response": {"type": "string"}, "context": {"type": "string"}}, "required": ["actions"]}`,
@@ -71,7 +73,7 @@ as the fallback path for `click_by_label` when AT-SPI returns no match.
   measured on Gemma 4 specifically), keep the old code path behind a
   config flag for one release.
 
-- **Stream the conversational `response` to the OSD**
+- ✅ **~~Stream the conversational `response` to the OSD~~** *Done in `292b3ed`.*
   *Where:* `_call_ollama` (`intent.py:457`) becomes a generator over
   `stream: true` chunks; `MainWindow` (`ui/main_window.py:115`) connects to
   a new `parse_response_partial(text)` signal alongside the existing
@@ -95,7 +97,7 @@ as the fallback path for `click_by_label` when AT-SPI returns no match.
   because action latency is dominated by execution (xdg-open, D-Bus) not
   by waiting another 300 ms for the JSON tail.
 
-- **Move thinking to `/api/chat` and stop manually stripping fences**
+- ✅ **~~Move thinking to `/api/chat` and stop manually stripping fences~~** *Done in `292b3ed`.*
   *Where:* `intent.py:478` — when `thinking_mode` is on, switch to
   `/api/chat` with `messages: [{role: system, content: …}, {role: user, content: …}]`
   and `format: <schema>`, `think: true`. Drop the entire markdown-fence
@@ -111,7 +113,7 @@ as the fallback path for `click_by_label` when AT-SPI returns no match.
   (`format: "json"` on `/api/generate`) stays as is so the measured 95%
   pass-rate / 610 ms median doesn't move.
 
-- **Maximize KV-cache prefix reuse by re-ordering the prompt**
+- ✅ **~~Maximize KV-cache prefix reuse by re-ordering the prompt~~** *Prompt re-ordered in `292b3ed`. The example block now lives in the system prompt and the per-call user message is catalogue + history + transcript only. The expected second-call latency win on `/api/generate` did not materialize in measurements (within noise across repeated calls), consistent with the doc's own open question on whether ollama prefix-matches generate-mode. The structural change still has value when the thinking-mode `/api/chat` path is used (per-message hashing) and as a foundation for future audio-input experiments.*
   *Where:* `_build_user_prompt` (`intent.py:207`) builds catalogue +
   history + examples + transcript. The catalogue and examples are fixed
   per-startup; history changes per turn; transcript is per-call. Today
@@ -136,7 +138,7 @@ as the fallback path for `click_by_label` when AT-SPI returns no match.
   (`korder.intent_bench --warm`) that runs each case twice and reports
   the second-call latency so the gain is measured before shipping.
 
-- **Drop `IntentParser` constructor default from `gemma4:e2b` to `gemma4:e4b`**
+- ✅ **~~Drop `IntentParser` constructor default from `gemma4:e2b` to `gemma4:e4b`~~** *Done in `292b3ed`.*
   *Where:* `intent.py:256` — the constructor default disagrees with the
   README's `[inject] llm_model = gemma4:e4b` and the documented
   benchmarking. Anyone instantiating `IntentParser()` directly (notably
