@@ -676,7 +676,20 @@ class MainWindow(QMainWindow):
         # then can't parse, triggering the same TTS again — feedback
         # loop. _resume_after_tts advances _committed_samples past
         # the bleed window once playback finishes.
+        #
+        # Two gates. _tts_active_count is the ref count maintained
+        # by playback_finished signal callbacks — covers the queued
+        # → synthesizing → playing → drained span. is_playing() asks
+        # the engine directly whether a sounddevice stream is open
+        # right now — covers the actual playback window without
+        # depending on signal delivery. Either being true gates the
+        # mic. Belt and suspenders because the signal has been seen
+        # to miss (fallback timer log line in field reports), and
+        # the consequence of a missed gate is Whisper transcribing
+        # our own voice — high-cost failure.
         if self._tts_active_count > 0:
+            return
+        if self._tts is not None and self._tts.is_playing():
             return
         sr = self._recorder.sample_rate
         full = self._recorder.snapshot()
@@ -1050,8 +1063,20 @@ class MainWindow(QMainWindow):
         """Belt-and-suspenders companion to _on_tts_done_check_answer_reset.
         If TTS never reported finished (engine fault, suppression
         race), this expires after a generous window and triggers
-        the reset anyway. No-op when TTS already cleared the flag."""
+        the reset anyway. No-op when TTS already cleared the flag.
+
+        If TTS is genuinely still speaking (long synthesis, slow
+        device), don't release the listening state — re-arm and
+        wait. Otherwise the OSD flips to listening while audio is
+        still coming out of the speakers, and the mic gate at
+        _on_partial_tick has to catch the bleed alone (which
+        previously failed when the playback_finished signal also
+        missed, transcribing the user's overlapping speech)."""
         if not self._await_tts_for_answer_reset:
+            return
+        if self._tts is not None and self._tts.is_playing():
+            log.info("tts: fallback timer fired but engine still playing — re-arming")
+            QTimer.singleShot(2000, self._fallback_answer_reset)
             return
         self._await_tts_for_answer_reset = False
         log.info("tts: playback_finished never fired — falling back to timer reset")
