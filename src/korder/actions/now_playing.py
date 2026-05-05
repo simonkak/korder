@@ -11,7 +11,6 @@ pause-during-speak paths.
 """
 from __future__ import annotations
 import logging
-import re
 import subprocess
 
 from korder.actions.base import Action, register
@@ -21,48 +20,6 @@ from korder.ui.progress import emit_progress_speak
 log = logging.getLogger(__name__)
 
 _NOTIFY_TIMEOUT_S = 3.0
-
-
-def _player_metadata(service: str) -> dict[str, str]:
-    """Returns {'title', 'artist', 'album'} where present. Each value is
-    the empty string if MPRIS didn't report that field."""
-    out = _mpris.qdbus(service, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Metadata")
-    if out is None:
-        return {}
-    md: dict[str, str] = {}
-    # qdbus6 prints variant maps as one line per entry, like:
-    #   xesam:title: Stressed Out
-    #   xesam:artist: Twenty One Pilots
-    # Lists (xesam:artist is technically an array of strings) flatten to
-    # comma-separated; we keep that as-is — good enough for display.
-    for line in out.splitlines():
-        m = re.match(r"^([\w:]+):\s*(.*)$", line.strip())
-        if not m:
-            continue
-        key, val = m.group(1), m.group(2).strip()
-        if key == "xesam:title":
-            md["title"] = val
-        elif key == "xesam:artist":
-            md["artist"] = val
-        elif key == "xesam:album":
-            md["album"] = val
-    return md
-
-
-def _short_player_name(service: str) -> str:
-    """'org.mpris.MediaPlayer2.spotify' → 'Spotify'.
-    'org.mpris.MediaPlayer2.firefox.instance_1_1234' → 'Firefox'."""
-    tail = service[len(_mpris.MPRIS_PREFIX):]
-    head = tail.split(".", 1)[0]
-    pretty = {
-        "spotify": "Spotify",
-        "firefox": "Firefox",
-        "chromium": "Chromium",
-        "vlc": "VLC",
-        "mpv": "mpv",
-        "plasma-browser-integration": "Browser",
-    }
-    return pretty.get(head, head.replace("-", " ").title())
 
 
 def _detect_lang(text: str) -> str:
@@ -84,7 +41,7 @@ def _compose_now_playing() -> tuple[str, str, str] | None:
     player = _mpris.pick_active_player(services)
     if player is None:
         return None
-    md = _player_metadata(player)
+    md = _mpris.player_metadata(player)
     title = md.get("title", "")
     artist = md.get("artist", "")
     if not title and not artist:
@@ -92,7 +49,7 @@ def _compose_now_playing() -> tuple[str, str, str] | None:
     body = f"{title} — {artist}" if title and artist else (title or artist)
     status = _mpris.player_status(player)
     prefix = "▶  " if status == "Playing" else ("⏸  " if status == "Paused" else "")
-    headline = f"{prefix}{_short_player_name(player)}"
+    headline = f"{prefix}{_mpris.short_player_name(player)}"
     return headline, body, _detect_lang(body)
 
 
@@ -138,7 +95,7 @@ def _now_playing() -> None:
         services = _mpris.list_players()
         if services:
             player = _mpris.pick_active_player(services) or services[0]
-            headline = f"{_short_player_name(player)}: nothing playing"
+            headline = f"{_mpris.short_player_name(player)}: nothing playing"
             body = "Player is open but no track metadata is available."
             spoken = (
                 "Odtwarzacz jest otwarty, ale nie ma żadnego utworu."

@@ -20,6 +20,7 @@ Wire is qdbus6 (Qt 6's D-Bus CLI, ships with Plasma 6).
 """
 from __future__ import annotations
 import logging
+import re
 import subprocess
 
 log = logging.getLogger(__name__)
@@ -28,6 +29,21 @@ QDBUS_TIMEOUT_S = 2.0
 MPRIS_PREFIX = "org.mpris.MediaPlayer2."
 MPRIS_OBJECT = "/org/mpris/MediaPlayer2"
 PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+
+_PRETTY_PLAYER_NAMES = {
+    "spotify": "Spotify",
+    "firefox": "Firefox",
+    "chromium": "Chromium",
+    "vlc": "VLC",
+    "mpv": "mpv",
+    "plasma-browser-integration": "Browser",
+}
+
+# qdbus6 prints variant maps as one line per entry, like
+#   xesam:title: Stressed Out
+# and arrays flatten to comma-separated. The regex captures key + value
+# tolerant of arbitrary whitespace.
+_METADATA_LINE = re.compile(r"^([\w:]+):\s*(.*)$")
 
 
 def qdbus(*args: str) -> str | None:
@@ -90,3 +106,51 @@ def any_playing() -> bool:
         if player_status(s) == "Playing":
             return True
     return False
+
+
+def short_player_name(service: str) -> str:
+    """'org.mpris.MediaPlayer2.spotify' → 'Spotify'.
+    'org.mpris.MediaPlayer2.firefox.instance_1_1234' → 'Firefox'.
+    Falls back to a title-cased form of the bare prefix tail when
+    the player isn't in our pretty-name table."""
+    tail = service[len(MPRIS_PREFIX):]
+    head = tail.split(".", 1)[0]
+    return _PRETTY_PLAYER_NAMES.get(head, head.replace("-", " ").title())
+
+
+def player_metadata(service: str) -> dict[str, str]:
+    """Returns {'title', 'artist', 'album'} where present. Each value
+    is the empty string if MPRIS didn't report that field. Lists
+    (e.g. xesam:artist is technically an array of strings) flatten to
+    comma-separated — good enough for display and matching."""
+    out = qdbus(service, MPRIS_OBJECT, f"{PLAYER_IFACE}.Metadata")
+    if out is None:
+        return {}
+    md: dict[str, str] = {}
+    for line in out.splitlines():
+        m = _METADATA_LINE.match(line.strip())
+        if not m:
+            continue
+        key, val = m.group(1), m.group(2).strip()
+        if key == "xesam:title":
+            md["title"] = val
+        elif key == "xesam:artist":
+            md["artist"] = val
+        elif key == "xesam:album":
+            md["album"] = val
+    return md
+
+
+def pause_player(service: str) -> bool:
+    """Pause a specific player. Returns True on success. No-op when
+    the service is empty."""
+    if not service:
+        return False
+    return qdbus(service, MPRIS_OBJECT, f"{PLAYER_IFACE}.Pause") is not None
+
+
+def play_player(service: str) -> bool:
+    """Resume a specific player. Returns True on success."""
+    if not service:
+        return False
+    return qdbus(service, MPRIS_OBJECT, f"{PLAYER_IFACE}.Play") is not None

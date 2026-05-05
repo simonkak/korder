@@ -74,7 +74,7 @@ def test_parse_metadata_title_artist_album():
         "xesam:trackNumber: 2\n"
     )
     with patch.object(_mpris, "qdbus", return_value=out):
-        md = np_mod._player_metadata("org.mpris.MediaPlayer2.spotify")
+        md = _mpris.player_metadata("org.mpris.MediaPlayer2.spotify")
     assert md == {
         "album": "Blurryface",
         "artist": "Twenty One Pilots",
@@ -86,13 +86,13 @@ def test_parse_metadata_handles_missing_fields():
     """If MPRIS reports only a title, we don't fabricate other fields."""
     out = "xesam:title: Just the title\n"
     with patch.object(_mpris, "qdbus", return_value=out):
-        md = np_mod._player_metadata("org.mpris.MediaPlayer2.x")
+        md = _mpris.player_metadata("org.mpris.MediaPlayer2.x")
     assert md == {"title": "Just the title"}
 
 
 def test_parse_metadata_returns_empty_when_qdbus_fails():
     with patch.object(_mpris, "qdbus", return_value=None):
-        assert np_mod._player_metadata("any") == {}
+        assert _mpris.player_metadata("any") == {}
 
 
 # --- Service listing (in audio/_mpris.py) ----------------------------------
@@ -130,7 +130,7 @@ def test_list_mpris_players_returns_empty_when_qdbus_missing():
     ("org.mpris.MediaPlayer2.something-unknown", "Something Unknown"),
 ])
 def test_short_player_name(service, expected):
-    assert np_mod._short_player_name(service) == expected
+    assert _mpris.short_player_name(service) == expected
 
 
 # --- Lang detection (issue #2) --------------------------------------------
@@ -166,7 +166,7 @@ def test_now_playing_fires_notify_with_track_info():
     with (
         patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
         patch.object(_mpris, "player_status", return_value="Playing"),
-        patch.object(np_mod, "_player_metadata", return_value={
+        patch.object(_mpris, "player_metadata", return_value={
             "title": "Overcompensate", "artist": "Twenty One Pilots", "album": "Clancy",
         }),
         patch.object(np_mod.subprocess, "run", side_effect=fake_run),
@@ -213,7 +213,7 @@ def test_now_playing_handles_paused_player():
     with (
         patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.mpv"]),
         patch.object(_mpris, "player_status", return_value="Paused"),
-        patch.object(np_mod, "_player_metadata", return_value={
+        patch.object(_mpris, "player_metadata", return_value={
             "title": "Some Track", "artist": "Some Artist",
         }),
         patch.object(np_mod.subprocess, "run", side_effect=fake_run),
@@ -235,7 +235,7 @@ def test_now_playing_handles_metadata_with_only_title():
     with (
         patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.x"]),
         patch.object(_mpris, "player_status", return_value="Playing"),
-        patch.object(np_mod, "_player_metadata", return_value={"title": "Solo Track"}),
+        patch.object(_mpris, "player_metadata", return_value={"title": "Solo Track"}),
         patch.object(np_mod.subprocess, "run", side_effect=fake_run),
     ):
         np_mod._now_playing()
@@ -251,7 +251,7 @@ def test_now_playing_survives_missing_notify_send():
     with (
         patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
         patch.object(_mpris, "player_status", return_value="Playing"),
-        patch.object(np_mod, "_player_metadata", return_value={"title": "X", "artist": "Y"}),
+        patch.object(_mpris, "player_metadata", return_value={"title": "X", "artist": "Y"}),
         patch.object(np_mod.subprocess, "run", side_effect=raise_fnf),
     ):
         np_mod._now_playing()  # must not raise
@@ -271,7 +271,7 @@ def test_now_playing_emits_speak_when_track_resolved():
     with (
         patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
         patch.object(_mpris, "player_status", return_value="Playing"),
-        patch.object(np_mod, "_player_metadata", return_value={
+        patch.object(_mpris, "player_metadata", return_value={
             "title": "Overcompensate", "artist": "Twenty One Pilots",
         }),
         patch.object(np_mod.subprocess, "run", side_effect=fake_run),
