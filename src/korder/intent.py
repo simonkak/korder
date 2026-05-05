@@ -305,6 +305,11 @@ _SYSTEM_PROMPT = (
     "turns (when shown) to resolve follow-ups like 'and Poland?' against "
     "the prior question — answer in the same mode (response vs action) "
     "as the prior turn.\n"
+    "When the user asks ABOUT windows ('which window is active', "
+    "'what's open', 'co jest aktywne', 'jakie okna mam otwarte'), answer "
+    "conversationally via `response` using the 'Current windows:' block — "
+    "do NOT dispatch focus_window. Reserve focus_window for explicit "
+    "switch / focus / przełącz / skup imperatives that name a target.\n"
     "\n"
     "`context` field: populate with the primary subject of THIS turn — "
     "a short phrase (proper noun / place / topic), NOT a sentence. "
@@ -368,26 +373,38 @@ def _render_history(history: list[Turn]) -> str:
 
 
 def _render_window_list(windows: list[dict]) -> str:
-    """Format an enumerated window list for the LLM prompt. The LLM
-    reads this when resolving focus_window targets — names there
-    drive the fuzzy match the action runs server-side. Empty input
-    returns an empty string so prompts stay tight when no window
-    info is available (KWin not running, bridge timed out, etc.)."""
+    """Format an enumerated window list for the LLM prompt. Two uses:
+
+    1. Resolving focus_window / close_window targets — the LLM picks
+       a name verbatim from this block and the action's server-side
+       fuzzy match locks onto the same window.
+    2. Answering factual questions about the desktop ('which window
+       is active', 'what's open right now') from the `response` field
+       — `(active)` marks the focused window so the LLM can quote it
+       directly instead of mis-firing focus_window on a question.
+
+    Empty input returns an empty string so prompts stay tight when no
+    window info is available (KWin not running, bridge timed out)."""
     if not windows:
         return ""
-    lines = ["Current windows (use these names verbatim for focus_window/close_window targets):"]
+    lines = ["Current windows (use these names verbatim for focus_window/close_window targets; the (active) one is currently focused):"]
     for w in windows:
         if not isinstance(w, dict):
             continue
         klass = (w.get("resourceClass") or "").strip()
         caption = (w.get("caption") or "").strip()
-        minimized = " (minimized)" if w.get("minimized") else ""
+        flags = []
+        if w.get("active"):
+            flags.append("active")
+        if w.get("minimized"):
+            flags.append("minimized")
+        suffix = f" ({', '.join(flags)})" if flags else ""
         if klass and caption:
-            lines.append(f"  - {klass}: {caption}{minimized}")
+            lines.append(f"  - {klass}: {caption}{suffix}")
         elif klass:
-            lines.append(f"  - {klass}{minimized}")
+            lines.append(f"  - {klass}{suffix}")
         elif caption:
-            lines.append(f"  - {caption}{minimized}")
+            lines.append(f"  - {caption}{suffix}")
     if len(lines) == 1:
         return ""  # header only — no usable rows
     lines.append("")

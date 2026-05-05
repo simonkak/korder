@@ -80,7 +80,7 @@ def test_window_list_block_appears_when_supplied():
     for focus_window / close_window."""
     from korder.intent import _render_window_list
     windows = [
-        {"id": "u1", "caption": "PR #27 - Mozilla Firefox", "resourceClass": "firefox", "minimized": False},
+        {"id": "u1", "caption": "PR #27 - Mozilla Firefox", "resourceClass": "firefox", "minimized": False, "active": True},
         {"id": "u2", "caption": "korder ~ Konsole", "resourceClass": "konsole", "minimized": False},
         {"id": "u3", "caption": "Spotify", "resourceClass": "spotify", "minimized": True},
     ]
@@ -90,6 +90,35 @@ def test_window_list_block_appears_when_supplied():
     assert "PR #27" in block
     assert "konsole" in block
     assert "(minimized)" in block  # the spotify entry is minimized
+    assert "(active)" in block  # firefox is the focused one
+
+
+def test_window_list_marks_active_window_distinctly():
+    """The focused window needs an unambiguous marker so the LLM can
+    answer 'which window is active' without dispatching focus_window."""
+    from korder.intent import _render_window_list
+    windows = [
+        {"id": "u1", "caption": "Tab A", "resourceClass": "firefox", "active": False},
+        {"id": "u2", "caption": "Term", "resourceClass": "konsole", "active": True},
+    ]
+    block = _render_window_list(windows)
+    konsole_line = next(line for line in block.splitlines() if "konsole" in line)
+    firefox_line = next(line for line in block.splitlines() if "firefox" in line)
+    assert "(active)" in konsole_line
+    assert "(active)" not in firefox_line
+
+
+def test_window_list_combines_active_and_minimized_flags():
+    """Active and minimized aren't usually paired, but if a script
+    re-orders them or a window is somehow both, the renderer must
+    not lose either signal."""
+    from korder.intent import _render_window_list
+    windows = [
+        {"id": "u1", "caption": "X", "resourceClass": "app", "active": True, "minimized": True},
+    ]
+    block = _render_window_list(windows)
+    assert "active" in block
+    assert "minimized" in block
 
 
 def test_window_list_block_is_empty_when_no_windows():

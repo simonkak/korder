@@ -148,6 +148,7 @@ def list_windows(timeout_s: float = 1.0) -> list[dict]:
 
     js = """
     (function() {
+        const active = workspace.activeWindow;
         const out = [];
         workspace.windowList().forEach(w => {
             if (w.normalWindow && !w.skipTaskbar) {
@@ -155,7 +156,8 @@ def list_windows(timeout_s: float = 1.0) -> list[dict]:
                     id: w.internalId.toString(),
                     caption: w.caption || "",
                     resourceClass: w.resourceClass || "",
-                    minimized: !!w.minimized
+                    minimized: !!w.minimized,
+                    active: w === active
                 });
             }
         });
