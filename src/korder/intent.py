@@ -463,6 +463,47 @@ def _render_window_list(windows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# Heuristic interrogative detection. The LLM has trouble picking
+# the empty-actions branch when the action catalogue is in front of
+# it — even with explicit rules and examples, Gemma E4B keeps
+# fabricating actions for clearly-question inputs ('Jak nazywa się
+# aktywne okno?'). Pre-classifying in Python lets us swap the prompt
+# for a question-only template that doesn't include the catalogue,
+# so the LLM doesn't have actions to pick. False positives degrade
+# gracefully — an imperative phrased as a question ('press enter?')
+# would skip dispatch and just produce a response, which is
+# recoverable by the user re-saying it as a command.
+_INTERROGATIVE_PREFIXES = (
+    # English
+    "what ", "what's ", "what is ", "what are ", "what was ",
+    "which ", "where ", "where's ", "when ", "when's ", "why ",
+    "how ", "how's ", "how do ", "how can ", "who ", "who's ",
+    "is ", "are ", "do ", "does ", "did ", "will ",
+    "tell me ", "tell us ",
+    # Polish
+    "co ", "co to ", "co teraz ", "jak ", "jak nazywa ",
+    "jaki ", "jaka ", "jakie ", "jakim ", "jaką ", "jakim ",
+    "który ", "która ", "które ", "którą ", "którego ", "którą ",
+    "czy ", "kto ", "kogo ", "komu ",
+    "gdzie ", "kiedy ", "ile ", "dlaczego ", "skąd ", "dokąd ",
+    "powiedz ", "powiedz mi ",
+)
+
+
+def _looks_interrogative(transcript: str) -> bool:
+    """Cheap pre-classifier. Returns True for inputs that read as
+    questions — trailing '?' or a question-word start in PL/EN.
+    Used to swap the prompt for a question-only template that
+    suppresses the action catalogue."""
+    t = transcript.strip()
+    if not t:
+        return False
+    if t.rstrip(" .,!;:").endswith("?"):
+        return True
+    lower = t.lower()
+    return any(lower.startswith(p) for p in _INTERROGATIVE_PREFIXES)
+
+
 def _build_user_prompt(
     transcript: str,
     history: list[Turn] | None = None,
@@ -476,10 +517,27 @@ def _build_user_prompt(
     window list change per turn, transcript per call — those make up
     the variable suffix. The static example block lives in the
     system prompt so the cached prefill region is as long as
-    possible."""
-    catalogue = _render_action_catalogue(show_triggers=show_triggers)
+    possible.
+
+    Interrogative inputs swap the catalogue out entirely — the LLM
+    can't dispatch an action it doesn't see. _SYSTEM_PROMPT still
+    describes the JSON shape so the model returns a valid empty-
+    actions object."""
     history_block = _render_history(history or [])
     windows_block = _render_window_list(windows or [])
+    if _looks_interrogative(transcript):
+        return (
+            "The user is asking a QUESTION, not issuing a command. "
+            "Emit `{\"actions\": []}` and answer in `response` "
+            "(same language as input) using history and current "
+            "windows below for context.\n"
+            "\n"
+            + history_block
+            + windows_block +
+            f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
+            "Output:"
+        )
+    catalogue = _render_action_catalogue(show_triggers=show_triggers)
     return (
         "Available actions:\n"
         f"{catalogue}\n"

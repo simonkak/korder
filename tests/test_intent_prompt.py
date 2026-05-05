@@ -172,6 +172,56 @@ def test_user_prompt_omits_windows_block_when_list_empty():
     assert "Currently open windows" not in user_msg
 
 
+def test_interrogative_detector_catches_question_marks_and_starters():
+    from korder.intent import _looks_interrogative
+    # Trailing question mark
+    assert _looks_interrogative("Jak nazywa się aktywne okno?")
+    assert _looks_interrogative("which window is active?")
+    assert _looks_interrogative("which window is active.")  # transcribed without ?
+    assert _looks_interrogative("co teraz gra?")
+    # Question-word starts
+    assert _looks_interrogative("which window is active")
+    assert _looks_interrogative("co jest aktywne")
+    assert _looks_interrogative("jakie okna mam otwarte")
+    assert _looks_interrogative("ile to siedem razy osiem")
+    # Imperatives — must NOT be flagged
+    assert not _looks_interrogative("press enter")
+    assert not _looks_interrogative("Pause Spotify")
+    assert not _looks_interrogative("Naciśnij Enter")
+    assert not _looks_interrogative("Wznów")
+    assert not _looks_interrogative("hello world")  # plain dictation
+    # Edge cases
+    assert not _looks_interrogative("")
+    assert not _looks_interrogative("   ")
+
+
+def test_interrogative_input_drops_action_catalogue():
+    """Question prompts skip the catalogue so the LLM can't pick an
+    action from it. Catches the 'Jak nazywa się aktywne okno' case
+    where E4B kept misfiring pause_player despite rule prose."""
+    user_msg = _build_user_prompt(
+        "Jak nazywa się aktywne okno?",
+        history=None,
+        show_triggers=False,
+        windows=[
+            {"caption": "GitHub PR", "resourceClass": "firefox", "active": True},
+        ],
+    )
+    assert "Available actions" not in user_msg
+    assert "QUESTION" in user_msg
+    # Window context still rendered so the LLM has data to answer with
+    assert "firefox" in user_msg
+
+
+def test_imperative_input_keeps_action_catalogue():
+    """Sanity: non-question inputs still get the full catalogue."""
+    user_msg = _build_user_prompt(
+        "press enter", history=None, show_triggers=False, windows=[]
+    )
+    assert "Available actions" in user_msg
+    assert "press_enter" in user_msg
+
+
 def test_action_descriptions_are_language_agnostic():
     """Per the user's request: descriptions should describe intent, not list
     Polish-specific synonyms. (Trigger lists in code stay; just shouldn't be
