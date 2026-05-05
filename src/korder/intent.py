@@ -239,6 +239,11 @@ _EXAMPLES_BLOCK = (
     '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
     '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
     '  "what is the capital of France" → {"actions": [], "response": "Paris.", "context": "France"}\n'
+    "  Window questions (use the 'Current windows:' block from the prompt):\n"
+    '    "które okno jest aktywne?" → {"actions": [], "response": "Aktualnie aktywne jest Firefox."}\n'
+    '    "which window is active?" → {"actions": [], "response": "Konsole is active right now."}\n'
+    '    "jakie okna mam otwarte?" → {"actions": [], "response": "Masz otwarte: Firefox, Konsole i Spotify."}\n'
+    '    "what windows are open?" → {"actions": [], "response": "Firefox, Konsole, and Spotify are open."}\n'
     '  "co powiesz o Budapeszcie?" → {"actions": [], "response": "Budapeszt to piękne miasto...", "context": "Budapeszt"}\n'
     '  "ile to siedem razy osiem" → {"actions": [], "response": "Pięćdziesiąt sześć."}\n'
     '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
@@ -306,10 +311,16 @@ _SYSTEM_PROMPT = (
     "the prior question — answer in the same mode (response vs action) "
     "as the prior turn.\n"
     "When the user asks ABOUT windows ('which window is active', "
-    "'what's open', 'co jest aktywne', 'jakie okna mam otwarte'), answer "
-    "conversationally via `response` using the 'Current windows:' block — "
-    "do NOT dispatch focus_window. Reserve focus_window for explicit "
-    "switch / focus / przełącz / skup imperatives that name a target.\n"
+    "'what's open', 'co jest aktywne', 'jakie okna mam otwarte', 'które "
+    "okno jest otwarte'), this is a QUESTION not a command. Emit "
+    "`{\"actions\": []}` and answer in `response` using the 'Current "
+    "windows:' block — name the (active) one when asked which is "
+    "focused; list a few when asked what's open. Do NOT dispatch ANY "
+    "window action (focus_window, close_window, show_desktop, "
+    "show_overview, tile_window, etc.) for questions. Reserve those "
+    "actions for explicit imperatives that command the system to do "
+    "something — 'focus X', 'close this', 'show desktop', 'przełącz "
+    "na X', 'zminimalizuj wszystko'.\n"
     "\n"
     "`context` field: populate with the primary subject of THIS turn — "
     "a short phrase (proper noun / place / topic), NOT a sentence. "
@@ -667,10 +678,15 @@ class IntentParser:
         available. The fetch costs a single KWin script round-trip
         plus a brief D-Bus callback wait (typical 50-150 ms); accepted
         on every parse call so the LLM always sees fresh names for
-        focus_window / close_window targeting."""
+        focus_window / close_window targeting and for 'which window'
+        question answering. 1 s timeout absorbs occasional KWin lag
+        without blocking voice flow noticeably."""
         try:
             from korder import kwin_bridge
-            return kwin_bridge.list_windows(timeout_s=0.6)
+            windows = kwin_bridge.list_windows(timeout_s=1.0)
+            if windows:
+                log.info("intent: window list has %d entries", len(windows))
+            return windows
         except Exception as e:
             log.warning("intent: window list fetch failed: %s", e)
             return []
