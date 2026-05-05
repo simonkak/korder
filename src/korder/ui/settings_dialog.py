@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStyle,
     QTabWidget,
@@ -122,6 +123,19 @@ def _hint_label(text: str) -> QLabel:
     return label
 
 
+def _in_scroll_area(content: QWidget) -> QScrollArea:
+    """Wrap a tab page so it scrolls vertically when content exceeds the
+    dialog height. Only used for the dense Actions & Output tab — keeping
+    short tabs unwrapped avoids unnecessary scroll-affordance noise.
+    """
+    sa = QScrollArea()
+    sa.setWidgetResizable(True)
+    sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    sa.setFrameShape(QFrame.Shape.NoFrame)
+    sa.setWidget(content)
+    return sa
+
+
 def _make_form(parent: QWidget) -> QFormLayout:
     """Form layout with KDE HIG-aligned policies."""
     f = QFormLayout(parent)
@@ -152,13 +166,20 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
         layout.setSpacing(_SPACING)
 
+        # Five tabs (was six). Spotify lives inside Actions & Output as a
+        # section now — Plasma's HIG calls for a sidebar layout once tab
+        # count crosses 4-5, but at 5 we stay on a single row across all
+        # font scales. The Actions & Output tab is wrapped in a scroll
+        # area because its three sections (Output, Action parser, Spotify)
+        # together exceed the 560 px default dialog height.
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_audio_whisper_tab(), "Mic && Whisper")
-        self._tabs.addTab(self._build_actions_tab(), "Actions && Output")
-        self._tabs.addTab(self._build_spotify_tab(), "Spotify")
+        self._tabs.addTab(_in_scroll_area(self._build_actions_tab()), "Actions && Output")
         self._tabs.addTab(self._build_wake_tab(), "Wake word")
         self._tabs.addTab(self._build_speech_tab(), "Speech")
-        self._tabs.addTab(self._build_general_tab(), "General")
+        # "General" reads as "miscellaneous"; both toggles are behaviour
+        # switches, so the rename is informational not stylistic.
+        self._tabs.addTab(self._build_general_tab(), "Behaviour")
         layout.addWidget(self._tabs, 1)
 
         hint = _hint_label("Most settings take effect after restarting Korder.")
@@ -371,34 +392,30 @@ class SettingsDialog(QDialog):
         f.addRow(bench_row)
 
         outer.addWidget(inject)
-        outer.addStretch(1)
-        return page
 
-    def _build_spotify_tab(self) -> QWidget:
-        page = QWidget()
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
-        outer.setSpacing(_SPACING * 2)
-
-        info = _InfoBanner(
+        # Spotify section — folded in from the old standalone tab. Keeps
+        # the credentials below the LLM/parser controls because the Spotify
+        # action only matters once you've picked llm parser + LLM model.
+        spotify_info = _InfoBanner(
             "Spotify Web API credentials. Without these, voice search falls back "
             "to opening search results (you click the first one). Get free "
             'credentials at <a href="https://developer.spotify.com/dashboard">'
             "developer.spotify.com/dashboard</a> — Client Credentials flow, "
             "no Premium required for search."
         )
-        outer.addWidget(info)
+        outer.addWidget(spotify_info)
 
-        spotify = QGroupBox("Credentials")
-        f = _make_form(spotify)
+        spotify = QGroupBox("Spotify")
+        sf = _make_form(spotify)
         self._spotify_client_id = QLineEdit()
         self._spotify_client_id.setPlaceholderText("(empty = fallback to search-and-click)")
-        f.addRow("Client ID:", self._spotify_client_id)
+        sf.addRow("Client ID:", self._spotify_client_id)
 
         self._spotify_client_secret = QLineEdit()
         self._spotify_client_secret.setEchoMode(QLineEdit.EchoMode.Password)
-        f.addRow("Client Secret:", self._spotify_client_secret)
+        sf.addRow("Client Secret:", self._spotify_client_secret)
         outer.addWidget(spotify)
+
         outer.addStretch(1)
         return page
 
