@@ -85,7 +85,7 @@ def test_window_list_block_appears_when_supplied():
         {"id": "u3", "caption": "Spotify", "resourceClass": "spotify", "minimized": True},
     ]
     block = _render_window_list(windows)
-    assert "Current windows" in block
+    assert "Currently open windows" in block
     assert "firefox" in block
     assert "PR #27" in block
     assert "konsole" in block
@@ -154,13 +154,13 @@ def test_user_prompt_injects_windows_block_after_history():
             {"id": "u1", "caption": "GitHub PR", "resourceClass": "firefox", "minimized": False},
         ],
     )
-    assert "Current windows" in user_msg
+    assert "Currently open windows" in user_msg
     assert "firefox" in user_msg
     # The transcript line still arrives at the end
     assert user_msg.rstrip().endswith("Output:")
     # Window block must come BEFORE the input line so the LLM sees
     # context first.
-    win_idx = user_msg.find("Current windows")
+    win_idx = user_msg.find("Currently open windows")
     input_idx = user_msg.find("Input: ")
     assert 0 <= win_idx < input_idx
 
@@ -169,7 +169,7 @@ def test_user_prompt_omits_windows_block_when_list_empty():
     user_msg = _build_user_prompt(
         "press enter", history=None, show_triggers=False, windows=[]
     )
-    assert "Current windows" not in user_msg
+    assert "Currently open windows" not in user_msg
 
 
 def test_action_descriptions_are_language_agnostic():

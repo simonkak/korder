@@ -213,6 +213,15 @@ def _build_response_schema() -> dict:
             "actions": {
                 "type": "array",
                 "items": actions_items,
+                "description": (
+                    "Imperative commands the user is telling the system "
+                    "to execute. EMPTY ARRAY for plain dictation, factual "
+                    "questions, small-talk, and questions ABOUT desktop "
+                    "state ('which window is active', 'what's playing', "
+                    "'co jest otwarte') — those go in `response`, not "
+                    "here. Only populate this when the input is a "
+                    "command that should fire."
+                ),
             },
             "response": {"type": "string"},
             "context": {"type": "string"},
@@ -239,11 +248,13 @@ _EXAMPLES_BLOCK = (
     '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
     '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
     '  "what is the capital of France" → {"actions": [], "response": "Paris.", "context": "France"}\n'
-    "  Window questions (use the 'Current windows:' block from the prompt):\n"
+    "  Window / desktop questions are conversational — empty actions, answer in response:\n"
     '    "które okno jest aktywne?" → {"actions": [], "response": "Aktualnie aktywne jest Firefox."}\n'
+    '    "które okno jest aktywne." → {"actions": [], "response": "Aktualnie aktywne jest Firefox."}\n'
     '    "which window is active?" → {"actions": [], "response": "Konsole is active right now."}\n'
     '    "jakie okna mam otwarte?" → {"actions": [], "response": "Masz otwarte: Firefox, Konsole i Spotify."}\n'
     '    "what windows are open?" → {"actions": [], "response": "Firefox, Konsole, and Spotify are open."}\n'
+    '    "co teraz jest na ekranie?" → {"actions": [], "response": "Aktywny jest Firefox; otwarte też Konsole i Spotify."}\n'
     '  "co powiesz o Budapeszcie?" → {"actions": [], "response": "Budapeszt to piękne miasto...", "context": "Budapeszt"}\n'
     '  "ile to siedem razy osiem" → {"actions": [], "response": "Pięćdziesiąt sześć."}\n'
     '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
@@ -271,6 +282,13 @@ _SYSTEM_PROMPT = (
     '   "context": "<short topic phrase, or empty>"}\n'
     "\n"
     "Rules:\n"
+    "- Questions are NOT commands. Interrogative inputs ('what's X?', "
+    "'which Y?', 'is Z on?', 'co/jak/które/jakie/czy ...?') return "
+    "`{\"actions\": []}` and answer in `response`. Even questions about "
+    "what the user could do or what's currently happening (windows "
+    "open, music playing, time, weather) take the empty-actions path. "
+    "Commands are imperatives that tell the system to do something "
+    "('press X', 'open Y', 'pause Z', 'naciśnij X', 'pokaż Y').\n"
     "- Plain dictation with no command → `{\"actions\": []}`.\n"
     "- `phrase` must appear verbatim in the input. `name` must be one of "
     "the listed action names. Multiple actions allowed, in order.\n"
@@ -398,7 +416,12 @@ def _render_window_list(windows: list[dict]) -> str:
     window info is available (KWin not running, bridge timed out)."""
     if not windows:
         return ""
-    lines = ["Current windows (use these names verbatim for focus_window/close_window targets; the (active) one is currently focused):"]
+    lines = [
+        "Currently open windows on the user's desktop (informational context — "
+        "use these names to ANSWER 'which window is active / what's open' "
+        "questions in `response`, and to resolve named targets in commands "
+        "like 'focus X'; the (active) one is currently focused):"
+    ]
     for w in windows:
         if not isinstance(w, dict):
             continue
