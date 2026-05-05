@@ -74,6 +74,75 @@ def test_parameterized_action_shows_param_keys_in_catalogue():
     assert "params: query" in cat
 
 
+def test_window_list_block_appears_when_supplied():
+    """When kwin_bridge returns windows, the user prompt grows a
+    'Current windows:' block so the LLM can pick a target verbatim
+    for focus_window / close_window."""
+    from korder.intent import _render_window_list
+    windows = [
+        {"id": "u1", "caption": "PR #27 - Mozilla Firefox", "resourceClass": "firefox", "minimized": False},
+        {"id": "u2", "caption": "korder ~ Konsole", "resourceClass": "konsole", "minimized": False},
+        {"id": "u3", "caption": "Spotify", "resourceClass": "spotify", "minimized": True},
+    ]
+    block = _render_window_list(windows)
+    assert "Current windows" in block
+    assert "firefox" in block
+    assert "PR #27" in block
+    assert "konsole" in block
+    assert "(minimized)" in block  # the spotify entry is minimized
+
+
+def test_window_list_block_is_empty_when_no_windows():
+    from korder.intent import _render_window_list
+    assert _render_window_list([]) == ""
+    assert _render_window_list(None) == ""  # type: ignore[arg-type]
+
+
+def test_window_list_skips_unusable_entries():
+    """Defensive: if KWin returned a window with no caption AND no
+    resourceClass, drop it — there's nothing for the LLM to match
+    against."""
+    from korder.intent import _render_window_list
+    windows = [
+        {"id": "u1", "caption": "", "resourceClass": "", "minimized": False},
+        {"id": "u2", "caption": "Real Window", "resourceClass": "app", "minimized": False},
+    ]
+    block = _render_window_list(windows)
+    assert "Real Window" in block
+    # The empty one should not appear; check there's only one bullet line
+    assert block.count("  - ") == 1
+
+
+def test_user_prompt_injects_windows_block_after_history():
+    """Window block sits between history and the transcript so the
+    LLM reads context (history + windows) before the input it must
+    classify."""
+    user_msg = _build_user_prompt(
+        "focus Firefox",
+        history=None,
+        show_triggers=False,
+        windows=[
+            {"id": "u1", "caption": "GitHub PR", "resourceClass": "firefox", "minimized": False},
+        ],
+    )
+    assert "Current windows" in user_msg
+    assert "firefox" in user_msg
+    # The transcript line still arrives at the end
+    assert user_msg.rstrip().endswith("Output:")
+    # Window block must come BEFORE the input line so the LLM sees
+    # context first.
+    win_idx = user_msg.find("Current windows")
+    input_idx = user_msg.find("Input: ")
+    assert 0 <= win_idx < input_idx
+
+
+def test_user_prompt_omits_windows_block_when_list_empty():
+    user_msg = _build_user_prompt(
+        "press enter", history=None, show_triggers=False, windows=[]
+    )
+    assert "Current windows" not in user_msg
+
+
 def test_action_descriptions_are_language_agnostic():
     """Per the user's request: descriptions should describe intent, not list
     Polish-specific synonyms. (Trigger lists in code stay; just shouldn't be

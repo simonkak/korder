@@ -261,7 +261,19 @@ def activate_window_by_name(target: str) -> bool:
     Returns True iff the script ran — not iff a window was actually
     matched. Caller has no easy way to know server-side match success
     without a callback channel; we accept that and let the user
-    repeat themselves with a different target if nothing happens."""
+    repeat themselves with a different target if nothing happens.
+
+    The token regex uses plain `\\w+` instead of unicode property
+    escapes (`\\p{L}\\p{N}`) — KWin's QtScript JS engine returns null
+    on the unicode version, which silently broke matching on every
+    earlier call. `\\w+` matches ASCII word characters; Polish window
+    titles split on whitespace usually have enough ASCII tokens
+    (resourceClass is always ASCII) to score correctly.
+
+    Tie-break favors non-minimized windows so 'focus Firefox' picks
+    the visible tab over a minimized one. Activation uses the
+    `workspace.activeWindow = best` setter — verified working on
+    Plasma 6 (Plasma 5's `client.activate()` method was removed)."""
     target = (target or "").strip()
     if not target:
         return False
@@ -269,7 +281,7 @@ def activate_window_by_name(target: str) -> bool:
     js = f"""
     (function() {{
         const target = {target_js};
-        const targetTokens = (target.toLowerCase().match(/[\\p{{L}}\\p{{N}}]+/gu) || []);
+        const targetTokens = (target.toLowerCase().match(/\\w+/g) || []);
         if (targetTokens.length === 0) return;
         let best = null;
         let bestScore = 0;
@@ -277,12 +289,9 @@ def activate_window_by_name(target: str) -> bool:
             if (!w.normalWindow) return;
             if (w.skipTaskbar) return;
             const haystack = ((w.caption || "") + " " + (w.resourceClass || "")).toLowerCase();
-            const haystackTokens = new Set(haystack.match(/[\\p{{L}}\\p{{N}}]+/gu) || []);
+            const haystackTokens = new Set(haystack.match(/\\w+/g) || []);
             let score = 0;
             targetTokens.forEach(t => {{ if (haystackTokens.has(t)) score++; }});
-            // Prefer non-minimized windows on tied scores so a user
-            // saying 'focus Firefox' lands on the visible tab rather
-            // than a minimized one.
             const tieBreak = w.minimized ? 0 : 0.5;
             const totalScore = score + tieBreak;
             if (totalScore > bestScore) {{ bestScore = totalScore; best = w; }}

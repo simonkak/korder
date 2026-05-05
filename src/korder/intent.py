@@ -367,25 +367,56 @@ def _render_history(history: list[Turn]) -> str:
     return "\n".join(lines)
 
 
+def _render_window_list(windows: list[dict]) -> str:
+    """Format an enumerated window list for the LLM prompt. The LLM
+    reads this when resolving focus_window targets — names there
+    drive the fuzzy match the action runs server-side. Empty input
+    returns an empty string so prompts stay tight when no window
+    info is available (KWin not running, bridge timed out, etc.)."""
+    if not windows:
+        return ""
+    lines = ["Current windows (use these names verbatim for focus_window/close_window targets):"]
+    for w in windows:
+        if not isinstance(w, dict):
+            continue
+        klass = (w.get("resourceClass") or "").strip()
+        caption = (w.get("caption") or "").strip()
+        minimized = " (minimized)" if w.get("minimized") else ""
+        if klass and caption:
+            lines.append(f"  - {klass}: {caption}{minimized}")
+        elif klass:
+            lines.append(f"  - {klass}{minimized}")
+        elif caption:
+            lines.append(f"  - {caption}{minimized}")
+    if len(lines) == 1:
+        return ""  # header only — no usable rows
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _build_user_prompt(
     transcript: str,
     history: list[Turn] | None = None,
     *,
     show_triggers: bool,
+    windows: list[dict] | None = None,
 ) -> str:
     """Per-call user message. Order matters for KV-cache prefix reuse:
     the action catalogue is fixed within a session (registry doesn't
-    change), so it comes first as a stable prefix. History changes per
-    turn, transcript per call — those make up the variable suffix.
-    The static example block now lives in the system prompt, not
-    here, so the cached prefill region is as long as possible."""
+    change), so it comes first as a stable prefix. History and the
+    window list change per turn, transcript per call — those make up
+    the variable suffix. The static example block lives in the
+    system prompt so the cached prefill region is as long as
+    possible."""
     catalogue = _render_action_catalogue(show_triggers=show_triggers)
     history_block = _render_history(history or [])
+    windows_block = _render_window_list(windows or [])
     return (
         "Available actions:\n"
         f"{catalogue}\n"
         "\n"
-        + history_block +
+        + history_block
+        + windows_block +
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
         "Output:"
@@ -611,6 +642,22 @@ class IntentParser:
         log.info("segmented ops: %r", ops)
         return ops
 
+    def _fetch_window_list(self) -> list[dict]:
+        """Synchronously pull the current window list from KWin via
+        the kwin_bridge. Returns [] on any failure — non-Plasma
+        environment, KWin not running, bridge timeout — so the prompt
+        cleanly omits the `Current windows:` block when context isn't
+        available. The fetch costs a single KWin script round-trip
+        plus a brief D-Bus callback wait (typical 50-150 ms); accepted
+        on every parse call so the LLM always sees fresh names for
+        focus_window / close_window targeting."""
+        try:
+            from korder import kwin_bridge
+            return kwin_bridge.list_windows(timeout_s=0.6)
+        except Exception as e:
+            log.warning("intent: window list fetch failed: %s", e)
+            return []
+
     def _format_constraint(self):
         """Pick the format constraint for this call. Schema mode wins
         when enabled — bare format=json is the fallback path so we can
@@ -645,10 +692,12 @@ class IntentParser:
         - thinking_mode off → /api/generate with format:<schema>. Same
           path the bench has used since v1; preserves the measured
           latency profile for the action-dispatch hot path."""
+        windows = self._fetch_window_list()
         user_prompt = _build_user_prompt(
             transcript,
             self._history,
             show_triggers=self.show_triggers_in_prompt,
+            windows=windows,
         )
         # num_predict capped at 256 — well above any legitimate JSON
         # output (the longest valid response we've seen is ~120 tokens,

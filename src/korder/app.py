@@ -210,6 +210,12 @@ def _run_app() -> int:
     app.setOrganizationDomain("local.korder")
     app.setQuitOnLastWindowClosed(False)
 
+    # KWin scripts callDBus their results into us via this bridge.
+    # Initialized after QApplication exists (QDBusConnection needs the
+    # Qt event loop). list_windows() in intent.py consults the bridge.
+    from korder import kwin_bridge
+    kwin_bridge.init()
+
     recorder = MicRecorder(
         sample_rate=int(cfg["audio"]["sample_rate"]),
         device=cfg["audio"]["device"] or None,
