@@ -110,8 +110,48 @@ class VolumeDucker:
                 continue
         log.info("ducker: resumed %d MPRIS service(s)", len(services))
 
+    def release(self, service: str) -> None:
+        """Drop a service from the auto-resume list mid-session.
+        Called when an action (pause_player, resume_player) takes
+        explicit control of a service the ducker had paused — without
+        this, the dictation-end restore() would undo the user's
+        intent (e.g. user says 'pause YouTube', Korder pretends to,
+        then auto-resumes it on session end). Idempotent — releasing
+        a service we never paused is a no-op."""
+        with self._lock:
+            try:
+                self._paused_services.remove(service)
+                log.info("ducker: released %s (user took control)", service)
+            except ValueError:
+                pass
+
     def _safe_restore(self) -> None:
         try:
             self.restore()
         except Exception:
             pass
+
+
+# Module-level reference to the dictation-active VolumeDucker. Set
+# once at app startup; consulted by playback_target actions so they
+# can release services from the ducker's restore list when the user
+# has taken explicit control. Stays None in headless / test
+# contexts that don't construct a real ducker.
+_active_ducker: VolumeDucker | None = None
+
+
+def register_active_ducker(ducker: VolumeDucker | None) -> None:
+    """Register (or clear) the dictation-active ducker. App startup
+    calls this once after constructing the ducker. Tests can call
+    it with None to detach a stub between cases."""
+    global _active_ducker
+    _active_ducker = ducker
+
+
+def release_from_session_pause(service: str) -> None:
+    """Tell the active session ducker the user has explicit control
+    of `service` — it must NOT auto-resume on dictation end. No-op
+    when no ducker is registered (headless / test contexts) or when
+    the ducker hadn't paused this service in the first place."""
+    if _active_ducker is not None:
+        _active_ducker.release(service)

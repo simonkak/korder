@@ -216,3 +216,77 @@ def test_pause_player_op_no_match_does_not_call_dbus():
         _, fn = action.op_factory({"target": "VLC"})
         fn()
     assert pause_calls == []
+
+
+# ---- Claim ownership so the ducker doesn't auto-resume -------------------
+
+
+def test_pause_player_claims_ownership_so_ducker_does_not_undo_it():
+    """End-to-end behavior of the bug fix: ducker pauses Firefox at
+    dictation start; user says 'pause Firefox'; pause_player runs;
+    session ends; ducker.restore() must NOT auto-resume Firefox
+    because the action claimed ownership."""
+    from korder.audio.ducker import VolumeDucker, register_active_ducker
+
+    qdbus_calls: list[tuple] = []
+    p1, p2, p3 = _mock_mpris(
+        players=[SPOTIFY, FIREFOX_1],
+        statuses={SPOTIFY: "Playing", FIREFOX_1: "Playing"},
+        titles={SPOTIFY: "Track", FIREFOX_1: "How I Chose a Linux Distro"},
+    )
+    with (
+        p1, p2, p3,
+        patch.object(_mpris, "qdbus", side_effect=lambda *a: qdbus_calls.append(a) or ""),
+    ):
+        d = VolumeDucker(enabled=True)
+        d.duck()  # ducker pauses both at dictation start
+        register_active_ducker(d)
+        try:
+            action = get_action("pause_player")
+            _, fn = action.op_factory({"target": "Firefox"})
+            fn()
+            qdbus_calls.clear()
+            d.restore()
+        finally:
+            register_active_ducker(None)
+
+    play_targets = [c[0] for c in qdbus_calls if c[-1].endswith(".Play")]
+    assert SPOTIFY in play_targets, "ducker must still resume non-claimed services"
+    assert FIREFOX_1 not in play_targets, (
+        "user-paused Firefox must NOT be auto-resumed by session-end restore"
+    )
+
+
+def test_resume_player_also_claims_ownership():
+    """Symmetric for resume_player: when the user explicitly resumes
+    a ducker-paused service mid-session, the dictation-end restore
+    should not fire a redundant Play (which would clobber any
+    later state change)."""
+    from korder.audio.ducker import VolumeDucker, register_active_ducker
+
+    qdbus_calls: list[tuple] = []
+    p1, p2, p3 = _mock_mpris(
+        players=[SPOTIFY],
+        statuses={SPOTIFY: "Playing"},
+        titles={SPOTIFY: "Track"},
+    )
+    with (
+        p1, p2, p3,
+        patch.object(_mpris, "qdbus", side_effect=lambda *a: qdbus_calls.append(a) or ""),
+    ):
+        d = VolumeDucker(enabled=True)
+        d.duck()
+        register_active_ducker(d)
+        try:
+            action = get_action("resume_player")
+            _, fn = action.op_factory({"target": "Spotify"})
+            fn()
+            qdbus_calls.clear()
+            d.restore()
+        finally:
+            register_active_ducker(None)
+
+    play_targets = [c[0] for c in qdbus_calls if c[-1].endswith(".Play")]
+    assert SPOTIFY not in play_targets, (
+        "user-resumed Spotify already played, ducker shouldn't re-play it"
+    )

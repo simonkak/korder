@@ -19,6 +19,7 @@ import re
 
 from korder.actions.base import Action, register
 from korder.audio import _mpris
+from korder.audio.ducker import release_from_session_pause
 from korder.ui.progress import emit_progress
 
 log = logging.getLogger(__name__)
@@ -88,6 +89,12 @@ def _do_pause(target: str) -> None:
         return
     pretty = _mpris.short_player_name(service)
     if _mpris.pause_player(service):
+        # Claim ownership: the dictation ducker also paused this
+        # service at recording start, and its session-end restore
+        # would auto-resume it — undoing the user's intent. release()
+        # is idempotent so it's safe even when the ducker hadn't
+        # touched this service.
+        release_from_session_pause(service)
         emit_progress(f"Paused {pretty}")
         log.info("pause_player: paused %s (target=%r)", service, target)
     else:
@@ -105,6 +112,12 @@ def _do_resume(target: str) -> None:
         return
     pretty = _mpris.short_player_name(service)
     if _mpris.play_player(service):
+        # Resume happens NOW (not waiting for session end). Drop
+        # the service from the ducker's auto-resume list so its
+        # later restore() doesn't fire a redundant Play that, if
+        # the user re-paused mid-session via some other surface,
+        # would clobber that newer state.
+        release_from_session_pause(service)
         emit_progress(f"Resumed {pretty}")
         log.info("resume_player: resumed %s (target=%r)", service, target)
     else:

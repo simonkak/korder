@@ -290,6 +290,11 @@ def _run_app() -> int:
         enabled=_bool(cfg["audio"]["duck_during_recording"]),
         target_pct=duck_pct,
     )
+    # Register so playback_target actions can release services from
+    # the auto-resume list when the user takes explicit control —
+    # otherwise dictation-end restore would undo a 'pause Firefox'.
+    from korder.audio.ducker import register_active_ducker
+    register_active_ducker(ducker)
 
     wake_detector = _build_wake_detector(cfg, recorder) if _bool(cfg["wake"]["enabled"]) else None
 
