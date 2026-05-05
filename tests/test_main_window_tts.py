@@ -24,7 +24,6 @@ class _MainWindowStub:
     + resume methods. The methods are bound off the real class
     via types.MethodType in each test."""
     def __init__(self):
-        self._tts_paused_services: list[str] = []
         self._tts_active_count = 0
         self._recorder = _FakeRecorder()
         # Tests that exercise the duck pause/resume around TTS
@@ -47,49 +46,28 @@ def _bind(stub):
     return stub
 
 
-def test_two_utterances_keep_music_paused_until_both_finish():
-    """The bug this guards against: utterance #1 pauses Spotify;
-    utterance #2 starts before #1's playback_finished fires; #1's
-    playback_finished resumes Spotify even though #2 is still
-    playing → music plays underneath voice. With ref counting,
-    Spotify only resumes after BOTH have finished."""
+def test_two_utterances_keep_count_balanced():
+    """Two TTS calls in flight: count rises to 2 across both pauses,
+    drops back to 0 across both resumes. MPRIS pause/resume is no
+    longer per-TTS — that's owned by the dictation lifecycle's
+    ducker — so the count is purely about local in-flight bookkeeping
+    for the mic gate and the bleed-window snip."""
     stub = _bind(_MainWindowStub())
     qdbus_calls: list[tuple] = []
 
-    with (
-        patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
-        patch.object(_mpris, "player_status", return_value="Playing"),
-        patch.object(_mpris, "qdbus", side_effect=lambda *a: qdbus_calls.append(a) or ""),
-    ):
-        # Two TTS calls in rapid succession (both pause-for-tts before
-        # either playback_finished fires)
+    with patch.object(_mpris, "qdbus", side_effect=lambda *a: qdbus_calls.append(a) or ""):
         stub._mpris_pause_for_tts()
         stub._mpris_pause_for_tts()
+        assert stub._tts_active_count == 2
 
-    # Spotify was paused exactly once (idempotent — no re-pause)
-    pause_calls = [c for c in qdbus_calls if c[-1].endswith(".Pause")]
-    assert len(pause_calls) == 1, f"expected one Pause; got {pause_calls!r}"
-
-    # First playback_finished arrives. With ref-counting, music
-    # should NOT resume yet (count would drop to 1).
-    qdbus_calls.clear()
-    with patch.object(_mpris, "qdbus", side_effect=lambda *a: qdbus_calls.append(a) or ""):
         stub._resume_after_tts()
-    play_calls_after_first = [c for c in qdbus_calls if c[-1].endswith(".Play")]
-    assert play_calls_after_first == [], (
-        "music resumed after first utterance — should wait for second"
-    )
-    assert stub._tts_active_count == 1
+        assert stub._tts_active_count == 1
 
-    # Second playback_finished arrives. NOW music resumes.
-    qdbus_calls.clear()
-    with patch.object(_mpris, "qdbus", side_effect=lambda *a: qdbus_calls.append(a) or ""):
         stub._resume_after_tts()
-    play_calls_after_second = [c for c in qdbus_calls if c[-1].endswith(".Play")]
-    assert len(play_calls_after_second) == 1, (
-        f"music should resume after second utterance; got {play_calls_after_second!r}"
-    )
-    assert stub._tts_active_count == 0
+        assert stub._tts_active_count == 0
+
+    # No MPRIS calls — those happen at the dictation lifecycle, not per TTS.
+    assert qdbus_calls == []
 
 
 def test_resume_below_zero_clamps_safely():
@@ -103,39 +81,24 @@ def test_resume_below_zero_clamps_safely():
         stub._resume_after_tts()
 
     assert stub._tts_active_count == 0
-    assert stub._tts_paused_services == []
 
 
-def test_force_resume_after_cancel_releases_count_and_services():
+def test_force_resume_after_cancel_zeroes_count():
     """tts.cancel() drains queued utterances WITHOUT pulling them
-    through the worker's playback_finished — so the ref count would
-    stay above zero and music would never resume. Force-resume
-    zeroes the count and resumes everything."""
+    through the worker's playback_finished — so the ref count
+    would stay above zero forever. Force-resume zeroes it. MPRIS
+    services are released by the dictation lifecycle's
+    ducker.restore() on recording stop, not here."""
     stub = _bind(_MainWindowStub())
 
-    qdbus_calls: list[tuple] = []
-    with (
-        patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
-        patch.object(_mpris, "player_status", return_value="Playing"),
-        patch.object(_mpris, "qdbus", side_effect=lambda *a: qdbus_calls.append(a) or ""),
-    ):
-        # Three "pauses" without any resume — simulates three queued
-        # utterances. tts.cancel() drains all three without firing
-        # playback_finished for the queued ones.
+    with patch.object(_mpris, "qdbus", return_value=""):
         stub._mpris_pause_for_tts()
         stub._mpris_pause_for_tts()
         stub._mpris_pause_for_tts()
-    assert stub._tts_active_count == 3
+        assert stub._tts_active_count == 3
 
-    qdbus_calls.clear()
-    with patch.object(_mpris, "qdbus", side_effect=lambda *a: qdbus_calls.append(a) or ""):
         stub._force_resume_after_cancel()
-    play_calls = [c for c in qdbus_calls if c[-1].endswith(".Play")]
-    assert len(play_calls) == 1, (
-        f"force-resume should release Spotify exactly once; got {play_calls!r}"
-    )
-    assert stub._tts_active_count == 0
-    assert stub._tts_paused_services == []
+        assert stub._tts_active_count == 0
 
 
 def test_cancel_recording_stops_tts_even_when_recorder_idle(monkeypatch):
@@ -161,7 +124,6 @@ def test_cancel_recording_stops_tts_even_when_recorder_idle(monkeypatch):
         _tts = tts
         _ducker = None
         _chime_pending_timer = None
-        _tts_paused_services = []
         _tts_active_count = 0
         _await_tts_for_answer_reset = False
         _dictation_via_wake = False
@@ -211,7 +173,6 @@ def test_resume_after_tts_snips_committed_samples_when_recording():
 
     class _Stub:
         _recorder = recorder
-        _tts_paused_services = []
         _tts_active_count = 1  # TTS in flight
         _committed_samples = 0
         _last_partial_norm = "stale"
@@ -255,7 +216,6 @@ def test_resume_after_tts_no_op_when_recorder_idle():
 
     class _Stub:
         _recorder = recorder
-        _tts_paused_services = []
         _tts_active_count = 1
         _ducker = None
         # Deliberately omit _committed_samples / _last_partial_norm /

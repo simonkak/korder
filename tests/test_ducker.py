@@ -1,262 +1,144 @@
-"""VolumeDucker tests with mocked subprocess.run. Verifies the
-duck/restore lifecycle, idempotency, and graceful no-op paths so a
-broken wpctl never blocks the recording session."""
+"""VolumeDucker tests with mocked MPRIS calls. Verifies the
+duck/restore lifecycle pauses Playing media services and resumes
+them on dictation end.
+
+The earlier wpctl-based ducker lowered the default sink's volume
+during recording. The current ducker switches to MPRIS pause/resume
+so external music is fully silent during listening (better for
+Whisper) and Korder's own TTS plays at the user's normal volume
+(no lift/re-engage dance per TTS event)."""
 from __future__ import annotations
-import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
-
+from korder.audio import _mpris
 from korder.audio.ducker import VolumeDucker
 
 
-class _FakeWpctl:
-    """Pretend to be wpctl: holds a current sink volume, responds to
-    get-volume/set-volume calls with the right text/return code."""
-
-    def __init__(self, initial: float = 0.80):
-        self.volume = initial
-        self.calls: list[list[str]] = []
-
-    def __call__(self, cmd, *args, **kwargs):
-        self.calls.append(list(cmd))
-        if cmd[0] != "wpctl":
-            raise FileNotFoundError(cmd[0])
-        verb = cmd[1]
-        if verb == "get-volume":
-            return _completed(stdout=f"Volume: {self.volume:.2f}\n")
-        if verb == "set-volume":
-            self.volume = float(cmd[3])
-            return _completed(stdout="")
-        raise AssertionError(f"unexpected wpctl verb {verb!r}")
-
-
-def _completed(stdout: str = "", returncode: int = 0):
-    cp = subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
-    return cp
-
-
-def test_disabled_ducker_does_not_call_wpctl():
-    fake = _FakeWpctl(initial=0.80)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        d = VolumeDucker(enabled=False, target_pct=30)
+def test_disabled_ducker_does_nothing():
+    with patch.object(_mpris, "list_players") as list_players:
+        d = VolumeDucker(enabled=False)
         d.duck()
         d.restore()
-    assert fake.calls == []
-    assert fake.volume == 0.80  # untouched
+    list_players.assert_not_called()
 
 
-def test_duck_lowers_volume_and_restore_brings_it_back():
-    fake = _FakeWpctl(initial=0.80)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        d = VolumeDucker(enabled=True, target_pct=30)
+def test_duck_pauses_only_playing_services():
+    """Stopped or already-paused services are left alone — we don't
+    want to surprise-pause something the user explicitly chose to
+    keep stopped, and resume() would later un-stop it incorrectly."""
+    qdbus_calls: list[tuple] = []
+
+    def fake_qdbus(*args):
+        qdbus_calls.append(args)
+        return ""
+
+    statuses = {
+        "org.mpris.MediaPlayer2.spotify": "Playing",
+        "org.mpris.MediaPlayer2.mpv": "Paused",
+        "org.mpris.MediaPlayer2.firefox": "Stopped",
+    }
+
+    with (
+        patch.object(_mpris, "list_players", return_value=list(statuses.keys())),
+        patch.object(_mpris, "player_status", side_effect=lambda s: statuses[s]),
+        patch.object(_mpris, "qdbus", side_effect=fake_qdbus),
+    ):
+        d = VolumeDucker(enabled=True)
         d.duck()
-        assert fake.volume == pytest.approx(0.30, abs=1e-6)
+
+    # Only the Playing service got paused
+    pause_calls = [c for c in qdbus_calls if c[-1].endswith(".Pause")]
+    assert len(pause_calls) == 1
+    assert "spotify" in pause_calls[0][0]
+
+
+def test_restore_resumes_paused_services():
+    qdbus_calls: list[tuple] = []
+
+    def fake_qdbus(*args):
+        qdbus_calls.append(args)
+        return ""
+
+    with (
+        patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
+        patch.object(_mpris, "player_status", return_value="Playing"),
+        patch.object(_mpris, "qdbus", side_effect=fake_qdbus),
+    ):
+        d = VolumeDucker(enabled=True)
+        d.duck()
+        qdbus_calls.clear()
         d.restore()
-        assert fake.volume == pytest.approx(0.80, abs=1e-6)
+
+    play_calls = [c for c in qdbus_calls if c[-1].endswith(".Play")]
+    assert len(play_calls) == 1
 
 
-def test_duck_is_idempotent_preserves_original_level():
-    """A second duck() call while already ducked must NOT replace the
-    saved original with the already-lowered value, or restore would
-    leave the volume permanently low."""
-    fake = _FakeWpctl(initial=0.75)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        d = VolumeDucker(enabled=True, target_pct=20)
+def test_duck_is_idempotent():
+    """A second duck() while already paused must NOT re-pause —
+    that'd risk re-listing already-paused services as 'we paused
+    them' and resuming them spuriously."""
+    qdbus_calls: list[tuple] = []
+
+    def fake_qdbus(*args):
+        qdbus_calls.append(args)
+        return ""
+
+    with (
+        patch.object(_mpris, "list_players", return_value=["org.mpris.MediaPlayer2.spotify"]),
+        patch.object(_mpris, "player_status", return_value="Playing"),
+        patch.object(_mpris, "qdbus", side_effect=fake_qdbus),
+    ):
+        d = VolumeDucker(enabled=True)
         d.duck()
-        # Pretend the user toggles recording off then on quickly without
-        # the restore landing first — second duck() should be a no-op.
+        first = list(qdbus_calls)
         d.duck()
-        d.restore()
-    # Volume back to original 0.75, not stuck at 0.20.
-    assert fake.volume == pytest.approx(0.75, abs=1e-6)
+        assert qdbus_calls == first, "second duck() must be a no-op"
 
 
 def test_restore_without_duck_is_noop():
-    fake = _FakeWpctl(initial=0.50)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        d = VolumeDucker(enabled=True, target_pct=30)
-        d.restore()  # never ducked → should not touch volume
-    # Only allowed call would be the get-volume from a duck() that didn't happen
-    assert fake.volume == 0.50
-    set_calls = [c for c in fake.calls if len(c) > 1 and c[1] == "set-volume"]
-    assert set_calls == []
-
-
-def test_duck_skips_when_already_below_target():
-    """If the user is already quieter than the duck target, ducking
-    *up* would be backwards — no-op instead."""
-    fake = _FakeWpctl(initial=0.10)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        d = VolumeDucker(enabled=True, target_pct=30)
-        d.duck()
+    qdbus_calls: list[tuple] = []
+    with (
+        patch.object(_mpris, "list_players", return_value=[]),
+        patch.object(_mpris, "qdbus", side_effect=lambda *a: qdbus_calls.append(a) or ""),
+    ):
+        d = VolumeDucker(enabled=True)
         d.restore()
-    assert fake.volume == pytest.approx(0.10, abs=1e-6)
-    # No set-volume call should have happened
-    set_calls = [c for c in fake.calls if len(c) > 1 and c[1] == "set-volume"]
-    assert set_calls == []
+    assert qdbus_calls == []
 
 
-def test_duck_handles_missing_wpctl_gracefully():
-    def raise_fnf(*_args, **_kwargs):
-        raise FileNotFoundError("wpctl")
+def test_duck_handles_player_pause_failure_continues_with_others():
+    """One stuck player shouldn't block the rest from being paused —
+    the user's music still gets paused even if a misbehaving widget
+    refuses to cooperate."""
+    qdbus_calls: list[tuple] = []
 
-    with patch("korder.audio.ducker.subprocess.run", side_effect=raise_fnf):
-        d = VolumeDucker(enabled=True, target_pct=30)
-        # Must not raise — recording must continue even without wpctl
+    def fake_qdbus(svc, *_rest):
+        qdbus_calls.append(svc)
+        if "stuck" in svc:
+            return None  # _mpris convention: None = call failed
+        return ""
+
+    with (
+        patch.object(_mpris, "list_players", return_value=[
+            "org.mpris.MediaPlayer2.stuck",
+            "org.mpris.MediaPlayer2.spotify",
+        ]),
+        patch.object(_mpris, "player_status", return_value="Playing"),
+        patch.object(_mpris, "qdbus", side_effect=fake_qdbus),
+    ):
+        d = VolumeDucker(enabled=True)
         d.duck()
+        # Both attempted, only spotify recorded as paused (stuck returned None)
         d.restore()
+        # Only spotify gets a Play call — we never claimed to pause stuck
+        play_calls = [c for c in qdbus_calls if "spotify" in c]
+        assert len(play_calls) == 2  # one Pause + one Play
+        stuck_calls = [c for c in qdbus_calls if "stuck" in c]
+        assert len(stuck_calls) == 1  # only the failed Pause
 
 
-def test_duck_handles_get_volume_garbage_output():
-    """If wpctl's output format changes / it errors with weird text,
-    the parse fails cleanly and ducking is skipped."""
-    def garbage(*_args, **_kwargs):
-        return _completed(stdout="something unexpected\n")
-
-    with patch("korder.audio.ducker.subprocess.run", side_effect=garbage):
-        d = VolumeDucker(enabled=True, target_pct=30)
-        d.duck()  # parse fails → no-op, no exception
-        d.restore()
-
-
-def test_duck_handles_set_volume_failure():
-    """get-volume succeeds, set-volume raises — saved state must NOT be
-    populated, so a subsequent restore() doesn't try to set anything."""
-    state = {"calls": 0}
-
-    def handler(cmd, *args, **kwargs):
-        state["calls"] += 1
-        if cmd[1] == "get-volume":
-            return _completed(stdout="Volume: 0.80\n")
-        # set-volume fails
-        raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
-
-    with patch("korder.audio.ducker.subprocess.run", side_effect=handler):
-        d = VolumeDucker(enabled=True, target_pct=30)
-        d.duck()
-        # _saved should be None because set failed; restore is a no-op
-        assert d._saved is None
-        d.restore()
-
-
-def test_target_pct_clamped_to_valid_range():
-    fake = _FakeWpctl(initial=0.80)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        # 200% clamps to 100, so target=1.0 — and 1.0 > 0.80 so it's
-        # actually a no-op (already-below-target check). Just verify
-        # construction doesn't blow up and over-target doesn't raise.
-        d = VolumeDucker(enabled=True, target_pct=200)
-        assert d._target == 1.0
-        d.duck()  # no-op since current 0.80 <= target 1.0
-    fake = _FakeWpctl(initial=0.50)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        d = VolumeDucker(enabled=True, target_pct=-10)
-        assert d._target == 0.0
-        d.duck()
-        assert fake.volume == pytest.approx(0.0, abs=1e-6)
-
-
-# ---- pause / resume around TTS playback ---------------------------------
-
-
-def test_pause_lifts_active_duck_and_resume_re_engages():
-    """Typical TTS sequence: recording ducks, TTS pauses (volume back
-    up so synth is audible), TTS ends, ducker resumes (volume back
-    down). One wpctl set per transition — no extras."""
-    fake = _FakeWpctl(initial=0.80)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        d = VolumeDucker(enabled=True, target_pct=30)
-        d.duck()
-        assert fake.volume == pytest.approx(0.30, abs=1e-6)
-        d.pause()
-        assert fake.volume == pytest.approx(0.80, abs=1e-6), (
-            "pause must lift the duck so TTS plays at the user's level"
-        )
-        d.resume()
-        assert fake.volume == pytest.approx(0.30, abs=1e-6), (
-            "resume must re-engage the duck for continued listening"
-        )
-        d.restore()
-        assert fake.volume == pytest.approx(0.80, abs=1e-6)
-
-
-def test_pause_when_not_ducked_is_a_no_op():
-    """If the duck wasn't active when pause() ran, resume() must NOT
-    spuriously engage it — the user wasn't being ducked, no reason
-    to start now."""
-    fake = _FakeWpctl(initial=0.80)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        d = VolumeDucker(enabled=True, target_pct=30)
-        d.pause()
-        assert fake.volume == pytest.approx(0.80, abs=1e-6)
-        d.resume()
-        assert fake.volume == pytest.approx(0.80, abs=1e-6)
-    # No set-volume calls anywhere
-    set_calls = [c for c in fake.calls if len(c) > 1 and c[1] == "set-volume"]
-    assert set_calls == []
-
-
-def test_nested_pause_calls_only_hit_wpctl_once():
-    """Concurrent TTS utterances stack pauses; only the outermost
-    pause/resume pair touches wpctl. The inner ones are pure
-    bookkeeping. This is the 'don't spam the pause' behavior."""
-    fake = _FakeWpctl(initial=0.80)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        d = VolumeDucker(enabled=True, target_pct=30)
-        d.duck()
-        fake.calls.clear()
-        d.pause()  # outer — should hit wpctl
-        d.pause()  # nested — should NOT
-        d.pause()  # nested — should NOT
-        # Three pauses, one set-volume call
-        set_calls = [c for c in fake.calls if c[1] == "set-volume"]
-        assert len(set_calls) == 1
-        d.resume()  # nested — should NOT hit wpctl
-        d.resume()  # nested — should NOT
-        # Still just the one set call from the outer pause
-        set_calls = [c for c in fake.calls if c[1] == "set-volume"]
-        assert len(set_calls) == 1
-        d.resume()  # outer — re-engages duck
-        set_calls = [c for c in fake.calls if c[1] == "set-volume"]
-        # Now two: pause-restore + resume-re-duck
-        assert len(set_calls) == 2
-        assert fake.volume == pytest.approx(0.30, abs=1e-6)
-
-
-def test_explicit_restore_between_pause_and_resume_clears_pending_duck():
-    """If the user stops recording while TTS is mid-flight, the
-    recording lifecycle calls restore() — but the duck is paused at
-    that moment. The pending-duck flag must be cleared so the
-    matching resume() doesn't surprise-engage the duck after
-    recording has ended."""
-    fake = _FakeWpctl(initial=0.80)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        d = VolumeDucker(enabled=True, target_pct=30)
-        d.duck()
-        d.pause()  # volume back to 0.80
-        # Recording ends mid-TTS; lifecycle calls restore (which is
-        # a no-op on the wpctl side because _saved was already
-        # cleared by pause, but it must clear the pending-duck flag).
-        d.restore()
-        d.resume()  # ← must NOT engage duck now
-        assert fake.volume == pytest.approx(0.80, abs=1e-6), (
-            "post-restore resume must not re-duck"
-        )
-
-
-def test_duck_inside_pause_window_is_deferred_not_dropped():
-    """If recording starts (duck called) while a pause is held —
-    unusual but possible if start_recording races with TTS — the
-    duck should be remembered and applied when the pause lifts.
-    Otherwise we'd silently lose the duck for the rest of the
-    session."""
-    fake = _FakeWpctl(initial=0.80)
-    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
-        d = VolumeDucker(enabled=True, target_pct=30)
-        d.pause()  # not previously ducked → pure flag set
-        d.duck()   # paused → no wpctl, but remembers intent
-        # Volume still at user's level (TTS-style window)
-        assert fake.volume == pytest.approx(0.80, abs=1e-6)
-        d.resume()  # ← intent honored: now duck takes effect
-        assert fake.volume == pytest.approx(0.30, abs=1e-6)
+def test_target_pct_constructor_arg_is_accepted_for_compat():
+    """Old call sites pass target_pct=N; the constructor must accept
+    and ignore it without raising. Removable after one release."""
+    d = VolumeDucker(enabled=False, target_pct=30)
+    assert d._enabled is False

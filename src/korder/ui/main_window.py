@@ -300,16 +300,13 @@ class MainWindow(QMainWindow):
         self._tts = tts
         self._tts_suppress_when_playing = tts_suppress_when_playing
         self._tts_speak_action_progress = tts_speak_action_progress
-        self._tts_paused_services: list[str] = []
-        # Ref count of in-flight TTS utterances. Increments on every
-        # _mpris_pause_for_tts call, decrements on every
-        # _resume_after_tts call. Music is paused on the 0→1
-        # transition and resumed only on the N→0 transition. Without
-        # this, two TTS calls queued in rapid succession (the first
-        # already paused music) would race: when the first
-        # playback_finished fired, music would resume while the
-        # second utterance was still synthesizing/playing — producing
-        # bleed into the recording or audible bleed during speech.
+        # Ref count of in-flight TTS utterances. Used by the mic-
+        # suppression gate at _on_partial_tick (count > 0 → don't
+        # transcribe) and by the bleed-window snip when the count
+        # returns to zero. The actual MPRIS pause/resume is owned by
+        # the dictation lifecycle (ducker.duck/restore), so this
+        # count is purely about the local TTS-in-flight signal —
+        # not about which media services to release later.
         self._tts_active_count = 0
         # Soft "go" chime on dictation start (mirrors the Plasma
         # "ready" cue users expect from voice assistants). Audible
@@ -1250,63 +1247,28 @@ class MainWindow(QMainWindow):
         self._tts.say(text, lang)
 
     def _mpris_pause_for_tts(self) -> None:
-        """Pause every Playing MPRIS service for the duration of
-        TTS playback. Ref-counts in-flight utterances so concurrent
-        speech keeps music paused across the whole burst — only the
-        last finishing utterance resumes.
-
-        Also pauses the listening-volume duck for the TTS window.
-        The duck lowers the default sink so external music is quiet
-        enough for Whisper; TTS plays through the same sink, so
-        leaving the duck engaged would muffle Korder's own voice.
-        ducker.pause() / resume() ref-counts internally so we can
-        call freely without orchestrating duck/restore pairs out
-        here."""
+        """Track that TTS is in flight via the ref count. The actual
+        MPRIS pause/resume happens at dictation-lifecycle boundaries
+        now (ducker.duck() at recording start pauses every Playing
+        MPRIS service; ducker.restore() at recording end resumes them),
+        so per-TTS-event pausing is redundant inside a dictation. The
+        ref count is still meaningful — it's read by the mic-suppression
+        gate at _on_partial_tick and by the bleed-window snip in
+        _resume_after_tts — so we keep that bookkeeping. The list of
+        paused services is empty because we don't pause anything here;
+        retained for shape compat with cancel-path force-resume."""
         self._tts_active_count += 1
-        if self._tts_active_count > 1:
-            # Earlier utterance already paused; piggyback on its
-            # paused-services list (we'll release together).
-            return
-        if self._ducker is not None:
-            try:
-                self._ducker.pause()
-            except Exception:
-                pass
-        paused: list[str] = []
-        for svc in _mpris.list_players():
-            if _mpris.player_status(svc) == "Playing":
-                if _mpris.qdbus(svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Pause") is not None:
-                    paused.append(svc)
-        self._tts_paused_services = paused
-        if paused:
-            log.info("tts: paused %d MPRIS service(s) for speech", len(paused))
 
     def _resume_after_tts(self) -> None:
         """Slot for SpeechEngine.playback_finished. Decrements the
-        ref count; resumes paused MPRIS services only when the count
-        reaches zero (last utterance done). Always called via the
-        playback_finished signal which the SpeechEngine emits exactly
-        once per queued job — succeeded, cancelled, or failed."""
+        ref count and snips the bleed window when the last utterance
+        finishes. MPRIS pause/resume is owned by the dictation
+        lifecycle now (ducker.duck/restore at recording start/end),
+        so there's nothing media-side to release here."""
         self._tts_active_count = max(0, self._tts_active_count - 1)
         if self._tts_active_count > 0:
-            return  # more TTS in flight; keep music paused
+            return  # more TTS in flight
         self._snip_tts_bleed_window()
-        # Release the matching ducker.pause() from _mpris_pause_for_tts.
-        # The ducker re-engages itself only if the duck was active
-        # when we paused AND no intervening restore() cleared the
-        # pending flag — so we don't need to check is_recording here.
-        if self._ducker is not None:
-            try:
-                self._ducker.resume()
-            except Exception:
-                pass
-        services = self._tts_paused_services
-        self._tts_paused_services = []
-        if not services:
-            return
-        for svc in services:
-            _mpris.qdbus(svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Play")
-        log.info("tts: resumed %d MPRIS service(s)", len(services))
 
     def _snip_tts_bleed_window(self) -> None:
         """Advance _committed_samples past whatever the mic captured
@@ -1334,28 +1296,13 @@ class MainWindow(QMainWindow):
         the N-1 still queued. That'd leave the ref count unbalanced
         and music paused forever.
 
-        This method force-releases: zero the count, resume every
-        paused service, and rely on the at-most-one stale
-        playback_finished from the in-flight job to be a no-op
-        (count already 0; services list empty)."""
-        # Drop any pending duck pauses too — same rationale as the
-        # MPRIS service list. Recording-stop will fire restore()
-        # next, which clears the pending-duck flag the resume()
-        # would otherwise honor.
-        if self._ducker is not None and self._tts_active_count > 0:
-            try:
-                self._ducker.resume()
-            except Exception:
-                pass
+        This method force-releases: zero the count and snip the
+        bleed window. MPRIS pause/resume is owned by the dictation
+        lifecycle now, so there's nothing media-side to release —
+        cancel paths typically also stop the recorder, which calls
+        ducker.restore() and resumes any paused services."""
         self._tts_active_count = 0
         self._snip_tts_bleed_window()
-        services = self._tts_paused_services
-        self._tts_paused_services = []
-        if not services:
-            return
-        for svc in services:
-            _mpris.qdbus(svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Play")
-        log.info("tts: resumed %d MPRIS service(s) (cancel)", len(services))
 
     def _on_tts_done_check_answer_reset(self) -> None:
         """Second slot bound to playback_finished. When a

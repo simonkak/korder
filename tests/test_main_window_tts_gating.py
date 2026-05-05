@@ -150,19 +150,19 @@ def test_fallback_answer_reset_releases_when_tts_idle():
     assert reset_called == [True]
 
 
-# ---- Duck pause/resume around TTS ----------------------------------------
+# ---- Per-TTS MPRIS pause is no longer needed -----------------------------
 
 
-def test_mpris_pause_for_tts_pauses_listening_duck():
-    """The listening duck lowers the default sink so external music
-    is quiet under the user's voice. TTS plays through the same
-    sink, so leaving the duck engaged would muffle Korder's own
-    voice. Pause-for-TTS calls ducker.pause() to lift the duck for
-    the speech window — the ducker re-engages itself on resume()."""
+def test_mpris_pause_for_tts_does_not_pause_ducker_or_mpris():
+    """Music is paused for the whole dictation lifecycle by the
+    ducker (MPRIS-pause-based since the simplification). Per-TTS
+    pause is therefore redundant — and would interfere with the
+    ducker's resume on dictation end if it tried to track its own
+    paused-services list. The TTS pause path is now purely
+    bookkeeping for the in-flight ref count."""
     ducker = MagicMock()
 
     class _Stub:
-        _tts_paused_services = []
         _tts_active_count = 0
         _ducker = ducker
 
@@ -171,74 +171,11 @@ def test_mpris_pause_for_tts_pauses_listening_duck():
         mw.MainWindow._mpris_pause_for_tts, stub
     )
 
-    with patch.object(mw._mpris, "list_players", return_value=[]):
+    with patch.object(mw._mpris, "qdbus") as qdbus:
         stub._mpris_pause_for_tts()
 
-    ducker.pause.assert_called_once()
-
-
-def test_mpris_pause_for_tts_does_not_double_pause_on_concurrent_calls():
-    """Ref-counted at the main_window layer: the second concurrent
-    TTS utterance hits a count already > 1 and must NOT call pause
-    again. (The ducker also ref-counts internally, so a stray double
-    pause wouldn't break correctness — but we still avoid the
-    redundant call to keep the trace clean.)"""
-    ducker = MagicMock()
-
-    class _Stub:
-        _tts_paused_services = []
-        _tts_active_count = 0
-        _ducker = ducker
-
-    stub = _Stub()
-    stub._mpris_pause_for_tts = types.MethodType(
-        mw.MainWindow._mpris_pause_for_tts, stub
-    )
-
-    with patch.object(mw._mpris, "list_players", return_value=[]):
-        stub._mpris_pause_for_tts()
-        stub._mpris_pause_for_tts()
-
-    assert ducker.pause.call_count == 1
-
-
-def test_resume_after_tts_releases_duck_pause():
-    """When the last TTS finishes, ducker.resume() releases the
-    matching pause. The ducker decides internally whether to
-    re-engage the duck (it does iff the duck was active before
-    the pause AND no explicit restore() intervened)."""
-    ducker = MagicMock()
-    recorder = MagicMock()
-    recorder.is_recording = True
-    recorder.snapshot.return_value.shape = (16000,)
-
-    class _Stub:
-        _tts_paused_services = []
-        _tts_active_count = 1
-        _ducker = ducker
-        _recorder = recorder
-        _committed_samples = 0
-        _last_partial_norm = "x"
-        _stability_count = 0
-        _last_displayed_partial = "x"
-        _pending_partial_text = "x"
-        _last_osd_partial_t = 0.0
-        _osd_throttle_timer = MagicMock()
-
-    stub = _Stub()
-    stub._snip_tts_bleed_window = types.MethodType(
-        mw.MainWindow._snip_tts_bleed_window, stub
-    )
-    stub._reset_partial_render_state = types.MethodType(
-        mw.MainWindow._reset_partial_render_state, stub
-    )
-    stub._resume_after_tts = types.MethodType(
-        mw.MainWindow._resume_after_tts, stub
-    )
-
-    stub._resume_after_tts()
-
-    ducker.resume.assert_called_once()
-    # main_window no longer needs to call duck() directly — the
-    # ducker handles the re-engage decision internally.
+    assert stub._tts_active_count == 1
+    ducker.pause.assert_not_called()
     ducker.duck.assert_not_called()
+    ducker.restore.assert_not_called()
+    qdbus.assert_not_called()

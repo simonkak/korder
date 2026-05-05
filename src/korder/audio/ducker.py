@@ -1,191 +1,117 @@
-"""Lower system playback volume while Korder is listening.
+"""Pause MPRIS-aware media players for the duration of a dictation
+session so external audio doesn't bleed into the open mic.
 
-Voice transcription accuracy plummets when the mic picks up speakers
-playing back at high volume — Whisper hears two streams interleaved and
-guesses badly. This module ducks the default PipeWire sink for the
-duration of a recording session, then restores the original level.
+Earlier versions of this module lowered the default sink's volume via
+``wpctl`` instead of pausing — quieter rather than silent. That had
+two problems: Whisper accuracy is best with NO competing audio at all,
+not just quieter audio; and Korder's own TTS plays through the same
+sink, so the duck muffled the synthesized voice unless an extra
+pause/resume dance lifted it for every TTS event. Switching to MPRIS
+pause/resume eliminates both — music is fully silent during listening,
+TTS plays at the user's normal level for free, and the lifecycle is
+one pause + one resume per session regardless of how many TTS events
+fire in between.
 
-Wire control through `wpctl` (PipeWire's CLI). It's part of the
-wireplumber package and present on every PipeWire system; if missing,
-the ducker silently no-ops rather than blowing up the recording.
+Trade-off: non-MPRIS audio sources (browser tabs without media-session
+metadata, system game audio, etc.) are NOT affected. The previous
+wpctl approach covered them at the cost of muffling TTS. We chose
+simplicity here — the dominant case is music players that ship MPRIS
+support (Spotify, mpv, VLC, Firefox/Chromium with media playing,
+Deadbeef, Lollypop, etc.).
 
 Lifecycle (driven by MainWindow):
-    ducker.duck()       on _start_recording
-    ducker.restore()    on _stop_recording (every exit path)
+    ducker.duck()       on _begin_dictation_lifecycle (recording starts)
+    ducker.restore()    on _end_dictation_lifecycle (every exit path)
     ducker.restore()    via atexit, as a crash-safety net
 
-Idempotency: duck() while already ducked is a no-op (preserves the
-*original* saved level, not the already-lowered one). restore() while
-not ducked is a no-op.
+Idempotency: duck() while already paused is a no-op. restore() while
+not paused is a no-op. Only services that were Playing at the moment
+of duck() are tracked; manual user pause+resume in the middle of a
+dictation session is left alone (we don't try to second-guess).
 """
 from __future__ import annotations
 import atexit
 import logging
-import re
-import subprocess
 import threading
+
+from korder.audio import _mpris
 
 log = logging.getLogger(__name__)
 
 
-_VOLUME_RE = re.compile(r"Volume:\s+([\d.]+)")
-_WPCTL_TIMEOUT_S = 2.0
-_DEFAULT_SINK = "@DEFAULT_AUDIO_SINK@"
-
-
 class VolumeDucker:
-    def __init__(self, enabled: bool, target_pct: int):
+    def __init__(self, enabled: bool, target_pct: int = 0):
+        """target_pct is accepted for backwards compatibility with the
+        wpctl-volume era of this class but is no longer used. Pause
+        is fully silent; there's no analog scale to honor."""
         self._enabled = enabled
-        # Clamp to [0, 100] then convert to wpctl's 0.00–1.00 scale.
-        self._target = max(0, min(100, int(target_pct))) / 100.0
-        # None = not currently ducked. Set to original level on duck(),
-        # cleared on restore(). We never overwrite a non-None value so
-        # that a duplicate duck() call doesn't replace the original
-        # level with the already-lowered one.
-        self._saved: float | None = None
-        # restore() can be invoked from the inject worker thread (when a
-        # volume-altering action is about to fire and needs the original
-        # level back) and from the main thread (auto-stop after-action).
-        # The lock makes the read-modify-write of _saved + wpctl call
-        # safely interleavable.
+        # Services we paused on the most recent duck(). Cleared on
+        # restore() so a duplicate restore is a no-op.
+        self._paused_services: list[str] = []
+        # restore() can run from the inject worker thread (when a
+        # volume-altering action wants control of the sink) and from
+        # the main thread (auto-stop after-action). The lock guards
+        # the read-modify-write of the paused-services list.
         self._lock = threading.Lock()
-        # Pause depth. Ref-counted so concurrent pause() calls (e.g.
-        # nested TTS utterances) compose without each one triggering
-        # an extra wpctl round-trip. duck() inside a paused window
-        # is also a no-op so external recording-lifecycle code can
-        # call it freely without checking the pause state.
-        self._pause_depth = 0
-        # Whether pause() lifted an active duck. resume() consults
-        # this to decide whether to re-engage the duck when the
-        # last pause is released.
-        self._was_ducked_before_pause = False
         if self._enabled:
-            # Crash safety: if the process exits while ducked (uncaught
-            # exception, SIGTERM via tray-quit, …), put the volume back.
+            # Crash safety: if the process exits while music is paused,
+            # resume it so the user isn't left wondering why playback
+            # stopped after a Korder crash.
             atexit.register(self._safe_restore)
 
     def duck(self) -> None:
+        """Pause every Playing MPRIS service. Idempotent —
+        a second duck() while already paused is a no-op."""
+        if not self._enabled:
+            return
         with self._lock:
-            if not self._enabled or self._saved is not None:
+            if self._paused_services:
+                return  # already paused
+            paused: list[str] = []
+            try:
+                for svc in _mpris.list_players():
+                    try:
+                        if _mpris.player_status(svc) != "Playing":
+                            continue
+                        if _mpris.qdbus(
+                            svc,
+                            _mpris.MPRIS_OBJECT,
+                            f"{_mpris.PLAYER_IFACE}.Pause",
+                        ) is not None:
+                            paused.append(svc)
+                    except Exception:
+                        # One misbehaving player shouldn't block the
+                        # rest from being paused.
+                        continue
+            except Exception as e:
+                log.error("ducker: enumerate failed: %s", e)
                 return
-            if self._pause_depth > 0:
-                # Caller wants the duck engaged but we're in a paused
-                # window (e.g. TTS speaking). Don't lower the volume —
-                # resume() will re-engage when the pause lifts. The
-                # pause flag stays True so this duck() request is
-                # remembered semantically without touching wpctl.
-                self._was_ducked_before_pause = True
-                return
-            current = self._read_volume()
-            if current is None:
-                return
-            # Don't bother lowering if we're already at-or-below the target —
-            # would just create a confusing restore-up-to-target later.
-            if current <= self._target:
-                return
-            if self._set_volume(self._target):
-                self._saved = current
-                log.info("ducker: %.2f → %.2f", current, self._target)
+            self._paused_services = paused
+            if paused:
+                log.info("ducker: paused %d MPRIS service(s)", len(paused))
 
     def restore(self) -> None:
+        """Resume every service we paused. Always clears the paused-
+        services list so a failed Play call doesn't pin us in
+        'paused' forever — the next duck() can re-discover Playing
+        services fresh."""
         with self._lock:
-            # restore() always clears the pending-duck flag — caller
-            # is signalling they no longer want the duck engaged at
-            # all. A subsequent resume() must NOT re-duck if the
-            # caller did this between pause() and resume().
-            self._was_ducked_before_pause = False
-            if self._saved is None:
-                return
-            if self._set_volume(self._saved):
-                log.info("ducker: restored %.2f", self._saved)
-            # Clear saved state regardless — a failed restore call shouldn't
-            # leave us pinned in "ducked" forever; the next duck() can re-read
-            # whatever the user left things at.
-            self._saved = None
-
-    def pause(self) -> None:
-        """Temporarily lift the duck (e.g. for TTS playback that
-        plays through the same sink the duck has lowered). Idempotent
-        — nested pause() calls increment a depth counter and only
-        the outermost call hits wpctl. resume() reverses, re-engaging
-        the duck only when the depth returns to zero AND the duck was
-        active before the first pause()."""
-        with self._lock:
-            self._pause_depth += 1
-            if self._pause_depth > 1:
-                return
-            if self._saved is None:
-                # Wasn't ducked when pause() ran — nothing to lift,
-                # nothing to remember.
-                self._was_ducked_before_pause = False
-                return
-            self._was_ducked_before_pause = True
-            saved = self._saved
-            if self._set_volume(saved):
-                log.info("ducker: paused (lifted %.2f)", saved)
-            self._saved = None
-
-    def resume(self) -> None:
-        """Counterpart to pause(). Re-engages the duck on the
-        outermost matching call if it was active when pause() lifted
-        it. No-op when not currently paused, when the duck wasn't
-        active at pause time, or when an explicit restore() between
-        the pause and resume cleared the pending-duck flag."""
-        with self._lock:
-            if self._pause_depth <= 0:
-                return
-            self._pause_depth -= 1
-            if self._pause_depth > 0:
-                return
-            if not self._was_ducked_before_pause:
-                return
-            self._was_ducked_before_pause = False
-            if not self._enabled:
-                return
-            current = self._read_volume()
-            if current is None:
-                return
-            if current <= self._target:
-                return
-            if self._set_volume(self._target):
-                self._saved = current
-                log.info("ducker: resumed %.2f → %.2f", current, self._target)
+            services = self._paused_services
+            self._paused_services = []
+        if not services:
+            return
+        for svc in services:
+            try:
+                _mpris.qdbus(
+                    svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Play"
+                )
+            except Exception:
+                # One stuck Play call shouldn't block the others.
+                continue
+        log.info("ducker: resumed %d MPRIS service(s)", len(services))
 
     def _safe_restore(self) -> None:
         try:
             self.restore()
         except Exception:
             pass
-
-    def _read_volume(self) -> float | None:
-        try:
-            result = subprocess.run(
-                ["wpctl", "get-volume", _DEFAULT_SINK],
-                capture_output=True,
-                text=True,
-                timeout=_WPCTL_TIMEOUT_S,
-                check=True,
-            )
-        except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-            log.error("ducker: get-volume failed: %s", e)
-            return None
-        match = _VOLUME_RE.search(result.stdout)
-        if match is None:
-            return None
-        try:
-            return float(match.group(1))
-        except ValueError:
-            return None
-
-    def _set_volume(self, level: float) -> bool:
-        try:
-            subprocess.run(
-                ["wpctl", "set-volume", _DEFAULT_SINK, f"{level:.2f}"],
-                capture_output=True,
-                timeout=_WPCTL_TIMEOUT_S,
-                check=True,
-            )
-            return True
-        except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-            log.error("ducker: set-volume failed: %s", e)
-            return False
