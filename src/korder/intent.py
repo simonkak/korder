@@ -184,7 +184,7 @@ def _params_schema_for_action(action) -> dict:
     }
 
 
-def _build_response_schema() -> dict:
+def _build_response_schema(question_mode: bool = False) -> dict:
     """Build a JSON Schema constraining Gemma's response to the exact
     shape Korder expects:
       - actions: array of {phrase, name, params} where `name` is one of
@@ -196,7 +196,38 @@ def _build_response_schema() -> dict:
     Replaces `format: "json"` — schema-constrained sampling is roughly
     the same speed as bare JSON mode but eliminates whole classes of
     failure: hallucinated `confirm` on non-confirmable actions, unknown
-    action names, nested-actions runaway, stray top-level keys."""
+    action names, nested-actions runaway, stray top-level keys.
+
+    `question_mode=True` swaps in a tighter schema for inputs that
+    arrive with a trailing '?' — actions array is forced empty
+    (maxItems: 0) and response is forced non-empty (minLength: 1).
+    Schema-level enforcement is language-agnostic and works where
+    prose hints failed: even when E4B's prior is to fabricate an
+    action, the constraint engine rejects every token sequence that
+    would put a non-empty array there."""
+    if question_mode:
+        return {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "const": [],
+                    "description": "Empty — the input is a question.",
+                },
+                "response": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": (
+                        "Conversational answer in the same language "
+                        "as the input. Use the Current windows / "
+                        "history context the user message provides."
+                    ),
+                },
+                "context": {"type": "string"},
+            },
+            "required": ["actions", "response"],
+            "additionalProperties": False,
+        }
+
     action_branches = []
     for action in all_actions():
         branch = {
@@ -463,91 +494,101 @@ def _render_window_list(windows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# Heuristic interrogative detection. The LLM has trouble picking
-# the empty-actions branch when the action catalogue is in front of
-# it — even with explicit rules and examples, Gemma E4B keeps
-# fabricating actions for clearly-question inputs ('Jak nazywa się
-# aktywne okno?'). Pre-classifying in Python lets us swap the prompt
-# for a question-only template that doesn't include the catalogue,
-# so the LLM doesn't have actions to pick. False positives degrade
-# gracefully — an imperative phrased as a question ('press enter?')
-# would skip dispatch and just produce a response, which is
-# recoverable by the user re-saying it as a command.
-_INTERROGATIVE_PREFIXES = (
-    # English
-    "what ", "what's ", "what is ", "what are ", "what was ",
-    "which ", "where ", "where's ", "when ", "when's ", "why ",
-    "how ", "how's ", "how do ", "how can ", "who ", "who's ",
-    "is ", "are ", "do ", "does ", "did ", "will ",
-    "tell me ", "tell us ",
-    # Polish
-    "co ", "co to ", "co teraz ", "jak ", "jak nazywa ",
-    "jaki ", "jaka ", "jakie ", "jakim ", "jaką ", "jakim ",
-    "który ", "która ", "które ", "którą ", "którego ", "którą ",
-    "czy ", "kto ", "kogo ", "komu ",
-    "gdzie ", "kiedy ", "ile ", "dlaczego ", "skąd ", "dokąd ",
-    "powiedz ", "powiedz mi ",
-)
-
-
 def _looks_interrogative(transcript: str) -> bool:
-    """Cheap pre-classifier. Returns True for inputs that read as
-    questions — trailing '?' or a question-word start in PL/EN.
-    Used to swap the prompt for a question-only template that
-    suppresses the action catalogue."""
-    t = transcript.strip()
-    if not t:
-        return False
-    if t.rstrip(" .,!;:").endswith("?"):
-        return True
-    lower = t.lower()
-    return any(lower.startswith(p) for p in _INTERROGATIVE_PREFIXES)
+    """Universal '?'-only question detection. Language-agnostic: any
+    Whisper-supported language preserves '?' on rising-intonation
+    speech (verified PL, EN; documented for the other languages
+    Whisper transcribes). When Whisper drops '?' for short / low-
+    intoned utterances, the question falls through to the normal
+    path and the LLM does its best — no degradation vs not having
+    this check at all.
+
+    Earlier versions also matched language-specific question-word
+    starters (PL + EN) but those silently broke for any third
+    language, which is the wrong way to add coverage."""
+    t = transcript.strip().rstrip(" .,!;:")
+    return t.endswith("?")
 
 
 def _build_user_prompt(
     transcript: str,
     history: list[Turn] | None = None,
     *,
-    show_triggers: bool,
+    show_triggers: bool = False,  # accepted for backwards-compat; no longer used here
     windows: list[dict] | None = None,
 ) -> str:
-    """Per-call user message. Order matters for KV-cache prefix reuse:
-    the action catalogue is fixed within a session (registry doesn't
-    change), so it comes first as a stable prefix. History and the
-    window list change per turn, transcript per call — those make up
-    the variable suffix. The static example block lives in the
-    system prompt so the cached prefill region is as long as
-    possible.
+    """Per-call user message — only the parts that change per call:
+    history (per turn) + windows (per call) + transcript. The action
+    catalogue moved into the system prompt (see _build_system_prompt)
+    so it's a byte-stable prefix Gemma's KV cache can reuse across
+    turns instead of being rebuilt + re-prefilled every time.
 
-    Interrogative inputs swap the catalogue out entirely — the LLM
-    can't dispatch an action it doesn't see. _SYSTEM_PROMPT still
-    describes the JSON shape so the model returns a valid empty-
-    actions object."""
+    Interrogative inputs (input ends with '?') get a short hint
+    prepended that nudges the LLM toward the empty-actions / response
+    path. The catalogue stays in the cached system prompt either way
+    — only this small per-call hint changes — so KV-cache reuse is
+    preserved.
+
+    show_triggers is accepted but unused at this layer; it controls
+    catalogue rendering, which now happens in _build_system_prompt."""
     history_block = _render_history(history or [])
     windows_block = _render_window_list(windows or [])
+    hint = ""
     if _looks_interrogative(transcript):
-        return (
-            "The user is asking a QUESTION, not issuing a command. "
-            "Emit `{\"actions\": []}` and answer in `response` "
-            "(same language as input) using history and current "
-            "windows below for context.\n"
+        hint = (
+            "Note: input ends with '?'. This is a QUESTION — emit "
+            "`{\"actions\": []}` and answer in `response` (same "
+            "language as input) using the windows / history context.\n"
             "\n"
-            + history_block
-            + windows_block +
-            f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
-            "Output:"
         )
-    catalogue = _render_action_catalogue(show_triggers=show_triggers)
     return (
-        "Available actions:\n"
-        f"{catalogue}\n"
-        "\n"
+        hint
         + history_block
         + windows_block +
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
         "Output:"
     )
+
+
+# Cached system prompt with action catalogue baked in. Built lazily on
+# first call so the registry has had time to populate (actions/__init__
+# registers at import time but the order of imports during testing
+# isn't always stable). Keyed on `show_triggers` because that's the
+# only knob that changes catalogue rendering.
+_SYSTEM_PROMPT_CACHE: dict[bool, str] = {}
+
+
+def _build_system_prompt(show_triggers: bool = False) -> str:
+    """Return the full system prompt: rules + examples + action
+    catalogue. Cached per-show_triggers so calls within a session
+    return the byte-identical string Gemma's KV cache fingerprints.
+
+    Used to be just _SYSTEM_PROMPT (rules + examples), with the
+    catalogue rebuilt into the user prompt every call. That meant
+    the LLM re-prefilled ~3k tokens of catalogue on every turn —
+    same content, fresh hash. Folding the catalogue into the system
+    prompt makes the entire 'tools and rules' surface a stable
+    prefix the cache can reuse, leaving only history + windows +
+    transcript as the per-call suffix."""
+    cached = _SYSTEM_PROMPT_CACHE.get(show_triggers)
+    if cached is not None:
+        return cached
+    catalogue = _render_action_catalogue(show_triggers=show_triggers)
+    full = (
+        _SYSTEM_PROMPT
+        + "\n\n"
+        + "Available actions:\n"
+        + catalogue
+    )
+    _SYSTEM_PROMPT_CACHE[show_triggers] = full
+    return full
+
+
+def _invalidate_system_prompt_cache() -> None:
+    """Test hook — call after registering / unregistering actions
+    so the next _build_system_prompt rebuilds with the new catalogue."""
+    _SYSTEM_PROMPT_CACHE.clear()
 
 
 class IntentParser:
@@ -790,14 +831,15 @@ class IntentParser:
             log.warning("intent: window list fetch failed: %s", e)
             return []
 
-    def _format_constraint(self):
+    def _format_constraint(self, question_mode: bool = False):
         """Pick the format constraint for this call. Schema mode wins
         when enabled — bare format=json is the fallback path so we can
         toggle it off if a specific Gemma build chokes on schema-
-        constrained sampling. Returns the value that should go in
-        payload["format"]."""
+        constrained sampling. `question_mode=True` returns the tighter
+        question-only schema (empty actions, non-empty response).
+        Returns the value that should go in payload["format"]."""
         if self.schema_mode:
-            return _build_response_schema()
+            return _build_response_schema(question_mode=question_mode)
         return "json"
 
     def _call_ollama(
@@ -838,9 +880,16 @@ class IntentParser:
         # rather than ~10s, so the regex fallback path engages quickly
         # when the model degrades.
         options = {"temperature": 0.0, "num_predict": 256}
-        format_value = self._format_constraint()
+        # Tighten the schema when '?' marks the input as a question:
+        # actions array forced empty, response forced non-empty. Schema
+        # enforcement does what prose hints couldn't — even E4B's bias
+        # toward action selection can't fabricate a non-empty array
+        # when the constraint engine refuses every token of one.
+        question_mode = _looks_interrogative(transcript)
+        format_value = self._format_constraint(question_mode=question_mode)
         stream = on_partial_response is not None
 
+        system_prompt = _build_system_prompt(self.show_triggers_in_prompt)
         if self.thinking_mode:
             # /api/chat lets format:<schema> compose with think:true.
             # On /api/generate they're mutually exclusive — the reason
@@ -851,7 +900,7 @@ class IntentParser:
             payload: dict = {
                 "model": self.model,
                 "messages": [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 "stream": stream,
@@ -864,7 +913,7 @@ class IntentParser:
             url = _OLLAMA_URL
             payload = {
                 "model": self.model,
-                "system": _SYSTEM_PROMPT,
+                "system": system_prompt,
                 "prompt": user_prompt,
                 "stream": stream,
                 "format": format_value,

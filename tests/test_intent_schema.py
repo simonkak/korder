@@ -21,6 +21,40 @@ def test_response_schema_top_level_shape():
     assert schema["required"] == ["actions"]
 
 
+def test_question_mode_schema_forces_empty_actions_and_nonempty_response():
+    """The '?'-detected question path swaps in a tighter schema:
+    actions must be the empty array (const: []), response must be
+    non-empty. This is what actually moved Gemma E4B off
+    fabricating actions on questions — prose hints alone didn't.
+    Schema-level enforcement is also language-agnostic: there are
+    no Polish or English specifics in the schema, just shape."""
+    schema = _build_response_schema(question_mode=True)
+    assert schema["properties"]["actions"]["const"] == []
+    assert schema["properties"]["response"]["minLength"] == 1
+    assert schema["required"] == ["actions", "response"]
+    assert schema["additionalProperties"] is False
+    # Question-mode schema must NOT carry the per-action oneOf
+    # branches — that surface is what biases the LLM toward
+    # picking actions, and we want it gone for questions.
+    assert "oneOf" not in schema["properties"]["actions"]
+
+
+def test_question_mode_schema_has_no_language_specific_text():
+    """Schema descriptions are functional text the LLM reads, but
+    they should be language-neutral so the constraint works for any
+    Whisper-supported input."""
+    schema = _build_response_schema(question_mode=True)
+    text = str(schema)
+    # Spot-check a few language-specific markers that would break
+    # symmetry — the descriptions stick to English only because
+    # that's the schema metadata language; they don't carry
+    # locale-specific question words or rule prose.
+    for marker in ("co ", "jak ", "jakie ", "które ", "czy "):
+        assert marker.strip() not in text.lower().split(), (
+            f"question-mode schema leaked Polish marker {marker!r}"
+        )
+
+
 def test_response_schema_has_one_branch_per_registered_action():
     """The actions array's items.oneOf carries one branch per action,
     each constrained with a const name and the action's params shape.
