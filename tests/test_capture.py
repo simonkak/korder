@@ -15,6 +15,27 @@ def _frame(n: int = 160, fill: float = 0.1) -> np.ndarray:
     return np.full((n, 1), fill, dtype=np.float32)
 
 
+class _PassThroughDSP:
+    """No-op stand-in for HighPassFilter / PeakLimiter so the fan-out
+    tests can use constant-fill frames as test signals (otherwise the
+    HPF would strip them as DC and the fixture would be unable to
+    assert position-of-content semantics). The dsp module has its own
+    tests for filter correctness."""
+
+    def process(self, chunk):
+        return chunk
+
+    def reset(self):
+        pass
+
+
+def _patch_dsp(monkeypatch, rec):
+    from korder.audio import capture
+    monkeypatch.setattr(capture, "remove_dc", lambda c: c)
+    rec._hpf = _PassThroughDSP()
+    rec._limiter = _PassThroughDSP()
+
+
 @pytest.fixture
 def recorder(monkeypatch):
     """MicRecorder with sd.InputStream mocked. The fake stream tracks
@@ -31,6 +52,7 @@ def recorder(monkeypatch):
 
     monkeypatch.setattr(capture.sd, "InputStream", fake_factory)
     rec = MicRecorder(sample_rate=16000, gain=1.0)
+    _patch_dsp(monkeypatch, rec)
     return rec, fake_stream, factory_calls
 
 
@@ -271,11 +293,34 @@ def test_unsubscribe_does_not_hold_lock_during_stream_stop(monkeypatch):
 
 def test_gain_applied_to_frames(monkeypatch):
     """When gain != 1.0, frames are scaled before they reach
-    subscribers (and the dictation buffer)."""
+    subscribers (and the dictation buffer). The peak-aware limiter
+    applies the full target gain when there's headroom — at peak
+    0.25 × gain 2.0 = 0.5, well below the 0.95 ceiling."""
     from korder.audio import capture
     monkeypatch.setattr(capture.sd, "InputStream", lambda **kw: MagicMock())
     rec = MicRecorder(sample_rate=16000, gain=2.0)
+    _patch_dsp(monkeypatch, rec)  # bypass DC/HPF so a constant frame survives
+    # Restore a real limiter so we test the gain path itself.
+    from korder.audio.dsp import PeakLimiter
+    rec._limiter = PeakLimiter(target_gain=2.0)
     seen: list[float] = []
     rec.subscribe(lambda c: seen.append(float(c[0])))
     rec._callback(_frame(fill=0.25), 160, None, None)
     assert seen == [pytest.approx(0.5)]
+
+
+def test_peak_limiter_throttles_to_avoid_clipping(monkeypatch):
+    """When the requested gain would push peak past 0.95, the limiter
+    scales by 0.95/peak instead. Replaces the unconditional gain
+    behavior — quiet users still get headroom, loud users don't clip."""
+    from korder.audio import capture
+    monkeypatch.setattr(capture.sd, "InputStream", lambda **kw: MagicMock())
+    rec = MicRecorder(sample_rate=16000, gain=2.0)
+    _patch_dsp(monkeypatch, rec)
+    from korder.audio.dsp import PeakLimiter
+    rec._limiter = PeakLimiter(target_gain=2.0)
+    seen: list[float] = []
+    rec.subscribe(lambda c: seen.append(float(c[0])))
+    # Peak 0.8 × gain 2.0 = 1.6 — would clip without the limiter.
+    rec._callback(_frame(fill=0.8), 160, None, None)
+    assert seen[0] == pytest.approx(0.95, abs=1e-3)

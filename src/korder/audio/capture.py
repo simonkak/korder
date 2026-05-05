@@ -18,6 +18,8 @@ from typing import Callable
 import numpy as np
 import sounddevice as sd
 
+from korder.audio.dsp import HighPassFilter, PeakLimiter, remove_dc
+
 log = logging.getLogger(__name__)
 
 
@@ -49,11 +51,25 @@ class MicRecorder:
         # rest. Used by snapshot()/stop() to read the captured buffer
         # without exposing it to other subscribers.
         self._dictation_chunks: list[np.ndarray] | None = None
+        # Per-recorder DSP state. The HPF carries delay-line state
+        # across PortAudio callback chunks (resetting per-chunk would
+        # ring at the chunk boundaries — exactly the artifact we're
+        # filtering). The peak limiter carries a slow-following peak
+        # so a single loud chunk doesn't pump the next one.
+        self._hpf = HighPassFilter(cutoff_hz=80.0, sample_rate=self.sample_rate)
+        self._limiter = PeakLimiter(target_gain=self.gain)
 
     def _callback(self, indata, frames, time_info, status):
         chunk = indata[:, 0].copy()
-        if self.gain != 1.0:
-            chunk *= self.gain
+        # Pre-gain DSP: DC offset → 80 Hz HPF → peak-aware gain. Order
+        # matters: removing DC first means the HPF's transient response
+        # doesn't have to absorb a step input; running the limiter last
+        # means it sees the cleaned signal (otherwise low-frequency
+        # rumble would dominate the peak detector and starve real
+        # speech of headroom).
+        remove_dc(chunk)
+        chunk = self._hpf.process(chunk)
+        self._limiter.process(chunk)
         # Snapshot the subscriber list under the lock so a concurrent
         # subscribe()/unsubscribe() can't corrupt iteration. Then call
         # outside the lock so a slow subscriber doesn't block the audio
@@ -130,6 +146,23 @@ class MicRecorder:
                 continue
             try:
                 stream.start()
+                # Log the rate PortAudio actually negotiated. On
+                # PipeWire it can silently fall back to the device's
+                # native rate (often 44.1/48 kHz) and rely on its own
+                # resampler — quality varies by version. A mismatch
+                # here is rare on this configuration but worth
+                # surfacing so the downstream resample fallback in
+                # _resample_to_engine_rate has a clear cause to point
+                # at if we ever need to debug a quality regression.
+                actual = float(getattr(stream, "samplerate", self.sample_rate))
+                if abs(actual - self.sample_rate) > 0.5:
+                    log.warning(
+                        "mic: PortAudio negotiated %.0f Hz (requested %d Hz) — "
+                        "PipeWire is resampling for us",
+                        actual, self.sample_rate,
+                    )
+                else:
+                    log.info("mic: stream open at %.0f Hz", actual)
                 return stream
             except Exception as e:
                 last_exc = e
@@ -180,6 +213,12 @@ class MicRecorder:
         if stream_to_close is not None:
             stream_to_close.stop()
             stream_to_close.close()
+            # Reset DSP state so the next stream-open starts from
+            # zero delay-line and a clean peak EMA. Otherwise the
+            # next session would briefly carry artifacts from the
+            # tail of the previous one.
+            self._hpf.reset()
+            self._limiter.reset()
 
     def start(self) -> None:
         """Begin a push-to-talk dictation session. Installs the
