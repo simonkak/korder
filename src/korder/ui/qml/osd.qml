@@ -248,7 +248,14 @@ Window {
                             }
 
                             // Inner solid dot — also gently pulses for "thinking"
-                            // and "loading" (fade only, no scale) so user knows we're alive.
+                            // and "loading" (fade only, no scale) so user knows
+                            // we're alive. Per-state cadence: thinking is the
+                            // faster pulse (LLM reasoning, ~0.6-2 s wall-time)
+                            // so the user sees several pulses rather than a
+                            // half heartbeat; loading is slightly slower
+                            // (cold-start ~3 s) and still reads as "working,
+                            // not idle". Trough at 0.45 so the dot never goes
+                            // fully off — the eye reads "off" as "stopped".
                             Rectangle {
                                 id: dot
                                 anchors.centerIn: parent
@@ -258,8 +265,14 @@ Window {
                                 SequentialAnimation on opacity {
                                     running: osdState && (osdState.stateKind === "thinking" || osdState.stateKind === "loading")
                                     loops: Animation.Infinite
-                                    NumberAnimation { from: 1.0; to: 0.35; duration: 600 }
-                                    NumberAnimation { from: 0.35; to: 1.0; duration: 600 }
+                                    NumberAnimation {
+                                        from: 1.0; to: 0.45
+                                        duration: osdState && osdState.stateKind === "thinking" ? 380 : 480
+                                    }
+                                    NumberAnimation {
+                                        from: 0.45; to: 1.0
+                                        duration: osdState && osdState.stateKind === "thinking" ? 380 : 480
+                                    }
                                 }
                             }
                         }
