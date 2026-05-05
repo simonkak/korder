@@ -296,6 +296,17 @@ class SpeechEngine(QObject):
         audio = np.concatenate(chunks)
         return audio, sample_rate
 
+    # Silence pre-roll prepended to every utterance. PipeWire /
+    # PortAudio takes ~50–100 ms to actually start pulling samples
+    # from the device after stream.start(); without a pre-roll, the
+    # first speech sample lands in the ring buffer before the audio
+    # thread is fully spun up and the leading syllable gets cut off
+    # at the speaker (user hears 'rozumiem' instead of
+    # 'Nie rozumiem'). 100 ms is generous enough to cover Bluetooth
+    # link latency and barely perceptible relative to the synthesis
+    # time before it.
+    _PREROLL_MS = 100
+
     def _play(self, audio: np.ndarray, sample_rate: int) -> None:
         """Blocking playback through sounddevice. Sets
         _current_stream so cancel() can abort. Mono int16."""
@@ -308,6 +319,12 @@ class SpeechEngine(QObject):
         except Exception as e:
             log.error("tts: OutputStream init failed: %s", e)
             return
+        # Prepend silence so the stream is fully running by the time
+        # the first speech sample plays.
+        pre_roll = np.zeros(
+            sample_rate * self._PREROLL_MS // 1000, dtype=audio.dtype
+        )
+        audio = np.concatenate([pre_roll, audio])
         with self._stream_lock:
             self._current_stream = stream
         try:
@@ -320,6 +337,27 @@ class SpeechEngine(QObject):
                 if self._cancel_event.is_set():
                     break
                 stream.write(audio[i:i + CHUNK].reshape(-1, 1))
+            # Drain the hardware output buffer before declaring done.
+            # stream.stop() flushes the PortAudio ring buffer but the
+            # device's own DAC buffer (50–150 ms typical) keeps
+            # playing after stop() returns. If we emit
+            # playback_finished while audio is still coming out of
+            # the speaker, MainWindow's TTS gate releases too early —
+            # the open mic catches the tail and Whisper transcribes
+            # it as garbage ('Która jest godzinna?' from the 'Która
+            # jest godzina?' answer the user actually said). Sleep
+            # the device-reported latency plus a small margin so the
+            # snip in _resume_after_tts captures the full bleed
+            # window. Skip on cancel — user wants TTS off NOW.
+            if not self._cancel_event.is_set():
+                try:
+                    latency_s = float(stream.latency)
+                except Exception:
+                    latency_s = 0.1
+                # Event.wait(timeout) so cancel during the drain
+                # window unblocks immediately — otherwise an Esc
+                # mid-TTS would be silenced 100–200 ms late.
+                self._cancel_event.wait(timeout=max(0.1, latency_s) + 0.05)
         except Exception as e:
             log.error("tts: playback error: %s", e)
         finally:

@@ -212,6 +212,125 @@ def test_cancel_clears_queue(monkeypatch, tmp_path):
         engine.shutdown()
 
 
+def test_play_prepends_preroll_silence(monkeypatch):
+    """Regression: PipeWire/PortAudio takes 50-100 ms to spin up
+    after stream.start(); the first ~50-100 ms of audio gets cut off
+    at the speaker. Prepending silence lets the stream warm up
+    before the speech samples flow. Verify _play writes pre-roll +
+    audio, not just audio."""
+    import numpy as np
+
+    fake_stream = MagicMock()
+    fake_stream.latency = 0.05  # short so the test isn't slow
+    monkeypatch.setattr(tts_mod.sd, "OutputStream", lambda **kw: fake_stream)
+
+    written: list[np.ndarray] = []
+    fake_stream.write.side_effect = lambda chunk: written.append(chunk.copy())
+
+    engine = tts_mod.SpeechEngine(
+        enabled=True,
+        voice_en="en_US-amy-medium",
+        voice_pl="pl_PL-darkman-medium",
+    )
+    try:
+        sample_rate = 22050
+        # 50 ms of "speech" — distinct value so we can find it in the
+        # written buffer.
+        speech_samples = sample_rate * 50 // 1000
+        audio = np.full(speech_samples, 1234, dtype=np.int16)
+        engine._play(audio, sample_rate=sample_rate)
+
+        all_written = np.concatenate(written) if written else np.zeros(0, dtype=np.int16)
+        # 100 ms pre-roll + 50 ms speech at 22.05 kHz = ~3308 samples.
+        expected_total = sample_rate * tts_mod.SpeechEngine._PREROLL_MS // 1000 + speech_samples
+        assert all_written.shape[0] == expected_total
+        # The first PREROLL_MS worth of samples are zero (the pre-roll).
+        preroll_size = sample_rate * tts_mod.SpeechEngine._PREROLL_MS // 1000
+        assert (all_written[:preroll_size] == 0).all(), (
+            "pre-roll should be silence so the stream warms up before speech plays"
+        )
+        # Speech samples follow immediately after the pre-roll.
+        assert (all_written[preroll_size:] == 1234).all()
+    finally:
+        engine.shutdown()
+
+
+def test_play_drains_hardware_buffer_before_returning(monkeypatch):
+    """Regression: stream.stop() flushes PortAudio's ring buffer but
+    leaves the device's own DAC buffer (50–150 ms) playing. If _play
+    returns immediately, MainWindow's playback_finished slot fires
+    while audio is still coming out of the speaker — open mic catches
+    the tail and Whisper transcribes it. _play must wait at least
+    stream.latency before returning so MainWindow's snip captures the
+    full bleed window."""
+    import numpy as np
+
+    fake_stream = MagicMock()
+    fake_stream.latency = 0.12  # 120 ms reported device latency
+
+    monkeypatch.setattr(tts_mod.sd, "OutputStream", lambda **kw: fake_stream)
+
+    engine = tts_mod.SpeechEngine(
+        enabled=True,
+        voice_en="en_US-amy-medium",
+        voice_pl="pl_PL-darkman-medium",
+    )
+    try:
+        # 100 samples × int16; we don't actually play, just check
+        # _play doesn't return before the drain wait elapses.
+        audio = np.zeros(100, dtype=np.int16)
+        t0 = time.monotonic()
+        engine._play(audio, sample_rate=22050)
+        elapsed = time.monotonic() - t0
+
+        # Drain wait = max(0.1, latency) + 0.05 = 0.17 s.
+        assert elapsed >= 0.17, (
+            f"_play returned in {elapsed*1000:.0f} ms; expected >= 170 ms drain"
+        )
+        # The full latency comes from the wait, not from blocking writes —
+        # the mock OutputStream's write() returns instantly.
+        fake_stream.start.assert_called_once()
+        fake_stream.stop.assert_called_once()
+    finally:
+        engine.shutdown()
+
+
+def test_play_drain_aborts_on_cancel(monkeypatch):
+    """During the drain wait, cancel() must unblock _play immediately
+    instead of forcing the user to wait out the latency window."""
+    import numpy as np
+
+    fake_stream = MagicMock()
+    fake_stream.latency = 1.0  # generous so the cancel-shortcircuit is visible
+
+    monkeypatch.setattr(tts_mod.sd, "OutputStream", lambda **kw: fake_stream)
+
+    engine = tts_mod.SpeechEngine(
+        enabled=True,
+        voice_en="en_US-amy-medium",
+        voice_pl="pl_PL-darkman-medium",
+    )
+    try:
+        audio = np.zeros(100, dtype=np.int16)
+        # Cancel from another thread shortly after _play enters the
+        # drain wait.
+        def _cancel_soon():
+            time.sleep(0.05)
+            engine._cancel_event.set()
+        threading.Thread(target=_cancel_soon, daemon=True).start()
+
+        t0 = time.monotonic()
+        engine._play(audio, sample_rate=22050)
+        elapsed = time.monotonic() - t0
+
+        # Should return well before the 1.0 s drain timeout.
+        assert elapsed < 0.5, (
+            f"_play didn't unblock on cancel; took {elapsed*1000:.0f} ms"
+        )
+    finally:
+        engine.shutdown()
+
+
 def test_say_empty_text_no_op():
     engine = tts_mod.SpeechEngine(
         enabled=True,
