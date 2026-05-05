@@ -159,6 +159,7 @@ def test_cancel_recording_stops_tts_even_when_recorder_idle(monkeypatch):
     class _Stub:
         _recorder = recorder
         _tts = tts
+        _ducker = None
         _chime_pending_timer = None
         _tts_paused_services = []
         _tts_active_count = 0

@@ -153,12 +153,12 @@ def test_fallback_answer_reset_releases_when_tts_idle():
 # ---- Duck pause/resume around TTS ----------------------------------------
 
 
-def test_mpris_pause_for_tts_lifts_listening_duck():
+def test_mpris_pause_for_tts_pauses_listening_duck():
     """The listening duck lowers the default sink so external music
     is quiet under the user's voice. TTS plays through the same
     sink, so leaving the duck engaged would muffle Korder's own
-    voice. Pause-for-TTS must restore the duck so the synthesized
-    answer plays at the user's true volume."""
+    voice. Pause-for-TTS calls ducker.pause() to lift the duck for
+    the speech window — the ducker re-engages itself on resume()."""
     ducker = MagicMock()
 
     class _Stub:
@@ -174,14 +174,15 @@ def test_mpris_pause_for_tts_lifts_listening_duck():
     with patch.object(mw._mpris, "list_players", return_value=[]):
         stub._mpris_pause_for_tts()
 
-    ducker.restore.assert_called_once()
+    ducker.pause.assert_called_once()
 
 
-def test_mpris_pause_for_tts_does_not_double_restore_on_concurrent_calls():
-    """Ref-counted: the second concurrent TTS utterance hits a count
-    already > 1 and must NOT call restore again. Otherwise we'd
-    fight ourselves on the wpctl call (both try to set volume during
-    the wpctl window of the first call)."""
+def test_mpris_pause_for_tts_does_not_double_pause_on_concurrent_calls():
+    """Ref-counted at the main_window layer: the second concurrent
+    TTS utterance hits a count already > 1 and must NOT call pause
+    again. (The ducker also ref-counts internally, so a stray double
+    pause wouldn't break correctness — but we still avoid the
+    redundant call to keep the trace clean.)"""
     ducker = MagicMock()
 
     class _Stub:
@@ -198,13 +199,14 @@ def test_mpris_pause_for_tts_does_not_double_restore_on_concurrent_calls():
         stub._mpris_pause_for_tts()
         stub._mpris_pause_for_tts()
 
-    assert ducker.restore.call_count == 1
+    assert ducker.pause.call_count == 1
 
 
-def test_resume_after_tts_re_engages_duck_when_recording_continues():
-    """When the last TTS finishes mid-session, the listening duck
-    has to come back — the user is still talking and external
-    media should still be ducked under their voice."""
+def test_resume_after_tts_releases_duck_pause():
+    """When the last TTS finishes, ducker.resume() releases the
+    matching pause. The ducker decides internally whether to
+    re-engage the duck (it does iff the duck was active before
+    the pause AND no explicit restore() intervened)."""
     ducker = MagicMock()
     recorder = MagicMock()
     recorder.is_recording = True
@@ -212,7 +214,7 @@ def test_resume_after_tts_re_engages_duck_when_recording_continues():
 
     class _Stub:
         _tts_paused_services = []
-        _tts_active_count = 1  # last TTS about to finish
+        _tts_active_count = 1
         _ducker = ducker
         _recorder = recorder
         _committed_samples = 0
@@ -236,33 +238,7 @@ def test_resume_after_tts_re_engages_duck_when_recording_continues():
 
     stub._resume_after_tts()
 
-    ducker.duck.assert_called_once()
-
-
-def test_resume_after_tts_does_not_re_engage_duck_when_recording_stopped():
-    """If the user finished dictation while TTS was still playing
-    (auto-stop, manual stop), the recording lifecycle owns
-    duck/restore — re-engaging here would lower the sink for
-    nothing and leave the user's volume wrong if the recording-
-    stop restore already fired."""
-    ducker = MagicMock()
-    recorder = MagicMock()
-    recorder.is_recording = False
-
-    class _Stub:
-        _tts_paused_services = []
-        _tts_active_count = 1
-        _ducker = ducker
-        _recorder = recorder
-
-    stub = _Stub()
-    stub._snip_tts_bleed_window = types.MethodType(
-        mw.MainWindow._snip_tts_bleed_window, stub
-    )
-    stub._resume_after_tts = types.MethodType(
-        mw.MainWindow._resume_after_tts, stub
-    )
-
-    stub._resume_after_tts()
-
+    ducker.resume.assert_called_once()
+    # main_window no longer needs to call duck() directly — the
+    # ducker handles the re-engage decision internally.
     ducker.duck.assert_not_called()

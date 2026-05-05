@@ -155,3 +155,108 @@ def test_target_pct_clamped_to_valid_range():
         assert d._target == 0.0
         d.duck()
         assert fake.volume == pytest.approx(0.0, abs=1e-6)
+
+
+# ---- pause / resume around TTS playback ---------------------------------
+
+
+def test_pause_lifts_active_duck_and_resume_re_engages():
+    """Typical TTS sequence: recording ducks, TTS pauses (volume back
+    up so synth is audible), TTS ends, ducker resumes (volume back
+    down). One wpctl set per transition — no extras."""
+    fake = _FakeWpctl(initial=0.80)
+    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
+        d = VolumeDucker(enabled=True, target_pct=30)
+        d.duck()
+        assert fake.volume == pytest.approx(0.30, abs=1e-6)
+        d.pause()
+        assert fake.volume == pytest.approx(0.80, abs=1e-6), (
+            "pause must lift the duck so TTS plays at the user's level"
+        )
+        d.resume()
+        assert fake.volume == pytest.approx(0.30, abs=1e-6), (
+            "resume must re-engage the duck for continued listening"
+        )
+        d.restore()
+        assert fake.volume == pytest.approx(0.80, abs=1e-6)
+
+
+def test_pause_when_not_ducked_is_a_no_op():
+    """If the duck wasn't active when pause() ran, resume() must NOT
+    spuriously engage it — the user wasn't being ducked, no reason
+    to start now."""
+    fake = _FakeWpctl(initial=0.80)
+    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
+        d = VolumeDucker(enabled=True, target_pct=30)
+        d.pause()
+        assert fake.volume == pytest.approx(0.80, abs=1e-6)
+        d.resume()
+        assert fake.volume == pytest.approx(0.80, abs=1e-6)
+    # No set-volume calls anywhere
+    set_calls = [c for c in fake.calls if len(c) > 1 and c[1] == "set-volume"]
+    assert set_calls == []
+
+
+def test_nested_pause_calls_only_hit_wpctl_once():
+    """Concurrent TTS utterances stack pauses; only the outermost
+    pause/resume pair touches wpctl. The inner ones are pure
+    bookkeeping. This is the 'don't spam the pause' behavior."""
+    fake = _FakeWpctl(initial=0.80)
+    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
+        d = VolumeDucker(enabled=True, target_pct=30)
+        d.duck()
+        fake.calls.clear()
+        d.pause()  # outer — should hit wpctl
+        d.pause()  # nested — should NOT
+        d.pause()  # nested — should NOT
+        # Three pauses, one set-volume call
+        set_calls = [c for c in fake.calls if c[1] == "set-volume"]
+        assert len(set_calls) == 1
+        d.resume()  # nested — should NOT hit wpctl
+        d.resume()  # nested — should NOT
+        # Still just the one set call from the outer pause
+        set_calls = [c for c in fake.calls if c[1] == "set-volume"]
+        assert len(set_calls) == 1
+        d.resume()  # outer — re-engages duck
+        set_calls = [c for c in fake.calls if c[1] == "set-volume"]
+        # Now two: pause-restore + resume-re-duck
+        assert len(set_calls) == 2
+        assert fake.volume == pytest.approx(0.30, abs=1e-6)
+
+
+def test_explicit_restore_between_pause_and_resume_clears_pending_duck():
+    """If the user stops recording while TTS is mid-flight, the
+    recording lifecycle calls restore() — but the duck is paused at
+    that moment. The pending-duck flag must be cleared so the
+    matching resume() doesn't surprise-engage the duck after
+    recording has ended."""
+    fake = _FakeWpctl(initial=0.80)
+    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
+        d = VolumeDucker(enabled=True, target_pct=30)
+        d.duck()
+        d.pause()  # volume back to 0.80
+        # Recording ends mid-TTS; lifecycle calls restore (which is
+        # a no-op on the wpctl side because _saved was already
+        # cleared by pause, but it must clear the pending-duck flag).
+        d.restore()
+        d.resume()  # ← must NOT engage duck now
+        assert fake.volume == pytest.approx(0.80, abs=1e-6), (
+            "post-restore resume must not re-duck"
+        )
+
+
+def test_duck_inside_pause_window_is_deferred_not_dropped():
+    """If recording starts (duck called) while a pause is held —
+    unusual but possible if start_recording races with TTS — the
+    duck should be remembered and applied when the pause lifts.
+    Otherwise we'd silently lose the duck for the rest of the
+    session."""
+    fake = _FakeWpctl(initial=0.80)
+    with patch("korder.audio.ducker.subprocess.run", side_effect=fake):
+        d = VolumeDucker(enabled=True, target_pct=30)
+        d.pause()  # not previously ducked → pure flag set
+        d.duck()   # paused → no wpctl, but remembers intent
+        # Volume still at user's level (TTS-style window)
+        assert fake.volume == pytest.approx(0.80, abs=1e-6)
+        d.resume()  # ← intent honored: now duck takes effect
+        assert fake.volume == pytest.approx(0.30, abs=1e-6)

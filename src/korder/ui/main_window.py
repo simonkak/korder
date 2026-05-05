@@ -1255,23 +1255,21 @@ class MainWindow(QMainWindow):
         speech keeps music paused across the whole burst — only the
         last finishing utterance resumes.
 
-        Also lifts the listening-volume duck for the TTS window. The
-        duck lowers the default sink so external music is quiet enough
-        for Whisper; TTS plays through the same sink, so leaving the
-        duck engaged would muffle Korder's own voice. Re-engages on
-        _resume_after_tts when the count drops back to zero."""
+        Also pauses the listening-volume duck for the TTS window.
+        The duck lowers the default sink so external music is quiet
+        enough for Whisper; TTS plays through the same sink, so
+        leaving the duck engaged would muffle Korder's own voice.
+        ducker.pause() / resume() ref-counts internally so we can
+        call freely without orchestrating duck/restore pairs out
+        here."""
         self._tts_active_count += 1
         if self._tts_active_count > 1:
             # Earlier utterance already paused; piggyback on its
             # paused-services list (we'll release together).
             return
-        # Restore the duck so TTS plays at the user's true volume.
-        # _resume_after_tts re-ducks when the count returns to zero
-        # (if recording is still active). Idempotent — restore() on
-        # an unducked state is a no-op.
         if self._ducker is not None:
             try:
-                self._ducker.restore()
+                self._ducker.pause()
             except Exception:
                 pass
         paused: list[str] = []
@@ -1293,15 +1291,13 @@ class MainWindow(QMainWindow):
         if self._tts_active_count > 0:
             return  # more TTS in flight; keep music paused
         self._snip_tts_bleed_window()
-        # Re-engage the listening-volume duck if the dictation session
-        # is still ongoing. Skipped when recording has stopped between
-        # _mpris_pause_for_tts and now (auto-stop, manual, cancel) —
-        # the recording lifecycle owns duck/restore there. duck() is
-        # idempotent and reads the current sink level fresh, so this
-        # cleanly tracks any volume change the user made during TTS.
-        if self._ducker is not None and self._recorder.is_recording:
+        # Release the matching ducker.pause() from _mpris_pause_for_tts.
+        # The ducker re-engages itself only if the duck was active
+        # when we paused AND no intervening restore() cleared the
+        # pending flag — so we don't need to check is_recording here.
+        if self._ducker is not None:
             try:
-                self._ducker.duck()
+                self._ducker.resume()
             except Exception:
                 pass
         services = self._tts_paused_services
@@ -1342,6 +1338,15 @@ class MainWindow(QMainWindow):
         paused service, and rely on the at-most-one stale
         playback_finished from the in-flight job to be a no-op
         (count already 0; services list empty)."""
+        # Drop any pending duck pauses too — same rationale as the
+        # MPRIS service list. Recording-stop will fire restore()
+        # next, which clears the pending-duck flag the resume()
+        # would otherwise honor.
+        if self._ducker is not None and self._tts_active_count > 0:
+            try:
+                self._ducker.resume()
+            except Exception:
+                pass
         self._tts_active_count = 0
         self._snip_tts_bleed_window()
         services = self._tts_paused_services

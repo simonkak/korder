@@ -49,6 +49,16 @@ class VolumeDucker:
         # The lock makes the read-modify-write of _saved + wpctl call
         # safely interleavable.
         self._lock = threading.Lock()
+        # Pause depth. Ref-counted so concurrent pause() calls (e.g.
+        # nested TTS utterances) compose without each one triggering
+        # an extra wpctl round-trip. duck() inside a paused window
+        # is also a no-op so external recording-lifecycle code can
+        # call it freely without checking the pause state.
+        self._pause_depth = 0
+        # Whether pause() lifted an active duck. resume() consults
+        # this to decide whether to re-engage the duck when the
+        # last pause is released.
+        self._was_ducked_before_pause = False
         if self._enabled:
             # Crash safety: if the process exits while ducked (uncaught
             # exception, SIGTERM via tray-quit, …), put the volume back.
@@ -57,6 +67,14 @@ class VolumeDucker:
     def duck(self) -> None:
         with self._lock:
             if not self._enabled or self._saved is not None:
+                return
+            if self._pause_depth > 0:
+                # Caller wants the duck engaged but we're in a paused
+                # window (e.g. TTS speaking). Don't lower the volume —
+                # resume() will re-engage when the pause lifts. The
+                # pause flag stays True so this duck() request is
+                # remembered semantically without touching wpctl.
+                self._was_ducked_before_pause = True
                 return
             current = self._read_volume()
             if current is None:
@@ -71,6 +89,11 @@ class VolumeDucker:
 
     def restore(self) -> None:
         with self._lock:
+            # restore() always clears the pending-duck flag — caller
+            # is signalling they no longer want the duck engaged at
+            # all. A subsequent resume() must NOT re-duck if the
+            # caller did this between pause() and resume().
+            self._was_ducked_before_pause = False
             if self._saved is None:
                 return
             if self._set_volume(self._saved):
@@ -79,6 +102,54 @@ class VolumeDucker:
             # leave us pinned in "ducked" forever; the next duck() can re-read
             # whatever the user left things at.
             self._saved = None
+
+    def pause(self) -> None:
+        """Temporarily lift the duck (e.g. for TTS playback that
+        plays through the same sink the duck has lowered). Idempotent
+        — nested pause() calls increment a depth counter and only
+        the outermost call hits wpctl. resume() reverses, re-engaging
+        the duck only when the depth returns to zero AND the duck was
+        active before the first pause()."""
+        with self._lock:
+            self._pause_depth += 1
+            if self._pause_depth > 1:
+                return
+            if self._saved is None:
+                # Wasn't ducked when pause() ran — nothing to lift,
+                # nothing to remember.
+                self._was_ducked_before_pause = False
+                return
+            self._was_ducked_before_pause = True
+            saved = self._saved
+            if self._set_volume(saved):
+                log.info("ducker: paused (lifted %.2f)", saved)
+            self._saved = None
+
+    def resume(self) -> None:
+        """Counterpart to pause(). Re-engages the duck on the
+        outermost matching call if it was active when pause() lifted
+        it. No-op when not currently paused, when the duck wasn't
+        active at pause time, or when an explicit restore() between
+        the pause and resume cleared the pending-duck flag."""
+        with self._lock:
+            if self._pause_depth <= 0:
+                return
+            self._pause_depth -= 1
+            if self._pause_depth > 0:
+                return
+            if not self._was_ducked_before_pause:
+                return
+            self._was_ducked_before_pause = False
+            if not self._enabled:
+                return
+            current = self._read_volume()
+            if current is None:
+                return
+            if current <= self._target:
+                return
+            if self._set_volume(self._target):
+                self._saved = current
+                log.info("ducker: resumed %.2f → %.2f", current, self._target)
 
     def _safe_restore(self) -> None:
         try:
