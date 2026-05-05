@@ -182,6 +182,29 @@ def _run_app() -> int:
     _install_tray_icon_in_theme()
     _install_desktop_entry()
 
+    # Ensure the default QSurfaceFormat carries an 8-bit alpha channel.
+    # Without this, Qt's EGL context can be created with 0 alpha bits on
+    # Wayland and Qt will then mark the OSD's wl_surface fully opaque —
+    # which makes KWin skip the Blur effect even when the kde-blur protocol
+    # is attached. Must be set before the QApplication is constructed
+    # (Qt's docs are explicit: setDefaultFormat is read at QGuiApp init).
+    from PySide6.QtGui import QSurfaceFormat as _QSurfaceFormat
+    _fmt = _QSurfaceFormat.defaultFormat()
+    _fmt.setAlphaBufferSize(8)
+    _QSurfaceFormat.setDefaultFormat(_fmt)
+
+    # PySide6 ships a private copy of Qt and points QLibraryInfo's plugin
+    # path at its own bundled tree — which does NOT include KF6 plugins
+    # (e.g. kf6/kwindowsystem/* needed for the OSD's blur hint). Those
+    # plugins live alongside the system Qt at /usr/lib(64)/qt6/plugins.
+    # Add the system path before creating QApplication so plugin discovery
+    # picks them up. Loading KF6 plugins built against system Qt 6.x into a
+    # PySide6-bundled Qt 6.x is ABI-safe as long as the major.minor match.
+    from PySide6.QtCore import QCoreApplication as _QCoreApplication
+    for _p in ("/usr/lib/qt6/plugins", "/usr/lib64/qt6/plugins"):
+        if os.path.isdir(_p):
+            _QCoreApplication.addLibraryPath(_p)
+
     app = QApplication(sys.argv)
     app.setApplicationName("Korder")
     app.setOrganizationDomain("local.korder")

@@ -1,21 +1,31 @@
 import QtQuick
 import QtQuick.Window
 import QtQuick.Layouts
+import QtQuick.Effects
 import org.kde.layershell as LayerShell
 
 // Horizontal pill OSD, bottom-anchored. Three sections:
 //   [accent dot + state label]│[transcription with locked/flux + cursor]│[status hint or lang chip]
 // A small "press ESC to cancel" hint sits below the pill while the OSD is up.
 //
-// Background uses a semi-transparent fill so KWin's Blur compositor effect
-// (enabled by default in Plasma 6) blurs whatever is behind us — true glass,
-// no extra deps. With Blur disabled, we degrade to a translucent panel.
+// Glass look is built in two layers:
+//   1. We ask KWin's Blur effect to blur the desktop behind us via
+//      KWindowEffects::enableBlurBehind (see ui/_kde_blur.py). When KWin
+//      cooperates, the pill picks up live backdrop blur.
+//   2. Independently, the pill body uses a frosted gradient + thin top
+//      highlight + soft drop shadow rendered via MultiEffect — so the OSD
+//      reads as glass even when the compositor doesn't apply backdrop blur
+//      (non-KDE compositor, layer-shell role-assignment race, etc.).
 
 Window {
     id: root
     color: "transparent"
     flags: Qt.FramelessWindowHint
-    visible: true
+    // Bind the layer-shell surface's visibility to the OSD state so KWin's
+    // blur region disappears when the OSD is hidden. Otherwise the wl_surface
+    // stays mapped at the bottom of the screen forever and KWin keeps blurring
+    // its rectangle even with no pill drawn into it.
+    visible: osdState ? osdState.visible : false
 
     readonly property int hPad: 14
     readonly property int vPad: 8
@@ -105,15 +115,67 @@ Window {
     Rectangle {
         id: bg
         anchors.fill: parent
-        radius: 6
-        // Semi-transparent fill — KWin blurs it automatically via the Blur
-        // compositor effect (default-on in Plasma 6).
-        color: Qt.rgba(palette.window.r, palette.window.g, palette.window.b, 0.86)
-        border.color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.18)
+        radius: 8
+
+        // GPU-blurred drop shadow under the pill. We attach it as a
+        // layer.effect (MultiEffect from QtQuick.Effects, Qt 6.5+) so the
+        // rounded shape is preserved and the shadow soft-falls off rather
+        // than being a hard rectangle. paddingRect keeps the shadow from
+        // being clipped at the layer's source bounds.
+        layer.enabled: true
+        layer.effect: MultiEffect {
+            shadowEnabled: true
+            shadowBlur: 1.0
+            shadowVerticalOffset: 4
+            shadowColor: Qt.rgba(0, 0, 0, 0.45)
+            autoPaddingEnabled: true
+            paddingRect: Qt.rect(24, 24, 24, 24)
+        }
+        // Frosted-glass body. Slightly cooler/lighter at the top than the
+        // bottom, with a thin highlight stroke overlay (`bgHighlight`
+        // below). Lower alpha than before so KWin's backdrop blur — when
+        // it engages — reads through more clearly; the gradient body still
+        // looks intentional even when no backdrop blur is applied.
+        color: "transparent"
+        border.color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.22)
         border.width: 1
         visible: osdState ? osdState.visible : false
         opacity: visible ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 140 } }
+
+        // Body fill: vertical gradient from a slightly lifted top to a
+        // slightly heavier bottom. Two soft Rectangle layers + the parent
+        // border give the frosted glass impression with no shader cost.
+        Rectangle {
+            id: bgFill
+            anchors.fill: parent
+            radius: parent.radius
+            gradient: Gradient {
+                GradientStop {
+                    position: 0.0
+                    color: Qt.rgba(palette.window.r, palette.window.g, palette.window.b, 0.72)
+                }
+                GradientStop {
+                    position: 1.0
+                    color: Qt.rgba(palette.window.r, palette.window.g, palette.window.b, 0.82)
+                }
+            }
+        }
+
+        // 1 px inner highlight along the top edge — sells the glass look
+        // because real frosted panels catch light at the top bevel. We
+        // clip a thin Rectangle inside the rounded body.
+        Rectangle {
+            id: bgHighlight
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.leftMargin: parent.radius
+            anchors.rightMargin: parent.radius
+            anchors.topMargin: 1
+            height: 1
+            color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.10)
+        }
 
         ColumnLayout {
             id: contentColumn

@@ -14,12 +14,60 @@ Each state maps to (prompt, status, showCursor, placeholderMode) on
 _OSDState; the QML scene binds against those four properties.
 """
 from __future__ import annotations
+import logging
 import os
 from pathlib import Path
-from PySide6.QtCore import QCoreApplication, QObject, Property, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Property, QTimer, Signal
 from PySide6.QtQml import QQmlApplicationEngine
 
+from korder.ui._kde_blur import enable_blur_behind, rounded_rect_region
 from korder.ui.i18n import t
+
+log = logging.getLogger(__name__)
+
+# Must match the OSD pill's `Rectangle.radius` in osd.qml. Kept in sync by
+# eyeball — if you change one, update the other so KWin's blur shape lines
+# up with the rendered rounded body.
+_PILL_RADIUS = 8
+
+
+class _BlurApplier(QObject):
+    """Reapply KWin's blur hint every time the OSD window is exposed or
+    resized, with a region shaped to match the rounded pill.
+
+    Why the event filter: KWindowSystem's Wayland plugin replays blur
+    requests when ``surfaceRoleCreated`` fires for an xdg-toplevel — but
+    the ``org.kde.layershell`` module assigns its own role on a slightly
+    different schedule, so a single up-front call doesn't always reach
+    KWin. Hooking ``QEvent.Expose`` covers that path and also re-applies
+    after a compositor restart drops the surface association.
+
+    Why per-resize: the pill grows with content. We reshape the blur
+    region on every resize so blur doesn't leak past the rounded corners
+    or stop short of the pill's actual edge. KWin dedupes the protocol
+    message, so reapplying is harmless.
+    """
+
+    def __init__(self, window: "QObject") -> None:
+        super().__init__(window)
+        self._window = window
+        window.installEventFilter(self)
+        # QWindow emits widthChanged/heightChanged on resize.
+        window.widthChanged.connect(self._apply)
+        window.heightChanged.connect(self._apply)
+
+    def _apply(self) -> None:
+        w = self._window.width()
+        h = self._window.height()
+        if w <= 0 or h <= 0:
+            return
+        region = rounded_rect_region(w, h, _PILL_RADIUS)
+        enable_blur_behind(self._window, region=region)
+
+    def eventFilter(self, obj: "QObject", event) -> bool:  # noqa: D401
+        if obj is self._window and event.type() == QEvent.Type.Expose:
+            self._apply()
+        return False
 
 _QML_PATH = Path(__file__).parent / "qml" / "osd.qml"
 
@@ -169,6 +217,15 @@ class OSDWindow(QObject):
         self._engine.load(str(_QML_PATH))
         if not self._engine.rootObjects():
             raise RuntimeError(f"Failed to load OSD QML from {_QML_PATH}")
+
+        # Layer-shell surfaces don't get KWin's Blur applied implicitly —
+        # opt in via KWindowEffects. The applier reapplies on Expose +
+        # resize with a rounded-rect region so the hint lands after the
+        # layer-shell role is assigned, survives compositor restarts, and
+        # follows the pill's growing/shrinking shape. Falls back to plain
+        # translucency on non-KDE compositors.
+        root_window = self._engine.rootObjects()[0]
+        self._blur_applier = _BlurApplier(root_window)
 
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
