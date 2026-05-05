@@ -139,12 +139,26 @@ class YdotoolBackend:
         except Exception:
             return True
 
-    def parse_ops(self, text: str) -> list[tuple]:
+    def parse_ops(self, text: str, on_partial_response=None) -> list[tuple]:
         """Parse text into op tuples WITHOUT executing. Lets the caller
-        inspect/filter ops (e.g., apply write-mode gating) before running."""
+        inspect/filter ops (e.g., apply write-mode gating) before running.
+
+        on_partial_response: optional callable(str). When provided and
+        the underlying parser supports streaming (LLM path with schema
+        mode), receives cumulative chunks of the conversational
+        `response` field as they arrive — letting the OSD render prose
+        before the full body completes. Action-only turns never fire
+        the callback. Parsers without streaming support (regex)
+        silently ignore the kwarg."""
         if not text:
             return []
-        return self._op_parser(text)
+        if on_partial_response is None:
+            return self._op_parser(text)
+        try:
+            return self._op_parser(text, on_partial_response=on_partial_response)
+        except TypeError:
+            # Parser doesn't accept the kwarg (e.g. regex fallback).
+            return self._op_parser(text)
 
     def execute_ops(self, ops: list[tuple]) -> None:
         """Run a pre-built op list. Caller is responsible for any filtering

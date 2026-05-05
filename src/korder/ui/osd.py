@@ -314,6 +314,25 @@ class OSDWindow(QObject):
         self._state.visible = True
         self._hide_timer.stop()
 
+    def set_thinking_response_partial(self, partial_text: str) -> None:
+        """Render streaming response prose from the LLM while the
+        parse call is still in flight. Replaces the user's prompt
+        with the prose-so-far in feedback mode (italic, accent color),
+        keeps stateKind=thinking — `set_executing` / `set_committed`
+        owns the next transition. Called by the streaming hook in
+        MainWindow when Gemma commits to a conversational answer
+        and starts emitting the `response` field tokens."""
+        self._state.prompt = partial_text or ""
+        self._state.flux = ""
+        self._state.status = ""
+        self._state.stateLabel = t("state_thinking")
+        self._state.stateKind = "thinking"
+        self._state.showCursor = False
+        self._state.placeholderMode = False
+        self._state.feedbackMode = True
+        self._state.visible = True
+        self._hide_timer.stop()
+
     def set_executing(self, prompt: str, what: str = "") -> None:
         """Action is firing. The trailing chip shows the action name when
         passed (e.g. 'spotify_play'); empty otherwise — the leading state

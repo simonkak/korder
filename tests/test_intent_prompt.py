@@ -43,7 +43,22 @@ def test_user_prompt_includes_transcript_and_catalogue():
     assert "Available actions" in user_msg
     assert "play_pause" in user_msg
     assert "Wznów odtwarzanie" in user_msg
-    assert '"actions"' in user_msg
+
+
+def test_examples_block_lives_in_system_prompt_not_user_prompt():
+    """KV-cache prefix reuse: the static examples block must be part
+    of the system prompt (byte-identical across calls), not the per-call
+    user prompt where history/transcript would invalidate the cached
+    prefill."""
+    user_msg = _build_user_prompt("hello", show_triggers=False)
+    # Static example markers — must NOT be in the per-call user prompt.
+    # ('Examples:' alone collides with action descriptions, so we
+    # check for the leading static example utterance instead.)
+    assert "Naciśnij Enter." not in user_msg
+    assert "Spotify zagraj Linkin Park" not in user_msg
+    # And they MUST be in the system prompt.
+    assert "Naciśnij Enter." in _SYSTEM_PROMPT
+    assert "Spotify zagraj Linkin Park" in _SYSTEM_PROMPT
 
 
 def test_user_prompt_quotes_transcript_safely():

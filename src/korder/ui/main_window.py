@@ -18,9 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 import time
+from collections import deque
 
 from korder.actions.base import get_action
 from korder.audio.capture import MicRecorder
+from korder.audio.dsp import normalize_rms, resample_to
 from korder.audio.ducker import VolumeDucker
 from korder.audio.vad import SpeechDetector
 from korder.transcribe.whisper_engine import WhisperEngine
@@ -38,14 +40,18 @@ class _TranscribeWorker(QThread):
     finished_text = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, engine: WhisperEngine, audio: np.ndarray):
+    def __init__(self, engine: WhisperEngine, audio: np.ndarray, initial_prompt: str | None = None):
         super().__init__()
         self._engine = engine
         self._audio = audio
+        # Snapshot at submit time — captures the recent-utterances
+        # context as it stood when this segment started, not whatever
+        # the deque has grown to by the time the worker thread runs.
+        self._initial_prompt = initial_prompt
 
     def run(self) -> None:
         try:
-            text = self._engine.transcribe(self._audio)
+            text = self._engine.transcribe(self._audio, initial_prompt=self._initial_prompt)
             self.finished_text.emit(text)
         except Exception as e:
             self.failed.emit(str(e))
@@ -67,6 +73,12 @@ class _InjectWorker(QThread):
     parse_done = Signal()  # parse finished, executing now
     cancel_requested = Signal()  # user said 'cancel'/'nevermind' — abort it all
     parse_response = Signal(str)  # LLM's free-form reply from the parse JSON
+    # Streamed prose from the LLM's `response` field, emitted while the
+    # parse call is still in flight. Each emission carries the
+    # cumulative text decoded so far (not just the new delta) — the
+    # OSD can render directly without buffering. Fires only on
+    # conversational turns; action-only turns never trigger it.
+    parse_response_partial = Signal(str)
 
     def __init__(
         self,
@@ -101,7 +113,18 @@ class _InjectWorker(QThread):
                 else:
                     self.parse_started.emit()
                 t0 = time.perf_counter()
-                ops = self._injector.parse_ops(self._payload)
+                # Streaming hook: accumulate chunks into a buffer and
+                # emit cumulative-text snapshots so the main thread
+                # doesn't need to track partial state. Bound captures
+                # are local to this run so concurrent workers don't
+                # clobber each other.
+                stream_buffer = [""]
+                def _on_partial(chunk: str) -> None:
+                    stream_buffer[0] += chunk
+                    self.parse_response_partial.emit(stream_buffer[0])
+                ops = self._injector.parse_ops(
+                    self._payload, on_partial_response=_on_partial
+                )
                 # Snapshot the LLM's response field BEFORE any other
                 # parse can race with us. Empty string when the LLM
                 # didn't include a response or we're on the regex path.
@@ -229,6 +252,14 @@ class MainWindow(QMainWindow):
         self._workers: set[_TranscribeWorker] = set()
         self._inject_workers: set[_InjectWorker] = set()
         self._commit_queue: list[str] = []
+        # Rolling context for Whisper's initial_prompt. Holds the last
+        # few committed transcripts; their concatenation is passed as
+        # the prompt for the next transcribe call so Whisper's decoder
+        # has same-session vocabulary in mind. Reset on every session
+        # end (mirrors the LLM op-parser history lifetime). Only
+        # populated from committed transcripts — feeding partials back
+        # would amplify the model's first-pass mistakes.
+        self._recent_transcripts: deque[str] = deque(maxlen=5)
         self._write_mode = False  # default: preview only, no typing
         # When the LLM detects an action with empty required params (e.g.,
         # spotify_play with no query), we store the action name + time
@@ -450,6 +481,7 @@ class MainWindow(QMainWindow):
         self._wake_idle_timer.stop()
         self._dictation_via_wake = False
         self._pending_partial_text = None
+        self._recent_transcripts.clear()
         # Drain and drop the recorder's buffer (sounddevice closes its stream
         # in stop()); we ignore the returned array.
         try:
@@ -586,6 +618,11 @@ class MainWindow(QMainWindow):
         # confusing than helpful.
         if self._injector is not None:
             self._injector.clear_op_parser_history()
+        # Same scope rule for the Whisper prompt context — within ONE
+        # session, recent commits help with consistent vocabulary, but
+        # carrying them across sessions would bias the next dictation
+        # toward the previous one's domain.
+        self._recent_transcripts.clear()
         # Same scope rule for write mode — flip back to preview-only at
         # session end so the next session opens with the safer default.
         # If a Whisper / LLM glitch had toggled it on (rare but
@@ -632,6 +669,15 @@ class MainWindow(QMainWindow):
         # Gate on OSD state — see _WHISPER_ACTIVE_STATES above.
         if self._osd._state.stateKind not in self._WHISPER_ACTIVE_STATES:
             return
+        # Don't transcribe while Korder is speaking. The synthesized
+        # voice bleeds into the open mic; transcribing it produces a
+        # garbled version of our own prompt ('Niezrozumiem, powieć
+        # podecenie' from the 'Nie zrozumiałem' TTS) that the LLM
+        # then can't parse, triggering the same TTS again — feedback
+        # loop. _resume_after_tts advances _committed_samples past
+        # the bleed window once playback finishes.
+        if self._tts_active_count > 0:
+            return
         sr = self._recorder.sample_rate
         full = self._recorder.snapshot()
         new = full[self._committed_samples:]
@@ -668,7 +714,25 @@ class MainWindow(QMainWindow):
             self._submit_transcribe(np.ascontiguousarray(new), kind="partial")
 
     def _submit_transcribe(self, audio: np.ndarray, kind: str) -> None:
-        worker = _TranscribeWorker(self._engine, audio)
+        # Commits get the cleanup pass: trim leading/trailing silence
+        # (Whisper hallucinates canned phrases on long pauses) and lift
+        # quiet utterances to a sane operating point. Partials stay
+        # raw — their audio origin must be stable so the locked-prefix
+        # tracker in _flush_pending_partial keeps working, and the
+        # rolling timer already starts each partial at _committed_samples.
+        if kind != "partial":
+            # trim_silence runs first because self._detector is bound
+            # to recorder.sample_rate; resampling before trim would
+            # feed the VAD samples at the wrong rate. Resample last,
+            # right before Whisper sees the buffer — no-op when the
+            # recorder already runs at 16 kHz (the common case).
+            audio = self._detector.trim_silence(audio, guard_ms=150)
+            audio = normalize_rms(audio)
+            if self._recorder.sample_rate != 16000:
+                audio = resample_to(audio, self._recorder.sample_rate, 16000)
+            audio = np.ascontiguousarray(audio)
+        prompt = self._build_initial_prompt()
+        worker = _TranscribeWorker(self._engine, audio, initial_prompt=prompt)
         if kind == "partial":
             self._partial_in_flight = True
             worker.finished_text.connect(self._on_partial_text)
@@ -765,6 +829,16 @@ class MainWindow(QMainWindow):
     def _on_partial_fail(self, _msg: str) -> None:
         self._partial_in_flight = False
 
+    def _build_initial_prompt(self) -> str | None:
+        """Concatenate the session's recent committed transcripts into
+        a single prompt string. whisper.cpp's prompt budget is ~224
+        tokens; the deque cap (5) plus typical commit length keep us
+        well inside that. Returns None when the deque is empty so the
+        engine falls back to the static config prompt."""
+        if not self._recent_transcripts:
+            return None
+        return " ".join(self._recent_transcripts)
+
     def _sync_button(self) -> None:
         rec = self._recorder.is_recording
         self._ptt.blockSignals(True)
@@ -799,6 +873,9 @@ class MainWindow(QMainWindow):
                 self._status.setText(t("status_idle"))
                 self._osd.hide_after(300)
             return
+        # Feed Whisper its own committed output as context for the next
+        # call. Same-session only — the deque is cleared on stop.
+        self._recent_transcripts.append(text)
 
         # Serialize commits while inject workers are in flight. Without
         # this, a follow-up commit can start its own LLM parse before the
@@ -853,6 +930,7 @@ class MainWindow(QMainWindow):
             worker.parse_done.connect(self._on_parse_done)
             worker.cancel_requested.connect(self._on_cancel_requested)
             worker.parse_response.connect(self._on_parse_response)
+            worker.parse_response_partial.connect(self._on_parse_response_partial)
             worker.finished.connect(lambda w=worker: self._reap_inject(w))
             self._inject_workers.add(worker)
             worker.start()
@@ -1061,6 +1139,27 @@ class MainWindow(QMainWindow):
         response doesn't leak into a different turn."""
         self._last_llm_response = response or ""
 
+    def _on_parse_response_partial(self, cumulative_text: str) -> None:
+        """Streaming chunk of the LLM's response prose, emitted while
+        the parse call is still running. Updates the OSD's thinking
+        view with the prose-so-far so the user sees the answer
+        forming in real time, instead of staring at a blank Thinking
+        state for the full ~600 ms median round-trip on E4B.
+
+        State stays "thinking" — parse_done will transition to
+        executing/committed when the call returns. We render the
+        cumulative text in feedbackMode so it's visually distinct
+        from the user's prompt; an empty payload is ignored.
+
+        Action-only turns never emit on this signal, so we don't
+        need a guard against accidentally clobbering a non-
+        conversational state with prose."""
+        if not cumulative_text:
+            return
+        if self._osd._state.stateKind != "thinking":
+            return
+        self._osd.set_thinking_response_partial(cumulative_text)
+
     def _on_cancel_requested(self) -> None:
         """User said 'cancel' / 'nevermind' mid-recording. The worker
         already aborted the inject batch (no text typed, no actions
@@ -1153,6 +1252,7 @@ class MainWindow(QMainWindow):
         self._tts_active_count = max(0, self._tts_active_count - 1)
         if self._tts_active_count > 0:
             return  # more TTS in flight; keep music paused
+        self._snip_tts_bleed_window()
         services = self._tts_paused_services
         self._tts_paused_services = []
         if not services:
@@ -1160,6 +1260,23 @@ class MainWindow(QMainWindow):
         for svc in services:
             _mpris.qdbus(svc, _mpris.MPRIS_OBJECT, f"{_mpris.PLAYER_IFACE}.Play")
         log.info("tts: resumed %d MPRIS service(s)", len(services))
+
+    def _snip_tts_bleed_window(self) -> None:
+        """Advance _committed_samples past whatever the mic captured
+        while TTS was playing, so the next partial-tick doesn't
+        transcribe Korder's own voice. Idempotent and safe to call
+        when the recorder is closed (then it's a no-op).
+
+        Conversational-answer's _reset_to_listening_after_answer
+        already does this for its own path; calling here generalizes
+        the same skip to every TTS exit (didn't-get-that, pending-
+        action prompt, future speakable_response actions)."""
+        if not self._recorder.is_recording:
+            return
+        self._committed_samples = self._recorder.snapshot().shape[0]
+        self._last_partial_norm = ""
+        self._stability_count = 0
+        self._reset_partial_render_state()
 
     def _force_resume_after_cancel(self) -> None:
         """Cancel-path counterpart to _resume_after_tts.
@@ -1175,6 +1292,7 @@ class MainWindow(QMainWindow):
         playback_finished from the in-flight job to be a no-op
         (count already 0; services list empty)."""
         self._tts_active_count = 0
+        self._snip_tts_bleed_window()
         services = self._tts_paused_services
         self._tts_paused_services = []
         if not services:

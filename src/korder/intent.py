@@ -53,45 +53,206 @@ class Turn:
 _MAX_HISTORY_TURNS = 4
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
+_OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
 _OLLAMA_PS_URL = "http://localhost:11434/api/ps"
 
 _PUNCT_TO_STRIP = " \t.!?,;:\n"
 
 
 def _extract_json_object(text: str):
-    """Parse a JSON object from a response that may include markdown fences
-    or surrounding prose.
+    """Parse a JSON object from the LLM response.
 
-    With format=json forced, ollama returns bare JSON we can json.loads
-    directly. With thinking mode (which is incompatible with format=json
-    on /api/generate), Gemma sometimes wraps the answer in ``` or ```json
-    fences, so we have to strip those before parsing. Last resort: pull
-    the first balanced {...} slice out of the response.
-    """
+    With format=<schema> (or format=json) on both /api/generate and
+    /api/chat, ollama returns bare JSON. The fence-stripping branch
+    that used to live here was a workaround for thinking-mode on
+    /api/generate (where format=json was ignored alongside think:true,
+    so Gemma sometimes wrapped output in ``` fences). Thinking now
+    runs on /api/chat where format and think compose, so fenced
+    output shouldn't appear — but a `{...}` slice fallback stays as
+    defense in case the model emits trailing prose."""
     stripped = text.strip()
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
         pass
-    # Markdown fence (``` or ```json … ```)
-    if stripped.startswith("```"):
-        body = stripped.lstrip("`")
-        if body.lower().startswith("json"):
-            body = body[4:]
-        body = body.lstrip("\n").rstrip()
-        end_fence = body.rfind("```")
-        if end_fence >= 0:
-            body = body[:end_fence]
-        try:
-            return json.loads(body.strip())
-        except json.JSONDecodeError:
-            pass
-    # Last-resort: first {...} slice (greedy, balanced enough for our shape).
     start = stripped.find("{")
     end = stripped.rfind("}")
     if start >= 0 and end > start:
         return json.loads(stripped[start : end + 1])
     raise ValueError(f"no JSON object in LLM response: {text!r}")
+
+
+def _decode_partial_string(text: str, value_start: int, emit_from: int) -> tuple[str, int, bool]:
+    """Decode the JSON-string body that started at value_start and yield
+    any characters between emit_from and the current end of `text`,
+    stopping at the unescaped closing quote (which marks `finished=True`).
+
+    Returns (newly_decoded_chars, new_emit_cursor, finished).
+
+    Used by the streaming response path: once the model has committed
+    to writing `"response": "..."`, this peels decoded characters off
+    the tail as the bytes arrive, so the OSD can render prose without
+    waiting for the full JSON body.
+
+    Conservative: if a backslash escape is split across token-emit
+    boundaries, the cursor advances only to the position before the
+    backslash; the next call resumes from there with more bytes."""
+    n = len(text)
+    out: list[str] = []
+    i = max(emit_from, value_start)
+    finished = False
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            if i + 1 >= n:
+                # split escape — wait for more
+                break
+            nxt = text[i + 1]
+            if nxt == '"':
+                out.append('"')
+            elif nxt == "\\":
+                out.append("\\")
+            elif nxt == "/":
+                out.append("/")
+            elif nxt == "n":
+                out.append("\n")
+            elif nxt == "t":
+                out.append("\t")
+            elif nxt == "r":
+                out.append("\r")
+            elif nxt == "b":
+                out.append("\b")
+            elif nxt == "f":
+                out.append("\f")
+            elif nxt == "u":
+                if i + 6 > n:
+                    break
+                try:
+                    out.append(chr(int(text[i + 2 : i + 6], 16)))
+                except ValueError:
+                    out.append(text[i : i + 6])
+                i += 6
+                continue
+            else:
+                out.append(nxt)
+            i += 2
+            continue
+        if c == '"':
+            finished = True
+            i += 1
+            break
+        out.append(c)
+        i += 1
+    return "".join(out), i, finished
+
+
+def _params_schema_for_action(action) -> dict:
+    """Convert an Action.parameters dict (already JSON-Schema-shaped at
+    the property level) into a full sub-schema for the params object.
+    additionalProperties=False means the model can only emit params the
+    action declares — `confirm` can't appear on a non-confirmable action,
+    and stray keys are rejected at sampling time."""
+    properties: dict = {}
+    for param_name, param_def in action.parameters.items():
+        if not isinstance(param_def, dict):
+            continue
+        prop: dict = {}
+        if "type" in param_def:
+            prop["type"] = param_def["type"]
+        else:
+            prop["type"] = "string"
+        if "enum" in param_def:
+            prop["enum"] = list(param_def["enum"])
+        if "description" in param_def:
+            prop["description"] = param_def["description"]
+        properties[param_name] = prop
+    return {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
+
+
+def _build_response_schema() -> dict:
+    """Build a JSON Schema constraining Gemma's response to the exact
+    shape Korder expects:
+      - actions: array of {phrase, name, params} where `name` is one of
+        the registered action names (enum) and `params` matches the
+        action's declared parameter shape (additionalProperties=False).
+      - response: optional natural-language reply.
+      - context: optional short topic phrase.
+
+    Replaces `format: "json"` — schema-constrained sampling is roughly
+    the same speed as bare JSON mode but eliminates whole classes of
+    failure: hallucinated `confirm` on non-confirmable actions, unknown
+    action names, nested-actions runaway, stray top-level keys."""
+    action_branches = []
+    for action in all_actions():
+        branch = {
+            "type": "object",
+            "properties": {
+                "phrase": {"type": "string"},
+                "name": {"const": action.name},
+                "params": _params_schema_for_action(action),
+            },
+            "required": ["phrase", "name"],
+            "additionalProperties": False,
+        }
+        action_branches.append(branch)
+
+    if action_branches:
+        actions_items: dict = {"oneOf": action_branches}
+    else:
+        # Defensive: empty registry shouldn't happen at runtime, but
+        # ollama rejects an empty oneOf.
+        actions_items = {"type": "object"}
+
+    return {
+        "type": "object",
+        "properties": {
+            "actions": {
+                "type": "array",
+                "items": actions_items,
+            },
+            "response": {"type": "string"},
+            "context": {"type": "string"},
+        },
+        "required": ["actions"],
+        "additionalProperties": False,
+    }
+
+
+# Static example block. Moved into the system prompt (was in the
+# per-call user prompt) so the entire system message stays
+# byte-identical across calls in a session — ollama's KV cache
+# can then reuse the prefill for it. Variable suffix shrinks to
+# the catalogue + history + transcript only.
+_EXAMPLES_BLOCK = (
+    "Examples:\n"
+    '  "hello world" → {"actions": []}\n'
+    '  "Naciśnij Enter." → {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}\n'
+    '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
+    '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_play", "params": {"query": "Linkin Park"}}]}\n'
+    '  "Odtwórz Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz Lose Yourself w Spotify", "name": "spotify_play", "params": {"query": "Lose Yourself"}}]}\n'
+    '  "Odtwórz utwór all the things she said w Spotify" → {"actions": [{"phrase": "Odtwórz utwór all the things she said w Spotify", "name": "spotify_play", "params": {"query": "all the things she said", "kind": "track"}}]}\n'
+    '  "Spotify zagraj" → {"actions": [{"phrase": "Spotify zagraj", "name": "spotify_play"}], "response": "Co chcesz odtworzyć w Spotify?"}\n'
+    '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
+    '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
+    '  "what is the capital of France" → {"actions": [], "response": "Paris.", "context": "France"}\n'
+    '  "co powiesz o Budapeszcie?" → {"actions": [], "response": "Budapeszt to piękne miasto...", "context": "Budapeszt"}\n'
+    '  "ile to siedem razy osiem" → {"actions": [], "response": "Pięćdziesiąt sześć."}\n'
+    '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
+    '  "wikipedia, Paryż" → {"actions": [{"phrase": "wikipedia, Paryż", "name": "wikipedia_search", "params": {"query": "Paryż"}}]}\n'
+    '  "Zakończę." → {"actions": [{"phrase": "Zakończę.", "name": "cancel_session"}]}\n'
+    "  Follow-ups (use 'Current topic:' from history block as the implicit subject;\n"
+    "  the TOPIC value below is illustrative only — bind to whatever the actual prior turn established):\n"
+    '    Current topic: Francja\n'
+    '    now:   "A Polski?" → {"actions": [], "response": "Warszawa.", "context": "Polska"}\n'
+    '    Current topic: Gdańsk\n'
+    '    now:   "Pokaż stronę na Wikipedii" → {"actions": [{"phrase": "Pokaż stronę na Wikipedii", "name": "wikipedia_search", "params": {"query": "Gdańsk"}}], "context": "Gdańsk"}\n'
+    '    Current topic: Bohemian Rhapsody\n'
+    '    now:   "play it on Spotify" → {"actions": [{"phrase": "play it on Spotify", "name": "spotify_play", "params": {"query": "Bohemian Rhapsody"}}], "context": "Bohemian Rhapsody"}'
+)
 
 
 _SYSTEM_PROMPT = (
@@ -155,7 +316,9 @@ _SYSTEM_PROMPT = (
     "line is your authoritative reference — when the input is a bare "
     "follow-up ('Ile ma mieszkańców?', 'A Polski?'), treat it as a "
     "question ABOUT that topic and fill `response` with the answer "
-    "for that subject."
+    "for that subject.\n"
+    "\n"
+    + _EXAMPLES_BLOCK
 )
 
 
@@ -210,8 +373,12 @@ def _build_user_prompt(
     *,
     show_triggers: bool,
 ) -> str:
-    """Per-call user message: action catalogue + optional conversation
-    history + transcript + reminder of the JSON output format."""
+    """Per-call user message. Order matters for KV-cache prefix reuse:
+    the action catalogue is fixed within a session (registry doesn't
+    change), so it comes first as a stable prefix. History changes per
+    turn, transcript per call — those make up the variable suffix.
+    The static example block now lives in the system prompt, not
+    here, so the cached prefill region is as long as possible."""
     catalogue = _render_action_catalogue(show_triggers=show_triggers)
     history_block = _render_history(history or [])
     return (
@@ -219,31 +386,6 @@ def _build_user_prompt(
         f"{catalogue}\n"
         "\n"
         + history_block +
-        "Examples:\n"
-        '  "hello world" → {"actions": []}\n'
-        '  "Naciśnij Enter." → {"actions": [{"phrase": "Naciśnij Enter", "name": "press_enter"}]}\n'
-        '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
-        '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_play", "params": {"query": "Linkin Park"}}]}\n'
-        '  "Odtwórz Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz Lose Yourself w Spotify", "name": "spotify_play", "params": {"query": "Lose Yourself"}}]}\n'
-        '  "Odtwórz utwór all the things she said w Spotify" → {"actions": [{"phrase": "Odtwórz utwór all the things she said w Spotify", "name": "spotify_play", "params": {"query": "all the things she said", "kind": "track"}}]}\n'
-        '  "Spotify zagraj" → {"actions": [{"phrase": "Spotify zagraj", "name": "spotify_play"}], "response": "Co chcesz odtworzyć w Spotify?"}\n'
-        '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
-        '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
-        '  "what is the capital of France" → {"actions": [], "response": "Paris.", "context": "France"}\n'
-        '  "co powiesz o Budapeszcie?" → {"actions": [], "response": "Budapeszt to piękne miasto...", "context": "Budapeszt"}\n'
-        '  "ile to siedem razy osiem" → {"actions": [], "response": "Pięćdziesiąt sześć."}\n'
-        '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
-        '  "wikipedia, Paryż" → {"actions": [{"phrase": "wikipedia, Paryż", "name": "wikipedia_search", "params": {"query": "Paryż"}}]}\n'
-        '  "Zakończę." → {"actions": [{"phrase": "Zakończę.", "name": "cancel_session"}]}\n'
-        "  Follow-ups (use 'Current topic:' from history block as the implicit subject;\n"
-        "  the TOPIC value below is illustrative only — bind to whatever the actual prior turn established):\n"
-        '    Current topic: Francja\n'
-        '    now:   "A Polski?" → {"actions": [], "response": "Warszawa.", "context": "Polska"}\n'
-        '    Current topic: Gdańsk\n'
-        '    now:   "Pokaż stronę na Wikipedii" → {"actions": [{"phrase": "Pokaż stronę na Wikipedii", "name": "wikipedia_search", "params": {"query": "Gdańsk"}}], "context": "Gdańsk"}\n'
-        '    Current topic: Bohemian Rhapsody\n'
-        '    now:   "play it on Spotify" → {"actions": [{"phrase": "play it on Spotify", "name": "spotify_play", "params": {"query": "Bohemian Rhapsody"}}], "context": "Bohemian Rhapsody"}\n'
-        "\n"
         f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
         "Output:"
@@ -253,17 +395,25 @@ def _build_user_prompt(
 class IntentParser:
     def __init__(
         self,
-        model: str = "gemma4:e2b",
+        model: str = "gemma4:e4b",
         timeout_s: float = 8.0,
         thinking_mode: bool = False,
         show_triggers_in_prompt: bool = False,
         keep_alive_s: float = 300.0,
+        schema_mode: bool = True,
     ):
         self.model = model
         self.timeout_s = timeout_s
         self.thinking_mode = thinking_mode
         self.show_triggers_in_prompt = show_triggers_in_prompt
         self.keep_alive_s = keep_alive_s
+        # When True, constrain Gemma's output with a per-action JSON
+        # Schema (the registered action enum + per-action params shape).
+        # When False, fall back to bare format=json. Schema mode is
+        # the safer default — kept toggleable for one release in case
+        # a specific Gemma build has issues with schema-constrained
+        # sampling that bare JSON mode handles.
+        self.schema_mode = schema_mode
         # Reasoning trace from the most recent _call_ollama. Populated only
         # when thinking_mode is on. Surfaced for diagnostics (logged to
         # stderr in _call_ollama; readable by the benchmark dialog).
@@ -379,11 +529,18 @@ class IntentParser:
         if len(self._history) > _MAX_HISTORY_TURNS:
             self._history = self._history[-_MAX_HISTORY_TURNS:]
 
-    def parse(self, transcript: str) -> list[tuple]:
+    def parse(
+        self,
+        transcript: str,
+        on_partial_response=None,
+    ) -> list[tuple]:
         if not transcript:
             return []
         try:
-            actions = self._call_ollama(transcript)
+            actions = self._call_ollama(
+                transcript,
+                on_partial_response=on_partial_response,
+            )
         except Exception as e:
             log.warning("intent LLM failed, falling back to regex: %s", e)
             return split_into_ops(transcript)
@@ -454,52 +611,112 @@ class IntentParser:
         log.info("segmented ops: %r", ops)
         return ops
 
-    def _call_ollama(self, transcript: str) -> list:
+    def _format_constraint(self):
+        """Pick the format constraint for this call. Schema mode wins
+        when enabled — bare format=json is the fallback path so we can
+        toggle it off if a specific Gemma build chokes on schema-
+        constrained sampling. Returns the value that should go in
+        payload["format"]."""
+        if self.schema_mode:
+            return _build_response_schema()
+        return "json"
+
+    def _call_ollama(
+        self,
+        transcript: str,
+        *,
+        on_partial_response=None,
+    ) -> list:
+        """Call Gemma and return the parsed actions array.
+
+        on_partial_response: optional callback. When provided, the call
+        runs with stream=true; the callback fires with the cumulative
+        `response` field text as it streams in (only after the model has
+        committed to a non-empty response — i.e. after `actions` arrived
+        empty, so we know this turn is conversational, not action-
+        dispatch). Net perceived-latency saving on conversational
+        answers is the time-to-first-token vs full-completion delta.
+        For action-only turns the callback never fires.
+
+        Routing:
+        - thinking_mode on  → /api/chat with messages + format:<schema>
+          + think:true. Format and think compose cleanly on /api/chat
+          (they're mutually exclusive on /api/generate).
+        - thinking_mode off → /api/generate with format:<schema>. Same
+          path the bench has used since v1; preserves the measured
+          latency profile for the action-dispatch hot path."""
         user_prompt = _build_user_prompt(
             transcript,
             self._history,
             show_triggers=self.show_triggers_in_prompt,
         )
-        payload: dict = {
-            "model": self.model,
-            "system": _SYSTEM_PROMPT,
-            "prompt": user_prompt,
-            "stream": False,
-            # num_predict capped at 256 — well above any legitimate
-            # JSON output (the longest valid response we've seen is
-            # ~120 tokens, including a multi-action segment + a Polish
-            # response field) but tight enough that runaway recursion
-            # ('{"actions": [{"actions": [{"actions": [...') gets
-            # truncated in ~3s rather than ~10s, so the regex
-            # fallback path engages quickly when the model degrades.
-            "options": {"temperature": 0.0, "num_predict": 256},
-            "keep_alive": self.keep_alive_s,
-        }
+        # num_predict capped at 256 — well above any legitimate JSON
+        # output (the longest valid response we've seen is ~120 tokens,
+        # including a multi-action segment + a Polish response field)
+        # but tight enough that runaway recursion gets truncated in ~3s
+        # rather than ~10s, so the regex fallback path engages quickly
+        # when the model degrades.
+        options = {"temperature": 0.0, "num_predict": 256}
+        format_value = self._format_constraint()
+        stream = on_partial_response is not None
+
         if self.thinking_mode:
-            # Ollama's /api/generate suppresses the "thinking" field
-            # whenever format=json is set, so when reasoning is requested
-            # we drop the strict JSON constraint and rely on the system
-            # prompt to keep output well-formed. _extract_json_object
-            # handles markdown fences that Gemma tends to add in this
-            # mode.
-            payload["think"] = True
+            # /api/chat lets format:<schema> compose with think:true.
+            # On /api/generate they're mutually exclusive — the reason
+            # the old path had to choose between strict JSON and
+            # thinking, and why _extract_json_object had a fence-
+            # stripping branch.
+            url = _OLLAMA_CHAT_URL
+            payload: dict = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "stream": stream,
+                "format": format_value,
+                "think": True,
+                "options": options,
+                "keep_alive": self.keep_alive_s,
+            }
         else:
-            payload["format"] = "json"
+            url = _OLLAMA_URL
+            payload = {
+                "model": self.model,
+                "system": _SYSTEM_PROMPT,
+                "prompt": user_prompt,
+                "stream": stream,
+                "format": format_value,
+                "options": options,
+                "keep_alive": self.keep_alive_s,
+            }
+
         req = urllib.request.Request(
-            _OLLAMA_URL,
+            url,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-        # Capture and log Gemma's reasoning trace when thinking mode is on.
-        # Ollama returns it in a separate "thinking" field so the JSON
-        # response stays parseable; we keep it for diagnostics.
-        thinking = (body.get("thinking") or "").strip()
+
+        if stream:
+            raw, thinking = self._consume_stream(
+                req, on_partial_response=on_partial_response
+            )
+        else:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            thinking = (body.get("thinking") or "").strip()
+            if self.thinking_mode and "message" in body:
+                # /api/chat shape: {message: {role, content, thinking?}}
+                msg = body.get("message") or {}
+                raw = (msg.get("content") or "").strip()
+                if not thinking:
+                    thinking = (msg.get("thinking") or "").strip()
+            else:
+                raw = body.get("response", "").strip()
+
         self.last_thinking = thinking
         if thinking:
             log.info("gemma thinking for %r:\n  %s", transcript, thinking)
-        raw = body.get("response", "").strip()
         parsed = _extract_json_object(raw)
         # Reset last_response — if the new parse omits it, we don't
         # want to surface a stale message from the previous turn.
@@ -524,6 +741,153 @@ class IntentParser:
         if isinstance(parsed, dict) and "phrase" in parsed:
             return [parsed]
         raise ValueError(f"unexpected LLM output shape: {type(parsed).__name__}: {parsed!r}")
+
+    def _consume_stream(self, req, *, on_partial_response) -> tuple[str, str]:
+        """Read a streaming ollama response line by line (NDJSON).
+        Calls on_partial_response with new chunks of the JSON `response`
+        field once it's clear the model is in conversational mode
+        (i.e. `actions` arrived as `[]`). Returns (full_raw_output,
+        thinking_text).
+
+        Streaming JSON parsing is intentionally light: we scan the
+        accumulating output for `"actions"\\s*:\\s*\\[\\s*\\]` to detect
+        the empty-actions branch; once that fires AND the
+        `"response": "..."` string opens, we yield the decoded characters
+        of that string as they arrive (stopping at the unescaped close
+        quote). For action-only turns the callback never fires —
+        action dispatch latency is dominated by execution, not the JSON
+        tail, so streaming would be wasted work."""
+        accumulated = ""
+        thinking_parts: list[str] = []
+        actions_decided: bool | None = None  # None unknown, False empty, True non-empty
+        response_state = "before"  # before / streaming / done
+        response_value_start = -1
+        response_emit_idx = 0
+
+        with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+            for raw_line in resp:
+                if not raw_line:
+                    continue
+                try:
+                    chunk = json.loads(raw_line.decode("utf-8"))
+                except json.JSONDecodeError:
+                    continue
+                if chunk.get("done"):
+                    break
+                if self.thinking_mode and "message" in chunk:
+                    msg = chunk.get("message") or {}
+                    delta = msg.get("content", "") or ""
+                    th = msg.get("thinking", "") or ""
+                    if th:
+                        thinking_parts.append(th)
+                else:
+                    delta = chunk.get("response", "") or ""
+                    th = chunk.get("thinking", "") or ""
+                    if th:
+                        thinking_parts.append(th)
+                if not delta:
+                    continue
+                accumulated += delta
+
+                if actions_decided is None:
+                    actions_decided = self._scan_actions_decision(accumulated)
+
+                if (
+                    actions_decided is False
+                    and response_state == "before"
+                ):
+                    idx = self._scan_response_open(accumulated)
+                    if idx >= 0:
+                        response_value_start = idx
+                        response_emit_idx = idx
+                        response_state = "streaming"
+
+                if response_state == "streaming":
+                    decoded, consumed_to, finished = _decode_partial_string(
+                        accumulated, response_value_start, response_emit_idx,
+                    )
+                    if decoded:
+                        try:
+                            on_partial_response(decoded)
+                        except Exception as e:
+                            log.warning("partial-response callback failed: %s", e)
+                    response_emit_idx = consumed_to
+                    if finished:
+                        response_state = "done"
+
+        return accumulated, "".join(thinking_parts).strip()
+
+    @staticmethod
+    def _scan_actions_decision(text: str) -> bool | None:
+        """Return False if `"actions": [ ... ]` is closed empty so far,
+        True if it's closed non-empty, None if the array hasn't closed
+        yet. Conservative: only commits when the bracket structure is
+        unambiguous."""
+        # Find `"actions"` key
+        key_idx = text.find('"actions"')
+        if key_idx < 0:
+            return None
+        # Find the opening bracket after the colon
+        rest = text[key_idx:]
+        bracket_open = rest.find("[")
+        if bracket_open < 0:
+            return None
+        # Walk forward tracking [] depth and string-state until depth back to 0
+        depth = 0
+        in_string = False
+        escape = False
+        had_content = False
+        i = key_idx + bracket_open
+        while i < len(text):
+            c = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif c == "\\":
+                    escape = True
+                elif c == '"':
+                    in_string = False
+                i += 1
+                continue
+            if c == '"':
+                in_string = True
+                if depth >= 1:
+                    had_content = True
+                i += 1
+                continue
+            if c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    return had_content
+            elif depth >= 1 and c not in " \t\r\n":
+                had_content = True
+            i += 1
+        return None
+
+    @staticmethod
+    def _scan_response_open(text: str) -> int:
+        """Return the index right after the opening quote of
+        `"response": "..."` once that opening sequence has fully
+        arrived; -1 otherwise."""
+        key_idx = text.find('"response"')
+        if key_idx < 0:
+            return -1
+        # Walk past colon + whitespace to find the opening quote.
+        i = key_idx + len('"response"')
+        n = len(text)
+        # skip whitespace
+        while i < n and text[i] in " \t\r\n":
+            i += 1
+        if i >= n or text[i] != ":":
+            return -1
+        i += 1
+        while i < n and text[i] in " \t\r\n":
+            i += 1
+        if i >= n or text[i] != '"':
+            return -1
+        return i + 1
 
 
 def _scrub_hallucinated_confirm(transcript: str, actions: list) -> None:
