@@ -148,3 +148,121 @@ def test_fallback_answer_reset_releases_when_tts_idle():
 
     assert stub._await_tts_for_answer_reset is False
     assert reset_called == [True]
+
+
+# ---- Duck pause/resume around TTS ----------------------------------------
+
+
+def test_mpris_pause_for_tts_lifts_listening_duck():
+    """The listening duck lowers the default sink so external music
+    is quiet under the user's voice. TTS plays through the same
+    sink, so leaving the duck engaged would muffle Korder's own
+    voice. Pause-for-TTS must restore the duck so the synthesized
+    answer plays at the user's true volume."""
+    ducker = MagicMock()
+
+    class _Stub:
+        _tts_paused_services = []
+        _tts_active_count = 0
+        _ducker = ducker
+
+    stub = _Stub()
+    stub._mpris_pause_for_tts = types.MethodType(
+        mw.MainWindow._mpris_pause_for_tts, stub
+    )
+
+    with patch.object(mw._mpris, "list_players", return_value=[]):
+        stub._mpris_pause_for_tts()
+
+    ducker.restore.assert_called_once()
+
+
+def test_mpris_pause_for_tts_does_not_double_restore_on_concurrent_calls():
+    """Ref-counted: the second concurrent TTS utterance hits a count
+    already > 1 and must NOT call restore again. Otherwise we'd
+    fight ourselves on the wpctl call (both try to set volume during
+    the wpctl window of the first call)."""
+    ducker = MagicMock()
+
+    class _Stub:
+        _tts_paused_services = []
+        _tts_active_count = 0
+        _ducker = ducker
+
+    stub = _Stub()
+    stub._mpris_pause_for_tts = types.MethodType(
+        mw.MainWindow._mpris_pause_for_tts, stub
+    )
+
+    with patch.object(mw._mpris, "list_players", return_value=[]):
+        stub._mpris_pause_for_tts()
+        stub._mpris_pause_for_tts()
+
+    assert ducker.restore.call_count == 1
+
+
+def test_resume_after_tts_re_engages_duck_when_recording_continues():
+    """When the last TTS finishes mid-session, the listening duck
+    has to come back — the user is still talking and external
+    media should still be ducked under their voice."""
+    ducker = MagicMock()
+    recorder = MagicMock()
+    recorder.is_recording = True
+    recorder.snapshot.return_value.shape = (16000,)
+
+    class _Stub:
+        _tts_paused_services = []
+        _tts_active_count = 1  # last TTS about to finish
+        _ducker = ducker
+        _recorder = recorder
+        _committed_samples = 0
+        _last_partial_norm = "x"
+        _stability_count = 0
+        _last_displayed_partial = "x"
+        _pending_partial_text = "x"
+        _last_osd_partial_t = 0.0
+        _osd_throttle_timer = MagicMock()
+
+    stub = _Stub()
+    stub._snip_tts_bleed_window = types.MethodType(
+        mw.MainWindow._snip_tts_bleed_window, stub
+    )
+    stub._reset_partial_render_state = types.MethodType(
+        mw.MainWindow._reset_partial_render_state, stub
+    )
+    stub._resume_after_tts = types.MethodType(
+        mw.MainWindow._resume_after_tts, stub
+    )
+
+    stub._resume_after_tts()
+
+    ducker.duck.assert_called_once()
+
+
+def test_resume_after_tts_does_not_re_engage_duck_when_recording_stopped():
+    """If the user finished dictation while TTS was still playing
+    (auto-stop, manual stop), the recording lifecycle owns
+    duck/restore — re-engaging here would lower the sink for
+    nothing and leave the user's volume wrong if the recording-
+    stop restore already fired."""
+    ducker = MagicMock()
+    recorder = MagicMock()
+    recorder.is_recording = False
+
+    class _Stub:
+        _tts_paused_services = []
+        _tts_active_count = 1
+        _ducker = ducker
+        _recorder = recorder
+
+    stub = _Stub()
+    stub._snip_tts_bleed_window = types.MethodType(
+        mw.MainWindow._snip_tts_bleed_window, stub
+    )
+    stub._resume_after_tts = types.MethodType(
+        mw.MainWindow._resume_after_tts, stub
+    )
+
+    stub._resume_after_tts()
+
+    ducker.duck.assert_not_called()

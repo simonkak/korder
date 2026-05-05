@@ -1253,12 +1253,27 @@ class MainWindow(QMainWindow):
         """Pause every Playing MPRIS service for the duration of
         TTS playback. Ref-counts in-flight utterances so concurrent
         speech keeps music paused across the whole burst — only the
-        last finishing utterance resumes."""
+        last finishing utterance resumes.
+
+        Also lifts the listening-volume duck for the TTS window. The
+        duck lowers the default sink so external music is quiet enough
+        for Whisper; TTS plays through the same sink, so leaving the
+        duck engaged would muffle Korder's own voice. Re-engages on
+        _resume_after_tts when the count drops back to zero."""
         self._tts_active_count += 1
         if self._tts_active_count > 1:
             # Earlier utterance already paused; piggyback on its
             # paused-services list (we'll release together).
             return
+        # Restore the duck so TTS plays at the user's true volume.
+        # _resume_after_tts re-ducks when the count returns to zero
+        # (if recording is still active). Idempotent — restore() on
+        # an unducked state is a no-op.
+        if self._ducker is not None:
+            try:
+                self._ducker.restore()
+            except Exception:
+                pass
         paused: list[str] = []
         for svc in _mpris.list_players():
             if _mpris.player_status(svc) == "Playing":
@@ -1278,6 +1293,17 @@ class MainWindow(QMainWindow):
         if self._tts_active_count > 0:
             return  # more TTS in flight; keep music paused
         self._snip_tts_bleed_window()
+        # Re-engage the listening-volume duck if the dictation session
+        # is still ongoing. Skipped when recording has stopped between
+        # _mpris_pause_for_tts and now (auto-stop, manual, cancel) —
+        # the recording lifecycle owns duck/restore there. duck() is
+        # idempotent and reads the current sink level fresh, so this
+        # cleanly tracks any volume change the user made during TTS.
+        if self._ducker is not None and self._recorder.is_recording:
+            try:
+                self._ducker.duck()
+            except Exception:
+                pass
         services = self._tts_paused_services
         self._tts_paused_services = []
         if not services:
