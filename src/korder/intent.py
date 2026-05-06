@@ -1594,7 +1594,7 @@ def segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | No
 
     ops: list[tuple] = []
     pos = 0
-    for start, end, action_name, params in found:
+    for i, (start, end, action_name, params) in enumerate(found):
         if start > pos:
             seg = transcript[pos:start]
             if pos > 0:
@@ -1603,12 +1603,39 @@ def segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | No
             if seg:
                 ops.append(("text", seg))
         action = get_action(action_name)
+        next_start = found[i + 1][0] if i + 1 < len(found) else len(transcript)
         if action is not None:
             op = action.op_factory(params)
-            if op is None and action.parameters:
-                # Action has declared params but the LLM didn't supply
-                # them — emit a pending marker so MainWindow can grab the
-                # next commit as the parameter.
+            if op is None and action.parameters and not params:
+                # LLM emitted an action without params but parameters
+                # are declared. Same trick the regex parser does
+                # (actions/parser.py): take the trailing text between
+                # this phrase and the next action (or end of input)
+                # and use it to fill the action's first declared
+                # parameter. Catches the "Spotify, Play, Numb" case
+                # where Gemma emitted phrase='Spotify' with empty
+                # params; trailing 'Play, Numb.' becomes query='Numb'
+                # after stripping the verb. Skips when params is
+                # non-empty — respects the LLM's deliberate choice.
+                trailing = (
+                    transcript[end:next_start]
+                    .lstrip(_PUNCT_TO_STRIP)
+                    .rstrip(_PUNCT_TO_STRIP)
+                    .strip()
+                )
+                if trailing:
+                    first_param = next(iter(action.parameters.keys()))
+                    trailing_op = action.op_factory({first_param: trailing})
+                    if trailing_op is not None:
+                        ops.append(trailing_op)
+                        pos = next_start
+                        continue
+                # Nothing usable in trailing text — go pending.
+                ops.append(("pending_action", action_name))
+            elif op is None and action.parameters:
+                # Params were given but rejected by op_factory (e.g.
+                # confirm value not yes/no). Original behavior:
+                # pending_action so MainWindow grabs the next commit.
                 ops.append(("pending_action", action_name))
             elif op is not None:
                 ops.append(op)

@@ -190,3 +190,53 @@ def test_segmenter_accepts_three_char_phrases():
           "params": {"confirm": "tak"}}],
     )
     assert ops is not None
+
+
+def test_trailing_text_fills_first_param_when_llm_emitted_empty_params():
+    """Field log: 'Spotify, Play, Numb.' — Gemma emitted phrase=
+    'Spotify' with empty params. Pre-fix the action went pending and
+    'Play, Numb.' was typed as text. Post-fix the trailing text after
+    'Spotify' fills params.query (the action's first declared param),
+    matching the regex parser's existing trailing-text-fill behavior."""
+    ops = segment_input_by_actions(
+        "Spotify, Play, Numb.",
+        [{"phrase": "Spotify", "name": "spotify_play"}],
+    )
+    # No pending_action — the trailing text 'Play, Numb' became
+    # query, the action dispatched as a callable.
+    kinds = [op[0] for op in ops]
+    assert "pending_action" not in kinds, (
+        f"trailing text should have filled query; got {ops!r}"
+    )
+    assert any(op[0] == "callable" for op in ops), (
+        f"expected a callable from spotify_play; got {ops!r}"
+    )
+
+
+def test_trailing_text_fill_skipped_when_llm_provided_params():
+    """Respect the LLM's deliberate choice: when params are non-empty,
+    don't second-guess it with trailing-text fill — even if the
+    op_factory rejects (e.g. invalid kind value). That should fall
+    through to pending_action so MainWindow asks the user, the same
+    as before."""
+    ops = segment_input_by_actions(
+        "Spotify Play Numb",
+        [{"phrase": "Spotify", "name": "spotify_play",
+          "params": {"kind": "vinyl"}}],  # non-empty but query missing
+    )
+    # The LLM gave us SOMETHING in params; we don't auto-fill from
+    # trailing text. spotify_play with kind set but no query → None.
+    kinds = [op[0] for op in ops]
+    assert "pending_action" in kinds
+
+
+def test_trailing_text_fill_handles_empty_trailing():
+    """When the action sits at the end of input (no trailing text)
+    and params are empty, fall through to pending_action. The
+    fallback only fires when there's actually trailing text to fill."""
+    ops = segment_input_by_actions(
+        "Spotify",
+        [{"phrase": "Spotify", "name": "spotify_play"}],
+    )
+    kinds = [op[0] for op in ops]
+    assert "pending_action" in kinds
