@@ -147,11 +147,77 @@ class SpotifyClient:
         # back to the open-search-UI path.
         return None
 
-    def _call_search(self, query: str, type_param: str) -> dict | None:
+    def search_top_n(
+        self,
+        query: str,
+        kind: str | None = None,
+        n: int = 5,
+    ) -> list[dict]:
+        """Return up to ``n`` top results matching ``query``. Each entry
+        is a dict {uri, name, kind, artist?} where ``artist`` is filled
+        for tracks and albums and omitted for artist / playlist results.
+
+        When ``kind`` is one of {track, album, artist, playlist}, only
+        that type is returned. When ``kind`` is None or unrecognized,
+        results from all four types are mixed and capped at ``n`` total
+        — Spotify returns each type's items separately, so the picker
+        is on us; we preserve Spotify's ranking within each type and
+        the priority order across types (artist > album > track >
+        playlist, mirroring _search_unspecified_full).
+
+        Empty list on any failure (no API credentials, network error,
+        empty query). ``n`` is clamped to [1, 10] — Spotify's API
+        ``limit`` parameter accepts 1–50 but Korder doesn't surface
+        more than a handful of options to the LLM."""
+        if not query or not query.strip():
+            return []
+        n = max(1, min(int(n), 10))
+        normalized_kind = (kind or "").lower().strip()
+        if normalized_kind in _VALID_KINDS:
+            return self._search_top_n_one(query, normalized_kind, n)
+        return self._search_top_n_unspecified(query, n)
+
+    def _search_top_n_one(self, query: str, kind: str, n: int) -> list[dict]:
+        body = self._call_search(query, kind, limit=n)
+        if body is None:
+            return []
+        items = body.get(f"{kind}s", {}).get("items") or []
+        out: list[dict] = []
+        for it in items:
+            if not isinstance(it, dict) or not it.get("uri") or not it.get("name"):
+                continue
+            out.append(self._format_search_item(it, kind))
+        return out
+
+    def _search_top_n_unspecified(self, query: str, n: int) -> list[dict]:
+        body = self._call_search(query, ",".join(_TYPE_PRIORITY), limit=n)
+        if body is None:
+            return []
+        out: list[dict] = []
+        for t in _TYPE_PRIORITY:
+            items = body.get(f"{t}s", {}).get("items") or []
+            for it in items:
+                if isinstance(it, dict) and it.get("uri") and it.get("name"):
+                    out.append(self._format_search_item(it, t))
+        return out[:n]
+
+    @staticmethod
+    def _format_search_item(item: dict, kind: str) -> dict:
+        out = {"uri": item.get("uri", ""), "name": item.get("name", ""), "kind": kind}
+        if kind in ("track", "album"):
+            artists = item.get("artists") or []
+            names = [a.get("name", "") for a in artists if isinstance(a, dict)]
+            joined = ", ".join(n for n in names if n)
+            if joined:
+                out["artist"] = joined
+        return out
+
+    def _call_search(self, query: str, type_param: str, limit: int = 1) -> dict | None:
         token = self._get_token()
         if not token:
             return None
-        params = urllib.parse.urlencode({"q": query, "type": type_param, "limit": 1})
+        limit = max(1, min(int(limit), 50))
+        params = urllib.parse.urlencode({"q": query, "type": type_param, "limit": limit})
         url = f"{_SEARCH_URL}?{params}"
         try:
             req = urllib.request.Request(

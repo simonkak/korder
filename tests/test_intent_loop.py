@@ -309,6 +309,60 @@ def test_loop_forces_discovery_when_llm_skips_tool_for_bound_action():
     )
 
 
+def test_force_skips_parametric_tools():
+    """Parametric tools (non-empty args_schema) can't be force-called
+    because runtime can't synthesize sensible args. They must be
+    invoked deliberately by the LLM. Zero-arg tools on the same
+    action still get forced normally."""
+    saved = list(all_tools())
+    reset()
+    try:
+        # Register one parametric, one zero-arg tool.
+        register_tool(Tool(
+            name="zero_arg_stub",
+            description="zero-arg",
+            executor=lambda: ["alpha"],
+        ))
+        register_tool(Tool(
+            name="parametric_stub",
+            description="needs query",
+            executor=lambda **kw: [],
+            args_schema={"query": {"type": "string"}},
+        ))
+
+        # Build a fake action that references both.
+        from korder.actions.base import Action, register, reset as actions_reset, all_actions as all_actions_, get_action
+        saved_actions = list(all_actions_())
+        actions_reset()
+        register(Action(
+            name="test_dual_tools",
+            description="Test action with both tool kinds",
+            triggers={"en": ["test_dual"]},
+            op_factory=lambda _args: ("callable", lambda: None),
+            tools=["zero_arg_stub", "parametric_stub"],
+        ))
+        try:
+            forced = IntentParser._compute_forced_tool_calls(
+                actions=[{"name": "test_dual_tools", "params": {}}],
+                already_seen=set(),
+            )
+            forced_names = [c["name"] for c in forced]
+            assert "zero_arg_stub" in forced_names, (
+                f"zero-arg tool should be forced; got {forced!r}"
+            )
+            assert "parametric_stub" not in forced_names, (
+                f"parametric tool should NOT be forced; got {forced!r}"
+            )
+        finally:
+            actions_reset()
+            for a in saved_actions:
+                register(a)
+    finally:
+        reset()
+        for t in saved:
+            register_tool(t)
+
+
 def test_loop_does_not_force_when_action_has_no_tools():
     """Actions without `tools=[...]` (the vast majority — press_enter,
     media keys, dictation) must NOT trigger a forced second iteration.

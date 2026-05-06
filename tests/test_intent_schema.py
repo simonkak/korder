@@ -23,6 +23,30 @@ def test_response_schema_top_level_shape():
     assert schema["required"] == ["actions"]
 
 
+def test_response_schema_renders_per_tool_branches():
+    """Parametric tools require args to be constrained per-tool, not
+    a generic loose object. The tool_calls.items schema is a oneOf
+    over registered tools, each with its own args sub-schema."""
+    import korder.tools  # noqa: F401  (ensure tools registered)
+    schema = _build_response_schema()
+    items = schema["properties"]["tool_calls"]["items"]
+    assert "oneOf" in items, f"tool_calls.items should be oneOf, got: {items!r}"
+    branch_names = {
+        b["properties"]["name"]["const"] for b in items["oneOf"]
+    }
+    assert "list_audio_sinks" in branch_names
+    # Each zero-arg tool's args sub-schema is an empty-properties object.
+    audio_branch = next(
+        b for b in items["oneOf"]
+        if b["properties"]["name"]["const"] == "list_audio_sinks"
+    )
+    assert audio_branch["properties"]["args"] == {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+
+
 def test_question_mode_schema_forces_empty_actions_and_nonempty_response():
     """The '?'-detected question path swaps in a tighter schema:
     actions must be the empty array (const: []), response must be

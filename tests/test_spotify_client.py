@@ -186,6 +186,75 @@ def _all_types_handler(payload: dict, seen_types: list[str] | None = None):
     return handler
 
 
+def test_search_top_n_returns_multiple_results_for_specified_kind():
+    """When the LLM picks a kind, the top-N call returns up to n
+    items of that type, formatted as {uri, name, kind, artist?}."""
+    seen_limit: list[int] = []
+
+    def handler(req, *args, **kwargs):
+        url = req.full_url
+        if url.startswith("https://accounts.spotify.com/api/token"):
+            return _mock_response({"access_token": "tok", "expires_in": 3600})
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(url).query)
+        seen_limit.append(int(q.get("limit", ["1"])[0]))
+        return _mock_response({"tracks": {"items": [
+            {"uri": "spotify:track:1", "name": "Numb",
+             "artists": [{"name": "Linkin Park"}]},
+            {"uri": "spotify:track:2", "name": "Numb",
+             "artists": [{"name": "Usher"}]},
+        ]}})
+
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        results = c.search_top_n("Numb", kind="track", n=5)
+    assert seen_limit == [5]
+    assert results == [
+        {"uri": "spotify:track:1", "name": "Numb", "kind": "track", "artist": "Linkin Park"},
+        {"uri": "spotify:track:2", "name": "Numb", "kind": "track", "artist": "Usher"},
+    ]
+
+
+def test_search_top_n_unspecified_kind_mixes_types_and_caps_at_n():
+    """No kind → request all four types, return up to n total
+    interleaved by type-priority (artist > album > track > playlist)
+    while preserving Spotify's ranking within each type."""
+    payload = {
+        "artists": {"items": [
+            {"uri": "spotify:artist:a", "name": "Linkin Park"},
+        ]},
+        "albums": {"items": [
+            {"uri": "spotify:album:m", "name": "Meteora", "artists": [{"name": "Linkin Park"}]},
+        ]},
+        "tracks": {"items": [
+            {"uri": "spotify:track:t1", "name": "Numb", "artists": [{"name": "Linkin Park"}]},
+            {"uri": "spotify:track:t2", "name": "In The End", "artists": [{"name": "Linkin Park"}]},
+        ]},
+        "playlists": {"items": [
+            {"uri": "spotify:playlist:p", "name": "LP Essentials"},
+        ]},
+    }
+    handler = _all_types_handler(payload)
+    with _patched_urlopen(handler):
+        c = SpotifyClient("cid", "secret")
+        results = c.search_top_n("linkin", kind=None, n=5)
+    # All five fit in n=5; order is artist, album, then tracks, then playlist.
+    assert [r["kind"] for r in results] == ["artist", "album", "track", "track", "playlist"]
+    assert results[0]["uri"] == "spotify:artist:a"
+    assert results[2]["uri"] == "spotify:track:t1"
+    # artist field is filled for tracks/albums, omitted for artists/playlists.
+    assert "artist" not in results[0]
+    assert results[1]["artist"] == "Linkin Park"
+
+
+def test_search_top_n_empty_query_returns_empty():
+    """No HTTP call at all when query is blank."""
+    with _patched_urlopen(lambda *a, **kw: (_ for _ in ()).throw(AssertionError("urlopen called"))):
+        c = SpotifyClient("cid", "secret")
+        assert c.search_top_n("", kind=None) == []
+        assert c.search_top_n("   ", kind="track") == []
+
+
 def test_unspecified_kind_uses_single_multi_type_request():
     """kind=None → one call with type=artist,album,track,playlist."""
     seen_types: list[str] = []

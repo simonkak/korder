@@ -126,12 +126,34 @@ def _spotify_play_query(query: str, kind: str) -> None:
 _VALID_KINDS = ("album", "track", "artist", "playlist")
 
 
+def _spotify_play_uri(uri: str, narrate_name: str = "") -> None:
+    """Open a specific spotify: URI directly. Used when the LLM picked
+    a result from search_spotify and dispatched with params.uri set —
+    skips the action's internal search since the caller already knows
+    which URI it wants."""
+    if not uri:
+        emit_progress(t("progress_opening_spotify"))
+        _open_uri_via_dbus_or_xdg("spotify:")
+        return
+    name = narrate_name or uri
+    emit_progress(tf("progress_playing", name=name))
+    log.info("Spotify: playing %s (direct URI from search_spotify)", uri)
+    _open_uri_via_dbus_or_xdg(uri)
+
+
 def _spotify_play_op(args: dict) -> tuple | None:
     if not isinstance(args, dict):
         args = {}
-    query = args.get("query", "").strip()
+    uri = (args.get("uri") or "").strip()
+    query = (args.get("query") or "").strip()
     raw_kind = (args.get("kind") or "").strip().lower()
     kind: str | None = raw_kind if raw_kind in _VALID_KINDS else None
+    if uri:
+        # LLM picked a specific result via search_spotify — open it
+        # directly, no internal search. Pass the query along as the
+        # narration name so the OSD shows "Playing <thing>" rather
+        # than the raw URI.
+        return ("callable", lambda u=uri, q=query: _spotify_play_uri(u, q))
     if not query:
         return None  # pending — wait for the next commit as query
     return ("callable", lambda q=query, k=kind: _spotify_play_query(q, k))
@@ -143,23 +165,30 @@ register(Action(
         "Play music on Spotify by looking up a query and starting "
         "playback in the user's default Spotify client. Use ONLY when "
         "the user wants something PLAYED — not when they want "
-        "information about an album / artist (e.g. 'co wiesz o płycie "
-        "X', 'tell me about album X' should be answered conversationally, "
-        "not dispatched here). The word 'Spotify' can appear at the "
-        "START, END, or MIDDLE of the utterance ('Spotify play X', "
-        "'play X on Spotify', 'Odtwórz X w Spotify'). Extract the "
-        "actual subject — the song / album / artist / playlist name — "
-        "into params.query. Strip out 'Spotify', the imperative verb "
-        "(play / zagraj / odtwórz / puść), and any kind cue word; "
-        "everything else is the query, even if it's an English title "
-        "inside a Polish frame.\n"
-        "Set params.kind only when the user gives an explicit cue:\n"
-        "  - 'album' / 'płyta' / 'krążek' → kind='album'\n"
-        "  - 'track' / 'song' / 'utwór' / 'piosenka' → kind='track'\n"
-        "  - 'artist' / 'band' / 'wykonawca' / 'zespół' / 'grupa' → kind='artist'\n"
-        "  - 'playlist' / 'playlista' / 'lista odtwarzania' → kind='playlist'\n"
-        "Otherwise leave kind unset and Spotify will pick the best match "
-        "across all four types based on the query."
+        "information about an album / artist. The word 'Spotify' can "
+        "appear at the START, END, or MIDDLE of the utterance "
+        "('Spotify play X', 'play X on Spotify', 'Odtwórz X w "
+        "Spotify'). Extract the actual subject (song / album / "
+        "artist / playlist name) into params.query — strip out "
+        "'Spotify', the imperative verb (play / zagraj / odtwórz / "
+        "puść), and any kind cue word.\n"
+        "Set params.kind only when the user gives an explicit cue: "
+        "'album' / 'płyta' → 'album'; 'track' / 'utwór' / 'piosenka' "
+        "→ 'track'; 'artist' / 'wykonawca' / 'zespół' → 'artist'; "
+        "'playlist' / 'playlista' → 'playlist'. Otherwise leave kind "
+        "unset.\n"
+        "AMBIGUOUS QUERIES — call search_spotify FIRST. If the query "
+        "could plausibly match multiple things (a common track name "
+        "like 'Numb', a song title that's also a phrase, the user "
+        "said 'play that song from yesterday' and the prior topic "
+        "doesn't fully resolve it), emit tool_calls=[search_spotify] "
+        "with the same query first. The next turn shows the top 5 "
+        "matches; pick the one fitting context and dispatch with "
+        "params.uri = <chosen URI> (and still set params.query for "
+        "narration). Skip the search_spotify call for clear single-"
+        "subject queries — 'Linkin Park', 'Bohemian Rhapsody by "
+        "Queen' — the action's internal search handles those "
+        "without the extra round-trip."
     ),
     triggers={
         "en": [
@@ -181,6 +210,7 @@ register(Action(
         ],
     },
     op_factory=_spotify_play_op,
+    tools=["search_spotify"],
     parameters={
         # query is the primary param — pending-action follow-up text fills it
         "query": {
@@ -197,6 +227,20 @@ register(Action(
                 "What to play. Set only when the user gives an explicit cue "
                 "(e.g. 'album', 'track', 'artist', 'playlist' or their "
                 "equivalents in the user's language). Otherwise omit."
+            ),
+        },
+        # uri is filled when the LLM picked a specific result from
+        # search_spotify. When set, the action skips its internal
+        # search and OpenURIs that result directly.
+        "uri": {
+            "type": "string",
+            "description": (
+                "Spotify URI of a specific result picked from "
+                "search_spotify (e.g. 'spotify:track:7lQ8MOhq6IN2w8E...'). "
+                "Set ONLY after calling search_spotify and choosing "
+                "from its results — not from your own knowledge or "
+                "guesswork. When set, query stays in the params for "
+                "OSD narration ('Playing <query>')."
             ),
         },
     },

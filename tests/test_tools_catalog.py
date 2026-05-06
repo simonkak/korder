@@ -109,6 +109,80 @@ def test_list_active_mpris_players_empty_when_no_services():
         assert get_tool("list_active_mpris_players").executor() == []
 
 
+# ---- search_spotify ------------------------------------------------------
+
+
+def test_search_spotify_proxies_to_client_with_kwargs():
+    """The tool wraps SpotifyClient.search_top_n. Args from the LLM
+    arrive as kwargs; query is required, kind is optional."""
+    from korder.actions import spotify as spotify_action
+    fake_client = type("F", (), {})()
+    captured: list[tuple] = []
+    fake_client.search_top_n = lambda q, kind, n: (
+        captured.append((q, kind, n)) or [
+            {"uri": "spotify:track:abc", "name": "Numb", "kind": "track", "artist": "Linkin Park"},
+        ]
+    )
+    with patch.object(spotify_action, "_get_client", return_value=fake_client):
+        result = get_tool("search_spotify").executor(query="Numb", kind="track")
+    assert captured == [("Numb", "track", 5)]
+    assert result == [
+        {"uri": "spotify:track:abc", "name": "Numb", "kind": "track", "artist": "Linkin Park"},
+    ]
+
+
+def test_search_spotify_strips_whitespace_and_normalizes_kind():
+    """Defensive: the LLM occasionally pads strings or sends the kind
+    in the wrong case. The tool sanitizes both before hitting the
+    client."""
+    from korder.actions import spotify as spotify_action
+    fake_client = type("F", (), {})()
+    captured: list[tuple] = []
+    fake_client.search_top_n = lambda q, kind, n: (
+        captured.append((q, kind, n)) or []
+    )
+    with patch.object(spotify_action, "_get_client", return_value=fake_client):
+        get_tool("search_spotify").executor(query="  Workout  ", kind="PLAYLIST")
+    assert captured == [("Workout", "playlist", 5)]
+
+
+def test_search_spotify_empty_query_short_circuits():
+    """No query → return [] without hitting the client at all. Saves
+    a network round-trip when the LLM accidentally calls with empty
+    args."""
+    from korder.actions import spotify as spotify_action
+    with patch.object(spotify_action, "_get_client") as get_client:
+        result = get_tool("search_spotify").executor(query="")
+    assert result == []
+    get_client.assert_not_called()
+
+
+def test_search_spotify_empty_when_no_credentials():
+    """If the user hasn't configured Spotify API creds, _get_client
+    returns None. The tool returns [] cleanly so the loop just sees
+    no candidates and the action's fallback (open Spotify search UI)
+    handles dispatch."""
+    from korder.actions import spotify as spotify_action
+    with patch.object(spotify_action, "_get_client", return_value=None):
+        result = get_tool("search_spotify").executor(query="anything")
+    assert result == []
+
+
+def test_search_spotify_drops_invalid_kind():
+    """Kind values outside the enum (case-insensitive) get dropped to
+    None — the client then searches across all four types."""
+    from korder.actions import spotify as spotify_action
+    fake_client = type("F", (), {})()
+    captured: list[tuple] = []
+    fake_client.search_top_n = lambda q, kind, n: (
+        captured.append((q, kind, n)) or []
+    )
+    with patch.object(spotify_action, "_get_client", return_value=fake_client):
+        get_tool("search_spotify").executor(query="X", kind="vinyl")
+    # kind="vinyl" isn't valid — passed through as None.
+    assert captured == [("X", None, 5)]
+
+
 # ---- list_open_windows ---------------------------------------------------
 
 

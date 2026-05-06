@@ -158,42 +158,52 @@ def _decode_partial_string(text: str, value_start: int, emit_from: int) -> tuple
     return "".join(out), i, finished
 
 
-def _params_schema_for_action(action) -> dict:
-    """Convert an Action.parameters dict (already JSON-Schema-shaped at
-    the property level) into a full sub-schema for the params object.
-    additionalProperties=False means the model can only emit params the
-    action declares — `confirm` can't appear on a non-confirmable action,
-    and stray keys are rejected at sampling time.
+def _object_schema_from_property_defs(defs: dict) -> dict:
+    """Convert a {name: {type, enum, description}} dict (the shape used
+    by both Action.parameters and Tool.args_schema) into a JSON Schema
+    object with those properties.
 
-    Note on `"required": True` markers in action parameters: tried
-    propagating these to schema-level `required` + `minLength: 1` so
-    the LLM couldn't pick pause_player / resume_player / focus_window
-    without a target. Result: Gemma E4B fabricates a target
-    (`target: "media"`) to satisfy the schema rather than picking the
-    appropriate target-less action (play_pause). Schema constraint
-    optimizes for satisfying-the-shape, not for picking-the-right-
-    action. Description-level guidance turned out to be more
-    effective. The `"required"` marker is read but ignored here for
-    now; left in actions/ as documentation of intent."""
+    additionalProperties=False so the model can only emit keys that
+    are declared — stray fields are rejected at sampling time. Empty
+    input → empty properties → matches `{}` exactly (zero-arg case).
+
+    The "required": True marker that some action params carry is read
+    but NOT propagated to schema-level `required` here. Field log:
+    propagating it to schema caused Gemma E4B to fabricate values
+    (target="media") to satisfy the constraint rather than pick a
+    target-less alternative action (play_pause). Description-level
+    guidance turned out to be more reliable for required-ness."""
     properties: dict = {}
-    for param_name, param_def in action.parameters.items():
-        if not isinstance(param_def, dict):
+    for name, definition in defs.items():
+        if not isinstance(definition, dict):
             continue
         prop: dict = {}
-        if "type" in param_def:
-            prop["type"] = param_def["type"]
+        if "type" in definition:
+            prop["type"] = definition["type"]
         else:
             prop["type"] = "string"
-        if "enum" in param_def:
-            prop["enum"] = list(param_def["enum"])
-        if "description" in param_def:
-            prop["description"] = param_def["description"]
-        properties[param_name] = prop
+        if "enum" in definition:
+            prop["enum"] = list(definition["enum"])
+        if "description" in definition:
+            prop["description"] = definition["description"]
+        properties[name] = prop
     return {
         "type": "object",
         "properties": properties,
         "additionalProperties": False,
     }
+
+
+def _params_schema_for_action(action) -> dict:
+    """Render the params sub-schema for an Action's declared parameters."""
+    return _object_schema_from_property_defs(action.parameters)
+
+
+def _args_schema_for_tool(tool) -> dict:
+    """Render the args sub-schema for a Tool's declared args. Used by
+    the per-tool branches in tool_calls.items so parametric tools
+    constrain the LLM to emit valid arg shapes."""
+    return _object_schema_from_property_defs(tool.args_schema)
 
 
 def _build_response_schema(question_mode: bool = False) -> dict:
@@ -264,21 +274,29 @@ def _build_response_schema(question_mode: bool = False) -> dict:
         # ollama rejects an empty oneOf.
         actions_items = {"type": "object"}
 
-    # Tool-call branch: each call is {name: enum-of-registered-tools, args: object}.
-    # When no tools are registered (e.g. tests with reset registry),
-    # collapse to a simple object so the schema still compiles.
-    tool_names = [t.name for t in all_tools()]
-    if tool_names:
-        tool_calls_items: dict = {
+    # Tool-call branch: per-tool oneOf so the args schema is constrained
+    # PER tool. Without this every tool would accept the same loose
+    # `{}` args object — fine for zero-arg tools but unsafe once
+    # parametric tools (search_spotify(query), screenshot_window(target))
+    # land, where the LLM must emit specific kwargs and the runtime
+    # has to validate them at sampling time.
+    tool_branches = []
+    for tool in all_tools():
+        branch = {
             "type": "object",
             "properties": {
-                "name": {"enum": tool_names},
-                "args": {"type": "object"},
+                "name": {"const": tool.name},
+                "args": _args_schema_for_tool(tool),
             },
             "required": ["name"],
             "additionalProperties": False,
         }
+        tool_branches.append(branch)
+    if tool_branches:
+        tool_calls_items: dict = {"oneOf": tool_branches}
     else:
+        # Defensive: empty registry shouldn't happen at runtime, but
+        # ollama rejects an empty oneOf.
         tool_calls_items = {"type": "object"}
 
     return {
@@ -1276,18 +1294,21 @@ class IntentParser:
             if action is None or not action.tools:
                 continue
             for tool_name in action.tools:
-                # Zero-arg tools dominate the v1 catalogue — sig
-                # for the repetition guard is (name, ()) for those.
-                # When parametric tools land, the forced-call needs
-                # an opinion on what args to pass; for now empty {}
-                # suffices since every registered tool is zero-arg.
+                # Zero-arg tools are forced with empty args. Parametric
+                # tools (anything with a non-empty args_schema) require
+                # the LLM to deliberately pick args — runtime can't
+                # synthesize a sensible default for `query` or `target`
+                # — so they're skipped here. The action's own internal
+                # fallback (e.g. spotify_play's free-form search)
+                # handles the case where the LLM didn't call the tool.
+                tool = get_tool(tool_name)
+                if tool is None:
+                    continue
+                if tool.args_schema:
+                    # Parametric — let the LLM choose to call (or skip).
+                    continue
                 sig = (tool_name, ())
                 if sig in already_seen:
-                    continue
-                if get_tool(tool_name) is None:
-                    # The action references a tool that isn't
-                    # registered. Don't force; let the LLM's
-                    # original dispatch through as-is.
                     continue
                 # Avoid duplicating the same forced call when multiple
                 # actions in the same emission share a tool.
