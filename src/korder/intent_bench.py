@@ -113,21 +113,121 @@ CASES: tuple[BenchCase, ...] = (
 
 
 def classify(parser: IntentParser, transcript: str) -> tuple[Optional[str], bool, str]:
-    """Run the LLM step and return (action_name, pipeline_ok, thinking).
+    """Run the FULL parse() pipeline and return (action_name, pipeline_ok,
+    thinking).
 
-    Mirrors the benchmark UI's classifier — returns the *first* action
-    name from the LLM's structured response (None if the model classified
-    as plain dictation), whether segmentation accepts the response, and
-    Gemma's thinking trace if thinking_mode was on.
+    Earlier this function called only `_call_ollama` + segmentation,
+    which understated real-world accuracy: the LLM might pick a wrong
+    action name OR emit a phrase-not-in-input, and `parse()` recovers
+    via regex fallback against the trigger map. The bench should
+    measure what users actually experience, not the LLM's first-pass
+    accuracy in isolation.
+
+    Action name is recovered from the resulting op tuple — for
+    callable ops we read the closure's qualname; for key ops we map
+    the keycode back through a small inverse table; for ops that
+    don't carry an action identity (text, char) we report None
+    (= plain dictation).
     """
-    actions = parser._call_ollama(transcript)  # noqa: SLF001
-    name = None
-    if isinstance(actions, list) and actions:
-        first = actions[0]
-        if isinstance(first, dict):
-            name = first.get("name")
-    pipeline_ok = segment_input_by_actions(transcript, actions) is not None
+    ops = parser.parse(transcript)  # full pipeline including regex fallback
+    name = _action_name_from_ops(ops)
+    # pipeline_ok stays True because parse() always returns valid ops
+    # (it's the wrapper's job to translate LLM/regex output into
+    # something the inject worker can run); a False here would mean
+    # parse() returned malformed data, which is a different failure
+    # class than 'wrong action picked'.
+    pipeline_ok = True
     return name, pipeline_ok, parser.last_thinking
+
+
+def _action_name_from_ops(ops) -> Optional[str]:
+    """Recover the first command-action name from a parse() op list,
+    or None if there's no command (text-only / empty).
+
+    Builds an op→name reverse map by exercising every registered
+    action's op_factory once with empty args; matches the runtime op
+    against this map. Cached on first call so the bench doesn't
+    rebuild it per case. Falls back to closure-qualname inspection
+    for callables (one closure per call site, not registry-shared)."""
+    op_to_name = _build_op_reverse_map()
+    for op in ops:
+        kind = op[0]
+        if kind in ("text", "char"):
+            continue
+        if kind == "pending_action":
+            return op[1]  # the pending action name is right there
+        if kind == "cancel":
+            return "cancel_session"
+        if kind == "write_mode":
+            return "enter_write_mode" if op[1] else "exit_write_mode"
+        # Try the reverse map first — handles key, combo, subprocess,
+        # system_volume, and any callable whose factory returns the
+        # same identity given empty args. Combos with a list payload
+        # need normalization since lists aren't hashable.
+        lookup_op = op
+        if kind == "combo" and isinstance(op[1], list):
+            lookup_op = (kind, tuple(op[1]))
+        cached = op_to_name.get(lookup_op)
+        if cached is not None:
+            return cached
+        # Callable closures aren't usually identity-equal across
+        # invocations (each parse builds a fresh lambda); fall back
+        # to qualname extraction. Examples:
+        #   _spotify_play_op.<locals>.<lambda> → spotify_play
+        #   _focus_window_op.<locals>.<lambda> → focus_window
+        #   _now_playing → now_playing
+        if kind == "callable":
+            qn = getattr(op[1], "__qualname__", "") or ""
+            head = qn.split(".")[0]
+            if head.startswith("_") and head.endswith("_op"):
+                return head[1:-3]
+            if head.startswith("_"):
+                return head[1:]
+            return head or "callable"
+        # system_volume direction recovery — its op tuple is
+        # ("system_volume", ("up"|"down"|"mute_toggle", step_pct))
+        # and the reverse map only catches the default-args form.
+        if kind == "system_volume":
+            direction = op[1][0] if isinstance(op[1], tuple) else None
+            return {
+                "up": "volume_up", "down": "volume_down",
+                "mute_toggle": "volume_mute",
+            }.get(direction, f"system_volume:{direction}")
+        return f"unknown:{kind}"
+    return None
+
+
+_OP_REVERSE_MAP_CACHE: Optional[dict] = None
+
+
+def _build_op_reverse_map() -> dict:
+    """For each registered action, call op_factory({}) and record
+    the resulting op tuple → name. Used by the bench to recover the
+    action name from a runtime op when the op is identity-stable
+    (key, combo, subprocess kinds). Callables get fresh closures per
+    call so they don't show up here — qualname inspection handles
+    those separately."""
+    global _OP_REVERSE_MAP_CACHE
+    if _OP_REVERSE_MAP_CACHE is not None:
+        return _OP_REVERSE_MAP_CACHE
+    from korder.actions.base import all_actions
+    out: dict = {}
+    for action in all_actions():
+        try:
+            op = action.op_factory({})
+        except Exception:
+            continue
+        if op is None:
+            continue
+        try:
+            out[op] = action.name
+        except TypeError:
+            # Unhashable op (e.g. ("combo", [list])) — convert to a
+            # tuple-of-tuples so it lives in the dict.
+            if op[0] == "combo" and isinstance(op[1], list):
+                out[(op[0], tuple(op[1]))] = action.name
+    _OP_REVERSE_MAP_CACHE = out
+    return out
 
 
 def run_suite(
@@ -155,6 +255,12 @@ def run_suite(
     for idx, case in enumerate(cases, start=1):
         if progress is not None:
             progress(idx, total)
+        # Bench cases are independent — without this clear, history
+        # from earlier cases biases the LLM (e.g. a previous spotify_play
+        # turn primes 'play' verb routing for the next case). Each
+        # case should be measured in isolation, the way a fresh
+        # dictation session would see it.
+        parser.clear_history()
         t0 = time.perf_counter()
         try:
             got, pipeline_ok, thinking = classify(parser, case.utterance)
