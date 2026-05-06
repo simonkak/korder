@@ -234,23 +234,17 @@ register(Action(
         "headphones, HDMI, a Bluetooth device, etc. Use for any "
         "imperative meaning 'route audio elsewhere' (e.g. 'play "
         "through headphones', 'switch audio to Denon', 'output to "
-        "HDMI', or the equivalent in any other language). Extract "
-        "the destination NAME or BRAND the user spoke into "
-        "params.sink_name. Strip out the verb, the words for "
-        "'audio'/'sound', and filler.\n"
-        "CRITICAL — sink_name MUST be the destination words verbatim, "
-        "in the user's spoken language. Do NOT translate, do NOT "
-        "slugify, do NOT canonicalize across languages. PipeWire "
-        "sink descriptions on the user's machine are in their "
-        "system's language; the match depends on the user's literal "
-        "words, not a translated form.\n"
-        "Distinct from bluetooth_connect: that LINKS a paired BT "
-        "device (radio handshake); this picks an output AMONG "
-        "ALREADY-AVAILABLE sinks (which may include a connected BT "
-        "device, HDMI, USB DAC, built-in speakers, etc.). When the "
-        "user wants to establish a fresh BT link, use "
-        "bluetooth_connect; when they just want to redirect audio "
-        "between sinks that already exist, use this."
+        "HDMI', or the equivalent in any other language). Call "
+        "list_audio_sinks first to see the canonical sink names "
+        "available on the user's machine, then put one of those "
+        "literal names into params.sink_name. Distinct from "
+        "bluetooth_connect: that LINKS a paired BT device (radio "
+        "handshake); this picks an output AMONG ALREADY-AVAILABLE "
+        "sinks (which may include a connected BT device, HDMI, USB "
+        "DAC, built-in speakers, etc.). When the user wants to "
+        "establish a fresh BT link, use bluetooth_connect; when "
+        "they just want to redirect audio between sinks that already "
+        "exist, use this."
     ),
     triggers={
         "en": [
@@ -277,14 +271,10 @@ register(Action(
             "type": "string",
             "required": True,
             "description": (
-                "Free-form name of the audio output, VERBATIM in the "
-                "user's spoken language. Whatever they said is what "
-                "this is — never a translation, slug, or "
-                "canonicalized form. Korder fuzzy-matches this "
-                "against PipeWire sinks; partial brand names and "
-                "morphological variants work, so leaving the user's "
-                "wording intact gives the best chance of a hit. "
-                "Required."
+                "Name of the target audio sink. Pick a literal name "
+                "from list_audio_sinks results when possible. If you "
+                "skipped the tool call, use the user's words as-is "
+                "and Korder will fuzzy-match. Required."
             ),
         },
     },

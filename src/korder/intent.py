@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from korder.actions.base import all_actions, get_action
 from korder.actions.parser import split_into_ops
+from korder.tools.base import all_tools, get_tool
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +52,17 @@ class Turn:
 # typical Q&A → follow-up → follow-up patterns without bloating the
 # prompt enough to risk a meaningful latency or accuracy regression.
 _MAX_HISTORY_TURNS = 4
+
+# Hard cap on the LLM tool-call loop within a single parse call. The
+# LLM iterates: emit tool_calls → Korder runs them → results fed back
+# → repeat until LLM emits actions / response. The cap stops a runaway
+# (Gemma chains tools indefinitely) at a worst-case latency of
+# MAX_TOOL_ITERATIONS × per-call latency. Combined with the
+# repetition guard (same tool + same args twice → break), this caps
+# real-world worst-case latency around ~15 s on the local stack and
+# ~5–6 s in the typical 1-tool-call case. Beyond the cap, parse falls
+# back to whatever's been gathered or the regex parser.
+_MAX_TOOL_ITERATIONS = 5
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
 _OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
@@ -249,9 +261,41 @@ def _build_response_schema(question_mode: bool = False) -> dict:
         # ollama rejects an empty oneOf.
         actions_items = {"type": "object"}
 
+    # Tool-call branch: each call is {name: enum-of-registered-tools, args: object}.
+    # When no tools are registered (e.g. tests with reset registry),
+    # collapse to a simple object so the schema still compiles.
+    tool_names = [t.name for t in all_tools()]
+    if tool_names:
+        tool_calls_items: dict = {
+            "type": "object",
+            "properties": {
+                "name": {"enum": tool_names},
+                "args": {"type": "object"},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        }
+    else:
+        tool_calls_items = {"type": "object"}
+
     return {
         "type": "object",
         "properties": {
+            "tool_calls": {
+                "type": "array",
+                "items": tool_calls_items,
+                "description": (
+                    "Calls to read-only context tools BEFORE deciding on "
+                    "an action. Use when filling action params would "
+                    "benefit from current system state (available audio "
+                    "sinks, paired Bluetooth devices, active media "
+                    "players, etc.). Their results will be appended to "
+                    "the next turn's prompt; you can iterate. Leave "
+                    "EMPTY when the input alone gives you everything "
+                    "needed to either dispatch an action or answer "
+                    "directly."
+                ),
+            },
             "actions": {
                 "type": "array",
                 "items": actions_items,
@@ -261,8 +305,8 @@ def _build_response_schema(question_mode: bool = False) -> dict:
                     "questions, small-talk, and questions ABOUT desktop "
                     "state ('which window is active', 'what's playing', "
                     "'co jest otwarte') — those go in `response`, not "
-                    "here. Only populate this when the input is a "
-                    "command that should fire."
+                    "here. Also EMPTY when this turn is a tool-gathering "
+                    "step (tool_calls is non-empty)."
                 ),
             },
             "response": {"type": "string"},
@@ -338,9 +382,24 @@ _SYSTEM_PROMPT = (
     "any language Whisper transcribed.\n"
     "\n"
     "Return ONE JSON object with this exact shape:\n"
-    '  {"actions": [{"phrase": "<verbatim substring of input>", "name": "<action_name>", "params": {...}}],\n'
+    '  {"tool_calls": [{"name": "<tool_name>", "args": {...}}],\n'
+    '   "actions": [{"phrase": "<verbatim substring of input>", "name": "<action_name>", "params": {...}}],\n'
     '   "response": "<optional natural-language reply, same language as input>",\n'
     '   "context": "<short topic phrase, or empty>"}\n'
+    "\n"
+    "Tool-call loop (when system state matters for params):\n"
+    "- Some actions list `[tools: ...]` in the catalogue below. Those "
+    "tools enumerate live system state (audio sinks, paired BT devices, "
+    "media players, etc.). When you'd otherwise have to GUESS a "
+    "verbatim name for a param — particularly when the user named a "
+    "device / output / player in their own words — emit `tool_calls` "
+    "first, leave `actions` empty, and you'll see the tool results in "
+    "the next turn. Then dispatch with the literal name from the "
+    "results. The loop is bounded — don't repeat the same tool with "
+    "the same args twice.\n"
+    "- For actions with no `[tools: ...]` listed, no parametric guess "
+    "needed, or the param is already obvious from the input alone, "
+    "skip tool_calls and dispatch immediately.\n"
     "\n"
     "Rules:\n"
     "- Questions are NOT commands. Interrogative inputs ('what's X?', "
@@ -427,9 +486,34 @@ def _render_action_catalogue(*, show_triggers: bool) -> str:
         if action.parameters:
             param_keys = ", ".join(action.parameters.keys())
             line += f' [params: {param_keys}]'
+        if action.tools:
+            tools_flat = ", ".join(action.tools)
+            line += f' [tools: {tools_flat}]'
         if show_triggers:
             triggers_flat = ", ".join(f'"{t}"' for t in action.all_triggers())
             line += f' (example phrasings: {triggers_flat})'
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _render_tool_catalogue() -> str:
+    """Render the read-only tool catalog the LLM may call to gather
+    context. Tools are advertised in the system prompt (cached prefix)
+    so KV-cache reuse is preserved across turns. Empty string when no
+    tools are registered.
+
+    The format mirrors _render_action_catalogue so the LLM sees both
+    surfaces in a familiar shape: name, description, args (when any).
+    Each tool prints as one line."""
+    tools = all_tools()
+    if not tools:
+        return ""
+    lines = ["Available tools (read-only, optional — call before deciding actions when current system state matters):"]
+    for tool in tools:
+        line = f"- {tool.name}: {tool.description}"
+        if tool.args_schema:
+            arg_keys = ", ".join(tool.args_schema.keys())
+            line += f" [args: {arg_keys}]"
         lines.append(line)
     return "\n".join(lines)
 
@@ -528,18 +612,24 @@ def _build_user_prompt(
     *,
     show_triggers: bool = False,  # accepted for backwards-compat; no longer used here
     windows: list[dict] | None = None,
+    tool_history_block: str = "",
 ) -> str:
     """Per-call user message — only the parts that change per call:
-    history (per turn) + windows (per call) + transcript. The action
-    catalogue moved into the system prompt (see _build_system_prompt)
-    so it's a byte-stable prefix Gemma's KV cache can reuse across
-    turns instead of being rebuilt + re-prefilled every time.
+    history (per turn) + windows (per call) + tool-call results
+    (per loop iteration) + transcript. The action catalogue moved
+    into the system prompt (see _build_system_prompt) so it's a
+    byte-stable prefix Gemma's KV cache can reuse across turns
+    instead of being rebuilt + re-prefilled every time.
 
     Interrogative inputs (input ends with '?') get a short hint
     prepended that nudges the LLM toward the empty-actions / response
     path. The catalogue stays in the cached system prompt either way
     — only this small per-call hint changes — so KV-cache reuse is
     preserved.
+
+    tool_history_block: pre-rendered "Previous tool calls and
+    results" section appended on iterations 2+ of the tool-call
+    loop. Empty on the first iteration (no prior calls yet).
 
     show_triggers is accepted but unused at this layer; it controls
     catalogue rendering, which now happens in _build_system_prompt."""
@@ -556,8 +646,9 @@ def _build_user_prompt(
     return (
         hint
         + history_block
-        + windows_block +
-        f"Now analyze this transcript and return ONLY the JSON object:\n"
+        + windows_block
+        + tool_history_block
+        + f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
         "Output:"
     )
@@ -573,8 +664,9 @@ _SYSTEM_PROMPT_CACHE: dict[bool, str] = {}
 
 def _build_system_prompt(show_triggers: bool = False) -> str:
     """Return the full system prompt: rules + examples + action
-    catalogue. Cached per-show_triggers so calls within a session
-    return the byte-identical string Gemma's KV cache fingerprints.
+    catalogue + tool catalogue. Cached per-show_triggers so calls
+    within a session return the byte-identical string Gemma's KV
+    cache fingerprints.
 
     Used to be just _SYSTEM_PROMPT (rules + examples), with the
     catalogue rebuilt into the user prompt every call. That meant
@@ -582,17 +674,21 @@ def _build_system_prompt(show_triggers: bool = False) -> str:
     same content, fresh hash. Folding the catalogue into the system
     prompt makes the entire 'tools and rules' surface a stable
     prefix the cache can reuse, leaving only history + windows +
-    transcript as the per-call suffix."""
+    tool-results + transcript as the per-call suffix."""
     cached = _SYSTEM_PROMPT_CACHE.get(show_triggers)
     if cached is not None:
         return cached
-    catalogue = _render_action_catalogue(show_triggers=show_triggers)
-    full = (
-        _SYSTEM_PROMPT
-        + "\n\n"
-        + "Available actions:\n"
-        + catalogue
-    )
+    action_catalogue = _render_action_catalogue(show_triggers=show_triggers)
+    tool_catalogue = _render_tool_catalogue()
+    parts = [
+        _SYSTEM_PROMPT,
+        "",
+        "Available actions:",
+        action_catalogue,
+    ]
+    if tool_catalogue:
+        parts.extend(["", tool_catalogue])
+    full = "\n".join(parts)
     _SYSTEM_PROMPT_CACHE[show_triggers] = full
     return full
 
@@ -642,6 +738,12 @@ class IntentParser:
         # explicit subject to bind to, instead of relying on the
         # LLM to extract topic from raw assistant prose.
         self.last_context: str = ""
+        # Tool calls the LLM emitted on the most recent turn — list of
+        # {name, args} dicts. Populated by _call_ollama from the parsed
+        # JSON; consumed by _run_intent_loop to drive iterations.
+        # Empty list when the LLM didn't request any tools (the common
+        # case — fast-path single-call parses).
+        self.last_tool_calls: list[dict] = []
         # Rolling conversation history, fed back into the parser prompt
         # so follow-up questions ('A Polski?' after the France-capital
         # question) resolve against prior turns. Cleared by
@@ -748,7 +850,7 @@ class IntentParser:
         if not transcript:
             return []
         try:
-            actions = self._call_ollama(
+            actions = self._run_intent_loop(
                 transcript,
                 on_partial_response=on_partial_response,
             )
@@ -859,6 +961,7 @@ class IntentParser:
         transcript: str,
         *,
         on_partial_response=None,
+        tool_history_block: str = "",
     ) -> list:
         """Call Gemma and return the parsed actions array.
 
@@ -870,6 +973,12 @@ class IntentParser:
         dispatch). Net perceived-latency saving on conversational
         answers is the time-to-first-token vs full-completion delta.
         For action-only turns the callback never fires.
+
+        tool_history_block: rendered "Previous tool calls and results"
+        section appended to the user prompt on iterations 2+ of the
+        tool-call loop. Empty on iteration 1 (no prior calls). Driven
+        by ``_run_intent_loop`` — direct callers / test mocks can
+        leave this empty.
 
         Routing:
         - thinking_mode on  → /api/chat with messages + format:<schema>
@@ -884,6 +993,7 @@ class IntentParser:
             self._history,
             show_triggers=self.show_triggers_in_prompt,
             windows=windows,
+            tool_history_block=tool_history_block,
         )
         # num_predict capped at 256 — well above any legitimate JSON
         # output (the longest valid response we've seen is ~120 tokens,
@@ -967,6 +1077,10 @@ class IntentParser:
         # default to empty; only an explicit non-empty value carries
         # forward (via _push_turn → next render's 'Current topic:').
         self.last_context = ""
+        # Reset last_tool_calls — the loop driver re-checks this after
+        # every _call_ollama, so stale calls from prior turns must not
+        # leak in.
+        self.last_tool_calls = []
         if isinstance(parsed, dict):
             response_field = parsed.get("response")
             if isinstance(response_field, str) and response_field.strip():
@@ -985,6 +1099,28 @@ class IntentParser:
                     ctx = ctx[:80].rstrip() + "…"
                 self.last_context = ctx
                 log.info("LLM context for %r: %r", transcript, self.last_context)
+            tool_calls_field = parsed.get("tool_calls")
+            if isinstance(tool_calls_field, list):
+                # Filter to well-formed entries — name must be a string,
+                # args must be a dict (default to empty when omitted).
+                clean: list[dict] = []
+                for call in tool_calls_field:
+                    if not isinstance(call, dict):
+                        continue
+                    name = call.get("name")
+                    if not isinstance(name, str) or not name:
+                        continue
+                    args = call.get("args")
+                    if not isinstance(args, dict):
+                        args = {}
+                    clean.append({"name": name, "args": args})
+                self.last_tool_calls = clean
+                if clean:
+                    log.info(
+                        "LLM tool_calls for %r: %r",
+                        transcript,
+                        [(c["name"], c["args"]) for c in clean],
+                    )
             if isinstance(parsed.get("actions"), list):
                 return parsed["actions"]
         if isinstance(parsed, list):
@@ -992,6 +1128,140 @@ class IntentParser:
         if isinstance(parsed, dict) and "phrase" in parsed:
             return [parsed]
         raise ValueError(f"unexpected LLM output shape: {type(parsed).__name__}: {parsed!r}")
+
+    def _run_intent_loop(
+        self,
+        transcript: str,
+        on_partial_response=None,
+    ) -> list:
+        """Iterative LLM call: emit tool_calls → run them → feed results
+        back → repeat until terminal (LLM emits actions / response /
+        nothing).
+
+        Iteration 1 uses ``_call_ollama`` directly so existing test
+        mocks continue to work. Iterations 2+ also go through
+        ``_call_ollama`` but with a populated ``tool_history_block``
+        so the LLM sees prior calls + their results.
+
+        Termination conditions (any one ends the loop):
+          1. LLM emits ``actions`` non-empty → dispatch them.
+          2. LLM emits ``response`` non-empty → conversational answer.
+          3. LLM emits no further tool_calls → all-empty response,
+             let parse() fall through to its existing fallbacks.
+          4. Repetition guard fires (same tool name + same args asked
+             twice in one parse) — break with whatever we have.
+          5. ``_MAX_TOOL_ITERATIONS`` reached — break.
+
+        Tool failures (unknown name, executor raises) don't abort the
+        loop. Their result is recorded as ``{"error": "..."}`` so the
+        LLM sees the failure and can choose differently next iteration.
+        """
+        seen: set[tuple] = set()
+        tool_history: list[tuple[str, dict, object]] = []
+        actions: list = []
+        for iteration in range(_MAX_TOOL_ITERATIONS):
+            history_block = (
+                self._render_tool_history(tool_history) if tool_history else ""
+            )
+            # Streaming partial-response is only useful on the FINAL
+            # iteration (when the LLM commits to a conversational
+            # answer). On intermediate iterations the LLM is still in
+            # tool-gathering mode; streaming bytes there would just be
+            # JSON we'd discard. Wire the callback only on iteration 1
+            # to preserve the existing time-to-first-token behavior;
+            # if the loop iterates, intermediate iterations don't
+            # stream but the final iteration's response is short
+            # enough that it doesn't matter much.
+            cb = on_partial_response if iteration == 0 else None
+            actions = self._call_ollama(
+                transcript,
+                on_partial_response=cb,
+                tool_history_block=history_block,
+            )
+            tool_calls = list(self.last_tool_calls)
+            if actions or self.last_response or not tool_calls:
+                # Terminal state — nothing more to gather.
+                if iteration > 0:
+                    log.info(
+                        "intent loop: terminated after %d tool iteration(s)",
+                        iteration,
+                    )
+                return actions
+            # Repetition guard — protects against Gemma re-asking the
+            # same question in a stuck loop.
+            for call in tool_calls:
+                sig = (call["name"], tuple(sorted(call["args"].items())))
+                if sig in seen:
+                    log.warning(
+                        "intent loop: repeated tool call %s — breaking", sig,
+                    )
+                    return actions
+                seen.add(sig)
+            # Run each tool, append to history
+            for call in tool_calls:
+                name = call["name"]
+                args = call["args"]
+                tool = get_tool(name)
+                if tool is None:
+                    log.warning("intent loop: unknown tool %r", name)
+                    tool_history.append((name, args, {"error": f"unknown tool {name!r}"}))
+                    continue
+                try:
+                    result = tool.executor(**args)
+                except Exception as e:
+                    log.warning("intent loop: tool %s raised: %s", name, e)
+                    result = {"error": str(e)}
+                tool_history.append((name, args, result))
+            log.info(
+                "intent loop: iteration %d ran %d tool(s); continuing",
+                iteration + 1, len(tool_calls),
+            )
+        log.warning(
+            "intent loop: hit MAX_TOOL_ITERATIONS=%d, breaking with current actions",
+            _MAX_TOOL_ITERATIONS,
+        )
+        return actions
+
+    def _render_tool_history(
+        self,
+        history: list[tuple[str, dict, object]],
+    ) -> str:
+        """Format prior tool calls + results as a per-iteration suffix
+        in the user prompt. Bounded length per result so a tool that
+        returns lots of data (e.g. a future screenshot describer)
+        doesn't blow the LLM's context budget.
+
+        Format mirrors the casual call → result shape — the LLM has
+        already seen tool descriptions in the system prompt, so this
+        block just shows what was tried and what came back."""
+        if not history:
+            return ""
+        lines = ["Previous tool calls and results in this parse:"]
+        for name, args, result in history:
+            try:
+                args_str = json.dumps(args, ensure_ascii=False)
+            except (TypeError, ValueError):
+                args_str = str(args)
+            try:
+                result_str = json.dumps(result, ensure_ascii=False)
+            except (TypeError, ValueError):
+                result_str = str(result)
+            # Truncate long results to keep the prompt bounded —
+            # 2000 chars is enough for a typical sink / device list,
+            # which is at most a few dozen entries.
+            if len(result_str) > 2000:
+                result_str = result_str[:2000] + "…"
+            lines.append(f"  Tool: {name}({args_str})")
+            lines.append(f"  Result: {result_str}")
+        lines.extend([
+            "",
+            "Now decide based on the results above:",
+            "- emit `actions` to dispatch (use literal names from the results)",
+            "- emit `tool_calls` for additional info you still need",
+            "- emit `response` to answer the user conversationally",
+            "",
+        ])
+        return "\n".join(lines)
 
     def _consume_stream(self, req, *, on_partial_response) -> tuple[str, str]:
         """Read a streaming ollama response line by line (NDJSON).

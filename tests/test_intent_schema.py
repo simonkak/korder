@@ -17,7 +17,9 @@ def test_response_schema_top_level_shape():
     schema = _build_response_schema()
     assert schema["type"] == "object"
     assert schema["additionalProperties"] is False
-    assert set(schema["properties"]) == {"actions", "response", "context"}
+    # tool_calls is the iterative-loop branch — LLM emits it to
+    # request read-only context tools before deciding on actions.
+    assert set(schema["properties"]) == {"tool_calls", "actions", "response", "context"}
     assert schema["required"] == ["actions"]
 
 
