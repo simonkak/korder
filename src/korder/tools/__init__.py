@@ -8,7 +8,7 @@ Tools are read-only context providers the LLM can request during a
 parse. See ``base.Tool`` for the dataclass shape and ``intent.py`` for
 how the iterative loop dispatches them.
 """
-from korder.tools import base, audio, bluetooth, mpris  # noqa: F401  (self-register)
+from korder.tools import base, audio, bluetooth, mpris, windows  # noqa: F401  (self-register)
 from korder.tools.base import (
     Tool,
     all_tools,

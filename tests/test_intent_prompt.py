@@ -109,102 +109,22 @@ def test_parameterized_action_shows_param_keys_in_catalogue():
     assert "params: query" in cat
 
 
-def test_window_list_block_appears_when_supplied():
-    """When kwin_bridge returns windows, the user prompt grows a
-    'Current windows:' block so the LLM can pick a target verbatim
-    for focus_window / close_window."""
-    from korder.intent import _render_window_list
-    windows = [
-        {"id": "u1", "caption": "PR #27 - Mozilla Firefox", "resourceClass": "firefox", "minimized": False, "active": True},
-        {"id": "u2", "caption": "korder ~ Konsole", "resourceClass": "konsole", "minimized": False},
-        {"id": "u3", "caption": "Spotify", "resourceClass": "spotify", "minimized": True},
-    ]
-    block = _render_window_list(windows)
-    assert "Currently open windows" in block
-    assert "firefox" in block
-    assert "PR #27" in block
-    assert "konsole" in block
-    assert "(minimized)" in block  # the spotify entry is minimized
-    assert "(active)" in block  # firefox is the focused one
-
-
-def test_window_list_marks_active_window_distinctly():
-    """The focused window needs an unambiguous marker so the LLM can
-    answer 'which window is active' without dispatching focus_window."""
-    from korder.intent import _render_window_list
-    windows = [
-        {"id": "u1", "caption": "Tab A", "resourceClass": "firefox", "active": False},
-        {"id": "u2", "caption": "Term", "resourceClass": "konsole", "active": True},
-    ]
-    block = _render_window_list(windows)
-    konsole_line = next(line for line in block.splitlines() if "konsole" in line)
-    firefox_line = next(line for line in block.splitlines() if "firefox" in line)
-    assert "(active)" in konsole_line
-    assert "(active)" not in firefox_line
-
-
-def test_window_list_combines_active_and_minimized_flags():
-    """Active and minimized aren't usually paired, but if a script
-    re-orders them or a window is somehow both, the renderer must
-    not lose either signal."""
-    from korder.intent import _render_window_list
-    windows = [
-        {"id": "u1", "caption": "X", "resourceClass": "app", "active": True, "minimized": True},
-    ]
-    block = _render_window_list(windows)
-    assert "active" in block
-    assert "minimized" in block
-
-
-def test_window_list_block_is_empty_when_no_windows():
-    from korder.intent import _render_window_list
-    assert _render_window_list([]) == ""
-    assert _render_window_list(None) == ""  # type: ignore[arg-type]
-
-
-def test_window_list_skips_unusable_entries():
-    """Defensive: if KWin returned a window with no caption AND no
-    resourceClass, drop it — there's nothing for the LLM to match
-    against."""
-    from korder.intent import _render_window_list
-    windows = [
-        {"id": "u1", "caption": "", "resourceClass": "", "minimized": False},
-        {"id": "u2", "caption": "Real Window", "resourceClass": "app", "minimized": False},
-    ]
-    block = _render_window_list(windows)
-    assert "Real Window" in block
-    # The empty one should not appear; check there's only one bullet line
-    assert block.count("  - ") == 1
-
-
-def test_user_prompt_injects_windows_block_after_history():
-    """Window block sits between history and the transcript so the
-    LLM reads context (history + windows) before the input it must
-    classify."""
+def test_user_prompt_no_longer_carries_windows_block():
+    """Window-list context migrated from always-on injection to the
+    list_open_windows tool. The user prompt should NOT carry any
+    'Currently open windows' block on its own — that data is fetched
+    on demand by the tool-call loop now."""
     user_msg = _build_user_prompt(
         "focus Firefox",
         history=None,
         show_triggers=False,
-        windows=[
-            {"id": "u1", "caption": "GitHub PR", "resourceClass": "firefox", "minimized": False},
-        ],
-    )
-    assert "Currently open windows" in user_msg
-    assert "firefox" in user_msg
-    # The transcript line still arrives at the end
-    assert user_msg.rstrip().endswith("Output:")
-    # Window block must come BEFORE the input line so the LLM sees
-    # context first.
-    win_idx = user_msg.find("Currently open windows")
-    input_idx = user_msg.find("Input: ")
-    assert 0 <= win_idx < input_idx
-
-
-def test_user_prompt_omits_windows_block_when_list_empty():
-    user_msg = _build_user_prompt(
-        "press enter", history=None, show_triggers=False, windows=[]
     )
     assert "Currently open windows" not in user_msg
+    # Confirm no kwarg leaks: passing the old `windows` kwarg should
+    # raise rather than silently ignore.
+    import pytest
+    with pytest.raises(TypeError, match="windows"):
+        _build_user_prompt("focus Firefox", history=None, windows=[])  # type: ignore[call-arg]
 
 
 def test_interrogative_detector_uses_question_mark_only():
@@ -231,7 +151,6 @@ def test_question_input_gets_hint_prepended():
     user_msg = _build_user_prompt(
         "Jak nazywa się aktywne okno?",
         history=None,
-        windows=[{"caption": "GH", "resourceClass": "firefox", "active": True}],
     )
     assert "QUESTION" in user_msg
     # Catalogue stays in system prompt either way
@@ -239,7 +158,7 @@ def test_question_input_gets_hint_prepended():
 
 
 def test_imperative_input_gets_no_hint():
-    user_msg = _build_user_prompt("press enter", history=None, windows=[])
+    user_msg = _build_user_prompt("press enter", history=None)
     assert "QUESTION" not in user_msg
 
 

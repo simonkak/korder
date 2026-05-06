@@ -81,5 +81,6 @@ def test_default_registry_has_expected_tools():
         "list_audio_sinks",
         "list_paired_bluetooth_devices",
         "list_active_mpris_players",
+        "list_open_windows",
     }
     assert expected.issubset(names), f"missing tools: {expected - names}"

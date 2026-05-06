@@ -109,6 +109,49 @@ def test_list_active_mpris_players_empty_when_no_services():
         assert get_tool("list_active_mpris_players").executor() == []
 
 
+# ---- list_open_windows ---------------------------------------------------
+
+
+def test_list_open_windows_passes_through_kwin_bridge_shape():
+    """The tool wraps kwin_bridge.list_windows and re-emits the same
+    {resourceClass, caption, active, minimized} fields the always-on
+    renderer used to consume."""
+    fake_windows = [
+        {"id": "u1", "caption": "Firefox PR", "resourceClass": "firefox", "active": True, "minimized": False},
+        {"id": "u2", "caption": "Konsole", "resourceClass": "konsole", "active": False, "minimized": False},
+        {"id": "u3", "caption": "Spotify", "resourceClass": "spotify", "active": False, "minimized": True},
+    ]
+    with patch("korder.kwin_bridge.list_windows", return_value=fake_windows):
+        result = get_tool("list_open_windows").executor()
+    assert result == [
+        {"resourceClass": "firefox", "caption": "Firefox PR", "active": True, "minimized": False},
+        {"resourceClass": "konsole", "caption": "Konsole", "active": False, "minimized": False},
+        {"resourceClass": "spotify", "caption": "Spotify", "active": False, "minimized": True},
+    ]
+
+
+def test_list_open_windows_filters_unusable_entries():
+    """Windows with neither caption nor resourceClass have nothing for
+    the LLM to match against — drop them. Same defensive filter the
+    old _render_window_list applied."""
+    fake_windows = [
+        {"id": "u1", "caption": "", "resourceClass": "", "active": False, "minimized": False},
+        {"id": "u2", "caption": "Real", "resourceClass": "app", "active": False, "minimized": False},
+    ]
+    with patch("korder.kwin_bridge.list_windows", return_value=fake_windows):
+        result = get_tool("list_open_windows").executor()
+    assert len(result) == 1
+    assert result[0]["caption"] == "Real"
+
+
+def test_list_open_windows_empty_on_failure():
+    with patch(
+        "korder.kwin_bridge.list_windows",
+        side_effect=RuntimeError("dbus down"),
+    ):
+        assert get_tool("list_open_windows").executor() == []
+
+
 def test_list_active_mpris_players_skips_failing_service():
     """A per-service exception shouldn't kill the whole tool — log
     and skip that service, return the others."""

@@ -33,6 +33,14 @@ def test_focus_window_with_empty_target_returns_pending():
     assert action.op_factory({"target": "   "}) is None
 
 
+def test_focus_window_declares_discovery_tool():
+    """The action references list_open_windows so the iterative loop
+    in IntentParser can advertise it on turn 1 (or force-discover
+    when the LLM dispatches without consulting it)."""
+    action = get_action("focus_window")
+    assert "list_open_windows" in action.tools
+
+
 def test_focus_window_strips_whitespace():
     """Common LLM artifact: target = '  Firefox  '. Caller shouldn't
     have to scrub that."""

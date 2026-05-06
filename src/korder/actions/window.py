@@ -77,14 +77,16 @@ register(Action(
         ],
     },
     op_factory=_focus_window_op,
+    tools=["list_open_windows"],
     parameters={
         "target": {
             "type": "string",
             "required": True,
             "description": (
-                "App name or window-title fragment to focus. Examples: "
-                "'Firefox', 'Kate', 'Spotify', 'Firefox How I Chose'. "
-                "Required — without a target Korder asks the user."
+                "App name or window-title fragment to focus. Pick a "
+                "literal name (resourceClass or caption) from "
+                "list_open_windows results so KWin's fuzzy match locks "
+                "onto the right window. Required."
             ),
         },
     },

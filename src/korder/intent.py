@@ -230,8 +230,11 @@ def _build_response_schema(question_mode: bool = False) -> dict:
                     "minLength": 1,
                     "description": (
                         "Conversational answer in the same language "
-                        "as the input. Use the Current windows / "
-                        "history context the user message provides."
+                        "as the input. If the question needs current "
+                        "system state, call the appropriate tool "
+                        "first (e.g. list_open_windows for 'which "
+                        "window is active', list_active_mpris_players "
+                        "for 'what's playing')."
                     ),
                 },
                 "context": {"type": "string"},
@@ -353,13 +356,11 @@ _EXAMPLES_BLOCK = (
     '  "shutdown computer" → {"actions": [{"phrase": "shutdown computer", "name": "shutdown"}], "response": "Are you sure you want to shut down? Say yes or no."}\n'
     '  "shutdown computer yes" → {"actions": [{"phrase": "shutdown computer yes", "name": "shutdown", "params": {"confirm": "yes"}}]}\n'
     '  "what is the capital of France" → {"actions": [], "response": "Paris.", "context": "France"}\n'
-    "  Window / desktop questions are conversational — empty actions, answer in response:\n"
+    "  Window / desktop questions are conversational — empty actions, answer in response.\n"
+    "  Call list_open_windows first when current state matters; the example below shows\n"
+    "  the final-turn shape the user sees, after tool results came back:\n"
     '    "które okno jest aktywne?" → {"actions": [], "response": "Aktualnie aktywne jest Firefox."}\n'
-    '    "które okno jest aktywne." → {"actions": [], "response": "Aktualnie aktywne jest Firefox."}\n'
-    '    "which window is active?" → {"actions": [], "response": "Konsole is active right now."}\n'
-    '    "jakie okna mam otwarte?" → {"actions": [], "response": "Masz otwarte: Firefox, Konsole i Spotify."}\n'
     '    "what windows are open?" → {"actions": [], "response": "Firefox, Konsole, and Spotify are open."}\n'
-    '    "co teraz jest na ekranie?" → {"actions": [], "response": "Aktywny jest Firefox; otwarte też Konsole i Spotify."}\n'
     '  "co powiesz o Budapeszcie?" → {"actions": [], "response": "Budapeszt to piękne miasto...", "context": "Budapeszt"}\n'
     '  "ile to siedem razy osiem" → {"actions": [], "response": "Pięćdziesiąt sześć."}\n'
     '  "czy lubisz kotki?" → {"actions": [], "response": "Tak, lubię kotki — są urocze."}\n'
@@ -454,10 +455,10 @@ _SYSTEM_PROMPT = (
     "as the prior turn.\n"
     "When the user asks ABOUT windows ('which window is active', "
     "'what's open', 'co jest aktywne', 'jakie okna mam otwarte', 'które "
-    "okno jest otwarte'), this is a QUESTION not a command. Emit "
-    "`{\"actions\": []}` and answer in `response` using the 'Current "
-    "windows:' block — name the (active) one when asked which is "
-    "focused; list a few when asked what's open. Do NOT dispatch ANY "
+    "okno jest otwarte'), this is a QUESTION not a command. Call "
+    "list_open_windows in tool_calls first; on the next turn answer in "
+    "`response` using the literal names from the result — the entry "
+    "with `active: true` is the focused window. Do NOT dispatch ANY "
     "window action (focus_window, close_window, show_desktop, "
     "show_overview, tile_window, etc.) for questions. Reserve those "
     "actions for explicit imperatives that command the system to do "
@@ -550,50 +551,6 @@ def _render_history(history: list[Turn]) -> str:
     return "\n".join(lines)
 
 
-def _render_window_list(windows: list[dict]) -> str:
-    """Format an enumerated window list for the LLM prompt. Two uses:
-
-    1. Resolving focus_window / close_window targets — the LLM picks
-       a name verbatim from this block and the action's server-side
-       fuzzy match locks onto the same window.
-    2. Answering factual questions about the desktop ('which window
-       is active', 'what's open right now') from the `response` field
-       — `(active)` marks the focused window so the LLM can quote it
-       directly instead of mis-firing focus_window on a question.
-
-    Empty input returns an empty string so prompts stay tight when no
-    window info is available (KWin not running, bridge timed out)."""
-    if not windows:
-        return ""
-    lines = [
-        "Currently open windows on the user's desktop (informational context — "
-        "use these names to ANSWER 'which window is active / what's open' "
-        "questions in `response`, and to resolve named targets in commands "
-        "like 'focus X'; the (active) one is currently focused):"
-    ]
-    for w in windows:
-        if not isinstance(w, dict):
-            continue
-        klass = (w.get("resourceClass") or "").strip()
-        caption = (w.get("caption") or "").strip()
-        flags = []
-        if w.get("active"):
-            flags.append("active")
-        if w.get("minimized"):
-            flags.append("minimized")
-        suffix = f" ({', '.join(flags)})" if flags else ""
-        if klass and caption:
-            lines.append(f"  - {klass}: {caption}{suffix}")
-        elif klass:
-            lines.append(f"  - {klass}{suffix}")
-        elif caption:
-            lines.append(f"  - {caption}{suffix}")
-    if len(lines) == 1:
-        return ""  # header only — no usable rows
-    lines.append("")
-    return "\n".join(lines)
-
-
 def _looks_interrogative(transcript: str) -> bool:
     """Universal '?'-only question detection. Language-agnostic: any
     Whisper-supported language preserves '?' on rising-intonation
@@ -615,15 +572,14 @@ def _build_user_prompt(
     history: list[Turn] | None = None,
     *,
     show_triggers: bool = False,  # accepted for backwards-compat; no longer used here
-    windows: list[dict] | None = None,
     tool_history_block: str = "",
 ) -> str:
     """Per-call user message — only the parts that change per call:
-    history (per turn) + windows (per call) + tool-call results
-    (per loop iteration) + transcript. The action catalogue moved
-    into the system prompt (see _build_system_prompt) so it's a
-    byte-stable prefix Gemma's KV cache can reuse across turns
-    instead of being rebuilt + re-prefilled every time.
+    history (per turn) + tool-call results (per loop iteration) +
+    transcript. The action catalogue and tool catalogue moved into
+    the system prompt (see _build_system_prompt) so they're a byte-
+    stable prefix Gemma's KV cache can reuse across turns instead
+    of being rebuilt + re-prefilled every time.
 
     Interrogative inputs (input ends with '?') get a short hint
     prepended that nudges the LLM toward the empty-actions / response
@@ -635,22 +591,28 @@ def _build_user_prompt(
     results" section appended on iterations 2+ of the tool-call
     loop. Empty on the first iteration (no prior calls yet).
 
+    Window-list context that used to live here moved out — when the
+    LLM needs the current windows (focus_window targeting, or to
+    answer 'which is open?') it calls list_open_windows in
+    tool_calls and the tool dispatcher feeds the result back via
+    tool_history_block on the next iteration.
+
     show_triggers is accepted but unused at this layer; it controls
     catalogue rendering, which now happens in _build_system_prompt."""
     history_block = _render_history(history or [])
-    windows_block = _render_window_list(windows or [])
     hint = ""
     if _looks_interrogative(transcript):
         hint = (
             "Note: input ends with '?'. This is a QUESTION — emit "
             "`{\"actions\": []}` and answer in `response` (same "
-            "language as input) using the windows / history context.\n"
+            "language as input). If the answer needs current system "
+            "state (open windows, active player, etc.), call the "
+            "appropriate tool first.\n"
             "\n"
         )
     return (
         hint
         + history_block
-        + windows_block
         + tool_history_block
         + f"Now analyze this transcript and return ONLY the JSON object:\n"
         f"Input: {json.dumps(transcript, ensure_ascii=False)}\n"
@@ -928,27 +890,6 @@ class IntentParser:
         log.info("segmented ops: %r", ops)
         return ops
 
-    def _fetch_window_list(self) -> list[dict]:
-        """Synchronously pull the current window list from KWin via
-        the kwin_bridge. Returns [] on any failure — non-Plasma
-        environment, KWin not running, bridge timeout — so the prompt
-        cleanly omits the `Current windows:` block when context isn't
-        available. The fetch costs a single KWin script round-trip
-        plus a brief D-Bus callback wait (typical 50-150 ms); accepted
-        on every parse call so the LLM always sees fresh names for
-        focus_window / close_window targeting and for 'which window'
-        question answering. 1 s timeout absorbs occasional KWin lag
-        without blocking voice flow noticeably."""
-        try:
-            from korder import kwin_bridge
-            windows = kwin_bridge.list_windows(timeout_s=1.0)
-            if windows:
-                log.info("intent: window list has %d entries", len(windows))
-            return windows
-        except Exception as e:
-            log.warning("intent: window list fetch failed: %s", e)
-            return []
-
     def _format_constraint(self, question_mode: bool = False):
         """Pick the format constraint for this call. Schema mode wins
         when enabled — bare format=json is the fallback path so we can
@@ -991,12 +932,10 @@ class IntentParser:
         - thinking_mode off → /api/generate with format:<schema>. Same
           path the bench has used since v1; preserves the measured
           latency profile for the action-dispatch hot path."""
-        windows = self._fetch_window_list()
         user_prompt = _build_user_prompt(
             transcript,
             self._history,
             show_triggers=self.show_triggers_in_prompt,
-            windows=windows,
             tool_history_block=tool_history_block,
         )
         # num_predict capped at 256 — well above any legitimate JSON
