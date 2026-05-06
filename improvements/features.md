@@ -59,7 +59,7 @@ first-class state**. Without those, every common-but-personal command
 - Why an action: ubiquitous. Easy win.
 - Model on: `shortcuts.py`. Add `KEY_S` to `codes.py`.
 
-### Action: `close_window` / `close_tab`
+### ✅ ~~Action: `close_window` / `close_tab`~~ — *partial: `close_window` shipped via KWin script bridge (`src/korder/actions/window.py`); `close_tab` not yet (would still be a `Ctrl+W` combo since per-app tab semantics live inside the focused app, not KWin).*
 - Phrase EN: "close window", "close tab"
 - Phrase PL: "zamknij okno", "zamknij kartę"
 - Op kind: `combo` `[KEY_LALT, KEY_F4]` for window, `[KEY_LCTRL, KEY_W]` for tab. Need new `KEY_F4`, `KEY_W`.
@@ -133,7 +133,7 @@ first-class state**. Without those, every common-but-personal command
   3. Bilingual matching: index `Name[pl]=` and `Name[en]=` entries when present.
 - Files: new `src/korder/actions/launch.py` + a tiny `desktop_index.py` in `src/korder/system/`. ~6h with tests.
 
-### Action: `window_switcher` — "switch to Firefox", "focus my terminal"
+### ✅ ~~Action: `window_switcher` — "switch to Firefox", "focus my terminal"~~ — *Shipped as `focus_window` in `src/korder/actions/window.py`. Token-overlap fuzzy match against window caption + resourceClass runs server-side in a KWin script (no Python round-trip), so multi-word fragments work too ('focus Firefox How I Chose a Linux Distro' picks the right tab among multiple firefoxes). Companion actions also shipped: `close_window`, `minimize_window`, `tile_window`, `next_desktop`, `previous_desktop`, `send_window_to_desktop`, `send_window_to_screen`, `show_overview`, `show_desktop`.*
 - Phrase EN: "switch to Firefox", "focus terminal", "go to Spotify"
 - Phrase PL: "przełącz na Firefoxa", "pokaż terminal", "przejdź do Spotify"
 - Op kind: `subprocess` — `qdbus6 org.kde.kglobalaccel` or KWin's window-list API. `kdotool` (a recent Wayland-friendly clone of xdotool for KWin) provides `kdotool search --class firefox windowactivate`.
@@ -186,7 +186,7 @@ first-class state**. Without those, every common-but-personal command
 - Why an action: GTD / Obsidian-quick-capture pattern. The LLM today would just answer "OK, noted" but nothing actually persists. A real capture sink earns its keep instantly.
 - Files: `src/korder/actions/capture.py`. ~4h.
 
-### Per-app context for the LLM intent prompt
+### ✅ ~~Per-app context for the LLM intent prompt~~ — *Shipped, broader than the original spec. The intent prompt now carries a 'Currently open windows' block listing every normal window with its resourceClass + caption + active flag (`src/korder/intent.py:_render_window_list`, fed by `korder.kwin_bridge`). The active window is marked `(active)` so the LLM can use it as the focused-app signal AND answer 'which window' questions verbatim from the same block. Plumbed via a QtDBus bridge service Korder hosts on the session bus so KWin scripts callDBus the list back synchronously — no per-call shelling out to qdbus.*
 - Detect the focused window's app id (via `qdbus6 org.kde.KWin /KWin org.kde.KWin.activeWindow` or KWin's `getWindowInfo`) and inject it into the intent prompt as `Focused app: <name>`.
 - Why: lets the LLM bias its choices — `select line` is a text-editing intent in a code editor but might mean something different in a media app; `play` in Spotify is unambiguous.
 - Implementation:
