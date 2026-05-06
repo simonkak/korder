@@ -906,21 +906,49 @@ class IntentParser:
             log.info("LLM action phrase not found in input, falling back to regex")
             return split_into_ops(transcript)
 
-        # Second-chance regex backstop: LLM emitted SOMETHING in actions
-        # (so the empty-actions branch above didn't fire), but every
-        # entry got skipped by segmentation — typically because it
-        # lacked a `phrase` field or used a legacy schema like
-        # `{name: 'actions', args: [...]}`. Result is a text-only
-        # ops list, which is wrong for "Odtwórz w Spotify Linkin Park"
-        # and similar utterances where regex would clearly catch the
-        # trigger. Try regex; if it finds something actionable, prefer
-        # that over silently typing the user's command.
-        if actions and ops and all(op[0] == "text" for op in ops):
+        # Second-chance regex backstop. Three trigger conditions, all
+        # signalling "the LLM didn't fully resolve the action and
+        # regex might do better":
+        #
+        # 1. ALL ops are text — happens when LLM emits malformed shapes
+        #    like `{name: 'actions', args: []}` or every entry lacks a
+        #    `phrase`. Original case the backstop covered.
+        # 2. Ops contain a `pending_action` — happens when LLM emits an
+        #    action with empty params and the trailing-text-fill couldn't
+        #    rescue (e.g. LLM picked the subject as the phrase, leaving
+        #    trailing punctuation only). Field log: 'Spotify Play Numb'
+        #    → LLM phrase='Numb' → segmenter ops = [text 'Spotify Play',
+        #    pending spotify_play]. Regex matches 'spotify play' at
+        #    position 0 and pulls 'Numb' from trailing text — strictly
+        #    better than going pending.
+        #
+        # In either case, prefer regex ONLY when it produces strictly
+        # more callable ops than the LLM segmenter and doesn't itself
+        # add new pending actions. Conservative: doesn't swap when both
+        # parsers tied, doesn't swap when regex would also be pending.
+        ops_has_text_only = bool(ops) and all(op[0] == "text" for op in ops)
+        ops_has_pending = any(op[0] == "pending_action" for op in (ops or []))
+        if actions and (ops_has_text_only or ops_has_pending):
             regex_ops = split_into_ops(transcript)
-            if any(op[0] != "text" for op in regex_ops):
+            llm_callables = sum(
+                1 for op in (ops or [])
+                if op[0] not in ("text", "pending_action")
+            )
+            regex_callables = sum(
+                1 for op in regex_ops
+                if op[0] not in ("text", "pending_action")
+            )
+            regex_pendings = sum(
+                1 for op in regex_ops if op[0] == "pending_action"
+            )
+            llm_pendings = sum(
+                1 for op in (ops or []) if op[0] == "pending_action"
+            )
+            if regex_callables > llm_callables and regex_pendings <= llm_pendings:
                 log.info(
-                    "LLM emitted malformed actions; regex caught triggers, using regex: %r",
-                    regex_ops,
+                    "regex produced more callables than LLM segmenter "
+                    "(%d vs %d); using regex: %r",
+                    regex_callables, llm_callables, regex_ops,
                 )
                 return regex_ops
 

@@ -100,3 +100,25 @@ def test_backstop_ignored_when_segmentation_already_produced_action():
     ops = parser.parse("press enter and run it")
     # press_enter once + trailing text — backstop did not double-up.
     assert ops == [("key", 28), ("text", "and run it")]
+
+
+def test_regex_rescues_when_llm_segmenter_goes_pending():
+    """Field log: 'Spotify Play Numb' → Gemma picked phrase='Numb'
+    (the song subject), leaving 'Spotify Play' as junk leading text.
+    Trailing text after 'Numb' was just '.' so the trailing-fill
+    fallback couldn't rescue it; segmenter went pending. Regex
+    matches 'spotify play' at position 0 and pulls 'Numb' from
+    trailing — strictly better. The backstop must swap to regex
+    in this case."""
+    parser = _parser_returning(
+        [{"phrase": "Numb", "name": "spotify_play"}]
+    )
+    ops = parser.parse("Spotify Play Numb")
+    # No pending — regex caught the trigger and dispatched.
+    kinds = [op[0] for op in ops]
+    assert "pending_action" not in kinds, (
+        f"expected regex rescue; got {ops!r}"
+    )
+    assert any(op[0] == "callable" for op in ops), (
+        f"expected a callable from spotify_play; got {ops!r}"
+    )
