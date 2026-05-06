@@ -266,7 +266,19 @@ def _build_response_schema(question_mode: bool = False) -> dict:
                 ),
             },
             "response": {"type": "string"},
-            "context": {"type": "string"},
+            "context": {
+                "type": "string",
+                # Cap kept tight so the LLM can't use this field as a
+                # reasoning scratchpad. Field log: 'Odtwórz Troy Sivan'
+                # produced context='The user wants to play music. The
+                # song/artist is "Tame Impala"...' — a full reasoning
+                # trace and a hallucinated artist name. Without the
+                # cap, that string becomes 'Current topic: ...' in the
+                # next turn's prompt and pollutes follow-up resolution.
+                # 80 chars is enough for proper nouns and short topics
+                # ('Linkin Park', 'Bohemian Rhapsody', 'Budapeszt').
+                "maxLength": 80,
+            },
         },
         "required": ["actions"],
         "additionalProperties": False,
@@ -962,7 +974,16 @@ class IntentParser:
                 log.info("LLM response for %r: %r", transcript, self.last_response)
             context_field = parsed.get("context")
             if isinstance(context_field, str) and context_field.strip():
-                self.last_context = context_field.strip()
+                # Defensive trim: schema caps at 80 chars but a future
+                # ollama / model that ignores maxLength would otherwise
+                # let a reasoning-trace context propagate as 'Current
+                # topic: ...' into the next prompt's history block,
+                # poisoning follow-up resolution. Drop sentences (any
+                # internal '.') and clamp length.
+                ctx = context_field.strip().split(".")[0].strip()
+                if len(ctx) > 80:
+                    ctx = ctx[:80].rstrip() + "…"
+                self.last_context = ctx
                 log.info("LLM context for %r: %r", transcript, self.last_context)
             if isinstance(parsed.get("actions"), list):
                 return parsed["actions"]
