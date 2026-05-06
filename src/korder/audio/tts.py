@@ -61,11 +61,46 @@ def _voice_files(voice_id: str) -> tuple[Path, Path] | None:
     return None
 
 
+# Letter pairs that are far more common in Polish than English. `rz`
+# is essentially Polish-only as a digraph (English has it only in
+# foreign borrowings like 'pretzel'); `cz` is Polish/Czech-only;
+# `sz` is rare enough in English to be a strong signal. Together
+# they catch Polish answers that contain no Polish-only diacritics
+# (ąćęłńóśźż) — the case that previously fell through to the
+# English voice. Field example: 'Wznawiam odtwarzanie' has no
+# diacritics but does contain 'rz' in 'odtwarzanie'.
+_POLISH_DIGRAPHS = ("rz", "cz", "sz", "ść", "dz")
+# Word suffixes that are essentially never English. Caught by
+# checking each whitespace-separated token; `endswith` catches
+# inflections ('odtwarzania' would not end -anie but 'odtwarzanie'
+# does). `-uje` catches verb forms ('wznawiam' and similar via the
+# next layer), `-ość` is a Polish noun ending, etc.
+_POLISH_SUFFIXES = ("anie", "enie", "ego", "ość", "ymi", "ami", "uje", "iem")
+
+
 def _detect_lang(text: str) -> str:
-    """Two-state heuristic mirroring actions/now_playing.py: 'pl' if
-    Polish-only diacritics are present, else 'en'."""
+    """Polish-or-English heuristic. Returns 'pl' when the text is
+    likely Polish, 'en' otherwise. Three layers of evidence in
+    order of strength:
+
+    1. Polish-only diacritics (ąćęłńóśźż) — definitive when present.
+    2. Polish-specific digraphs (rz, sz, cz, ść, dz) — strong signal,
+       almost zero English false-positive rate.
+    3. Polish-specific word suffixes (-anie, -enie, -ość, etc.) —
+       weaker but catches diacritic-free Polish text.
+
+    Returns 'en' only when none of the three fire, which is the
+    actual default for English."""
     if any(ch in text for ch in "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"):
         return "pl"
+    lower = text.lower()
+    if any(d in lower for d in _POLISH_DIGRAPHS):
+        return "pl"
+    for token in lower.split():
+        token = token.strip(".,!?;:\"'()[]")
+        for suffix in _POLISH_SUFFIXES:
+            if token.endswith(suffix) and len(token) > len(suffix) + 1:
+                return "pl"
     return "en"
 
 

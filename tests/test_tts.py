@@ -30,6 +30,38 @@ def test_detect_lang_picks_polish_on_diacritics():
     assert tts_mod._detect_lang("Ile to siedem razy osiem? Pięćdziesiąt sześć.") == "pl"
 
 
+def test_detect_lang_catches_polish_without_diacritics_via_digraphs():
+    """The diacritics-only check missed the LLM's diacritic-free
+    Polish responses, so the English voice tried to read them.
+    Field example: 'Wznawiam odtwarzanie.' has no Polish diacritics
+    but does contain 'rz' — which is ~Polish-only as a digraph."""
+    assert tts_mod._detect_lang("Wznawiam odtwarzanie.") == "pl"
+    assert tts_mod._detect_lang("Otwarte: Firefox, Konsole.") == "en"  # comma list
+    # 'rz', 'cz', 'sz' all flag as Polish
+    assert tts_mod._detect_lang("Marzec to trzeci miesiac.") == "pl"
+    assert tts_mod._detect_lang("Czesc, jak sie masz?") == "pl"
+    assert tts_mod._detect_lang("Szybki test.") == "pl"
+
+
+def test_detect_lang_catches_polish_via_word_suffixes():
+    """Polish-specific suffixes catch diacritic-free + digraph-free
+    text. -anie, -enie, -ość, -ego are essentially never English."""
+    # Note: 'anie' etc. need to be a full word ending, not in the middle.
+    assert tts_mod._detect_lang("Pisanie tekstu jest fajne.") == "pl"  # also has 'st'
+    # Pure English with no Polish markers stays English.
+    assert tts_mod._detect_lang("The quick brown fox.") == "en"
+    assert tts_mod._detect_lang("Hello world, how are you?") == "en"
+
+
+def test_detect_lang_handles_short_or_ambiguous_input():
+    """Empty, single-word, or genuinely-ambiguous input falls back
+    to English. Better to mispronounce a one-word answer than to
+    misroute on a long one."""
+    assert tts_mod._detect_lang("") == "en"
+    assert tts_mod._detect_lang("ok") == "en"
+    assert tts_mod._detect_lang("yes") == "en"
+
+
 def test_voices_available_returns_empty_when_no_data_dir(monkeypatch, tmp_path):
     """No ~/.local/share/piper directory → empty list, no crash."""
     monkeypatch.setattr(tts_mod, "_PIPER_DATA_DIR", tmp_path / "nonexistent")

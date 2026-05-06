@@ -1086,7 +1086,8 @@ class MainWindow(QMainWindow):
         # redundantly. _on_speak_text gives us the MPRIS pause/resume
         # + suppress_when_playing coordination for free.
         if self._tts is not None and not self._is_tts_suppressed():
-            lang = "pl" if any(c in answer for c in "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ") else "en"
+            from korder.audio.tts import _detect_lang
+            lang = _detect_lang(answer)
             self._await_tts_for_answer_reset = True
             self._on_speak_text(answer, lang)
             # Fallback: if playback_finished never fires (engine
@@ -1439,7 +1440,8 @@ class MainWindow(QMainWindow):
         # regardless of system locale because Gemma writes
         # response in the user's input language).
         if self._tts is not None and hint:
-            lang = "pl" if any(c in hint for c in "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ") else "en"
+            from korder.audio.tts import _detect_lang
+            lang = _detect_lang(hint)
             self._on_speak_text(hint, lang)
 
     def _resolve_pending_action(self, action_name: str, param_text: str) -> bool:

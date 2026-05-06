@@ -23,12 +23,11 @@ _NOTIFY_TIMEOUT_S = 3.0
 
 
 def _detect_lang(text: str) -> str:
-    """Two-state heuristic: 'pl' if Polish-only diacritics are present,
-    else 'en'. Good enough for track titles + artist names — gets
-    'Małomiasteczkowy' right without misclassifying 'Stressed Out'."""
-    if any(ch in text for ch in "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"):
-        return "pl"
-    return "en"
+    """Delegate to the canonical detector in audio/tts.py — single
+    source of truth for diacritics / digraphs / suffixes so a
+    detector improvement in one place fixes every caller."""
+    from korder.audio.tts import _detect_lang as _canonical
+    return _canonical(text)
 
 
 def _compose_now_playing() -> tuple[str, str, str] | None:
