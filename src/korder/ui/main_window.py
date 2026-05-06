@@ -270,6 +270,15 @@ class MainWindow(QMainWindow):
         self._partial_in_flight = False
         self._committed_samples = 0
         self._last_partial_norm = ""
+        # Un-normalized form of the most recent partial transcription.
+        # Used by _commit_via_stability to short-circuit re-transcription
+        # when the partial has converged: re-running Whisper on the
+        # silence-trimmed + RMS-normalized version of the same audio
+        # sometimes drifts (Whisper "fluentizes" with more context),
+        # producing a different commit text from the partial the user
+        # already saw on screen. Reusing the stable partial text avoids
+        # that drift entirely.
+        self._last_partial_text = ""
         self._stability_count = 0
         self._partial_timer = QTimer(self)
         self._partial_timer.setInterval(100)
@@ -557,6 +566,15 @@ class MainWindow(QMainWindow):
         self._partial_in_flight = False
         self._committed_samples = 0
         self._last_partial_norm = ""
+        # Un-normalized form of the most recent partial transcription.
+        # Used by _commit_via_stability to short-circuit re-transcription
+        # when the partial has converged: re-running Whisper on the
+        # silence-trimmed + RMS-normalized version of the same audio
+        # sometimes drifts (Whisper "fluentizes" with more context),
+        # producing a different commit text from the partial the user
+        # already saw on screen. Reusing the stable partial text avoids
+        # that drift entirely.
+        self._last_partial_text = ""
         self._stability_count = 0
         self._reset_partial_render_state()
         self._partial_timer.start()
@@ -771,11 +789,18 @@ class MainWindow(QMainWindow):
         norm = _normalize_for_compare(text)
         if norm and norm == self._last_partial_norm:
             self._stability_count += 1
+            # Stash the un-normalized form so _commit_via_stability
+            # can reuse it without re-transcribing. Stored on every
+            # match (not just first) so a fresh capitalization of the
+            # last stable form lands here instead of a stale earlier
+            # one.
+            self._last_partial_text = text
             if self._stability_count >= self.STABILITY_REPEATS:
                 self._commit_via_stability()
         else:
             self._stability_count = 1
             self._last_partial_norm = norm
+            self._last_partial_text = text
 
     def _maybe_render_partial(self, text: str) -> None:
         """Throttled OSD update for streaming partials. If the throttle
@@ -829,12 +854,28 @@ class MainWindow(QMainWindow):
         speech_end, _ = self._detector.find_trailing_silence(new)
         if speech_end < speech_min:
             speech_end = new.size
-        segment = np.ascontiguousarray(new[:speech_end])
         self._committed_samples += speech_end
         self._last_partial_norm = ""
         self._stability_count = 0
         self._reset_partial_render_state()
-        self._submit_transcribe(segment, kind="commit")
+        # Reuse the stable partial text instead of re-transcribing.
+        # The partial saw the same audio as the commit would, but on
+        # the un-trimmed un-normalized version Whisper agreed with
+        # itself on across STABILITY_REPEATS rounds. Re-transcribing
+        # the trimmed/normalized commit audio sometimes flips Whisper's
+        # output (different mel input, slightly different attention,
+        # different decode); the partial's text is the authoritative
+        # signal at this point. Saves ~200-500 ms of latency too.
+        text = self._last_partial_text
+        self._last_partial_text = ""
+        if text:
+            log.info("commit via stability: reusing partial text %r", text)
+            self._on_commit_text(text)
+        else:
+            # No stable partial captured (shouldn't happen if we
+            # reached STABILITY_REPEATS) — fall back to transcription.
+            segment = np.ascontiguousarray(new[:speech_end])
+            self._submit_transcribe(segment, kind="commit")
 
     def _on_partial_fail(self, _msg: str) -> None:
         self._partial_in_flight = False
