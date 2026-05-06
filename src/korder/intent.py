@@ -420,6 +420,12 @@ _SYSTEM_PROMPT = (
     "- If you skip a required tool call, Korder will force the "
     "discovery and re-prompt you anyway, costing an extra round-trip. "
     "Emit tool_calls upfront to keep dispatch fast.\n"
+    "- NEVER report tool RESULTS in `response` unless you actually "
+    "called the tool this parse and saw the data. Don't say \"I found "
+    "X\", \"the available outputs are Y\", \"there are 3 paired "
+    "devices\" etc. without first emitting tool_calls and reading "
+    "the response back. If you're unsure, leave response empty and "
+    "either call the tool or dispatch the action.\n"
     "- For actions WITHOUT `[tools: ...]`, dispatch immediately. The "
     "loop is bounded — don't repeat the same tool with the same args "
     "twice.\n"
@@ -1299,15 +1305,29 @@ class IntentParser:
     ) -> list[dict]:
         """For each action in ``actions`` that declares ``tools`` but
         whose tools haven't been called yet this parse, build a
-        synthetic ``tool_calls`` list that runs each missing tool
-        with empty args. ``already_seen`` is the loop's repetition-
-        guard set; tools already in it are skipped (they've run in
-        a prior iteration of this parse).
+        synthetic ``tool_calls`` list that runs each missing tool.
+        ``already_seen`` is the loop's repetition-guard set; tools
+        already in it are skipped (they've run in a prior iteration).
+
+        Two synthesis strategies depending on the tool:
+
+        1. **Zero-arg tools** (empty args_schema) are forced with
+           ``args: {}``. Used by list_audio_sinks, list_open_windows,
+           etc. — pure state enumerators with no input.
+
+        2. **Parametric tools** synthesize args by name-matching
+           against the action's params. If the action emitted
+           ``params.query`` and the tool declares an ``query`` arg,
+           the value is forwarded. Mirrors the common pattern where
+           an action's discriminator (query, target) is also the
+           tool's primary arg. When no matching keys carry usable
+           values, the parametric tool is skipped — the LLM has to
+           call deliberately or the action's own fallback handles it.
 
         DOES NOT mutate ``already_seen`` — the loop's main repetition
         guard adds sigs as it actually executes them. Pre-adding here
         would cause that guard to immediately reject every forced
-        tool. We only read.
+        tool.
 
         Returns an empty list when every action either has no tools
         or has already had its tools called."""
@@ -1321,25 +1341,44 @@ class IntentParser:
             action = get_action(name)
             if action is None or not action.tools:
                 continue
+            action_params = (
+                entry.get("params") if isinstance(entry.get("params"), dict) else {}
+            )
             for tool_name in action.tools:
-                # Zero-arg tools are forced with empty args. Parametric
-                # tools (anything with a non-empty args_schema) require
-                # the LLM to deliberately pick args — runtime can't
-                # synthesize a sensible default for `query` or `target`
-                # — so they're skipped here. The action's own internal
-                # fallback (e.g. spotify_play's free-form search)
-                # handles the case where the LLM didn't call the tool.
                 tool = get_tool(tool_name)
                 if tool is None:
                     continue
                 if tool.args_schema:
-                    # Parametric — let the LLM choose to call (or skip).
+                    # Parametric — synthesize args from action params
+                    # via name matching.
+                    synthesized: dict = {}
+                    for arg_name in tool.args_schema:
+                        if arg_name in action_params:
+                            value = action_params[arg_name]
+                            if isinstance(value, str) and value.strip():
+                                synthesized[arg_name] = value.strip()
+                            elif isinstance(value, (int, float, bool)):
+                                synthesized[arg_name] = value
+                    if not synthesized:
+                        # No mappable args — runtime can't help here.
+                        continue
+                    sig = (
+                        tool_name,
+                        tuple(sorted(synthesized.items())),
+                    )
+                    if sig in already_seen:
+                        continue
+                    if any(
+                        c["name"] == tool_name and c["args"] == synthesized
+                        for c in forced
+                    ):
+                        continue
+                    forced.append({"name": tool_name, "args": synthesized})
                     continue
+                # Zero-arg path
                 sig = (tool_name, ())
                 if sig in already_seen:
                     continue
-                # Avoid duplicating the same forced call when multiple
-                # actions in the same emission share a tool.
                 if any(c["name"] == tool_name for c in forced):
                     continue
                 forced.append({"name": tool_name, "args": {}})

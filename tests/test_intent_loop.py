@@ -309,15 +309,16 @@ def test_loop_forces_discovery_when_llm_skips_tool_for_bound_action():
     )
 
 
-def test_force_skips_parametric_tools():
-    """Parametric tools (non-empty args_schema) can't be force-called
-    because runtime can't synthesize sensible args. They must be
-    invoked deliberately by the LLM. Zero-arg tools on the same
-    action still get forced normally."""
+def test_force_synthesizes_parametric_args_from_action_params():
+    """Parametric tools used to be skipped by force-on-skip because
+    runtime had no way to synthesize args. Now we name-match: tool
+    arg `query` ← action param `query`. For spotify_play emitted with
+    {query: 'Numb'} and tools=[search_spotify(query)], the runtime
+    forces search_spotify(query='Numb') so the LLM gets results to
+    pick from on the next iteration."""
     saved = list(all_tools())
     reset()
     try:
-        # Register one parametric, one zero-arg tool.
         register_tool(Tool(
             name="zero_arg_stub",
             description="zero-arg",
@@ -330,8 +331,7 @@ def test_force_skips_parametric_tools():
             args_schema={"query": {"type": "string"}},
         ))
 
-        # Build a fake action that references both.
-        from korder.actions.base import Action, register, reset as actions_reset, all_actions as all_actions_, get_action
+        from korder.actions.base import Action, register, reset as actions_reset, all_actions as all_actions_
         saved_actions = list(all_actions_())
         actions_reset()
         register(Action(
@@ -339,19 +339,34 @@ def test_force_skips_parametric_tools():
             description="Test action with both tool kinds",
             triggers={"en": ["test_dual"]},
             op_factory=lambda _args: ("callable", lambda: None),
+            parameters={"query": {"type": "string"}},
             tools=["zero_arg_stub", "parametric_stub"],
         ))
         try:
+            # With non-empty params containing 'query', BOTH tools
+            # are forced — zero-arg with {} and parametric with the
+            # synthesized {query: 'Numb'}.
+            forced = IntentParser._compute_forced_tool_calls(
+                actions=[{"name": "test_dual_tools", "params": {"query": "Numb"}}],
+                already_seen=set(),
+            )
+            by_name = {c["name"]: c["args"] for c in forced}
+            assert by_name == {
+                "zero_arg_stub": {},
+                "parametric_stub": {"query": "Numb"},
+            }, f"unexpected forced calls: {forced!r}"
+
+            # With EMPTY action params, parametric synthesis has
+            # nothing to feed the tool — skip parametric, still
+            # force zero-arg.
             forced = IntentParser._compute_forced_tool_calls(
                 actions=[{"name": "test_dual_tools", "params": {}}],
                 already_seen=set(),
             )
             forced_names = [c["name"] for c in forced]
-            assert "zero_arg_stub" in forced_names, (
-                f"zero-arg tool should be forced; got {forced!r}"
-            )
+            assert "zero_arg_stub" in forced_names
             assert "parametric_stub" not in forced_names, (
-                f"parametric tool should NOT be forced; got {forced!r}"
+                f"parametric tool with no params should not be forced; got {forced!r}"
             )
         finally:
             actions_reset()
