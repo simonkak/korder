@@ -95,6 +95,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_bt_disconnected": "Rozłączono {name}",
         "progress_bt_disconnected_all": "Rozłączono wszystkie urządzenia Bluetooth",
         "progress_bt_disconnect_failed": "Nie udało się rozłączyć {name}",
+        # Audio-output switcher — wpctl set-default + wireplumber routes
+        # active streams to the new default sink automatically.
+        "progress_audio_no_sinks": "Brak dostępnych wyjść audio.",
+        "progress_audio_sink_not_found": "Nie znaleziono wyjścia: {query}",
+        "progress_audio_switching": "Przełączam dźwięk na {name}…",
+        "progress_audio_switched": "Dźwięk na {name}",
+        "progress_audio_already_default": "Dźwięk już idzie przez {name}",
+        "progress_audio_switch_failed": "Nie udało się przełączyć dźwięku na {name}",
         # Tray icon tooltip (Plasma system tray hover label).
         "tray_tooltip_idle": "Korder — transkrypcja głosu",
         "tray_tooltip_wake_listening": "Korder — nasłuchuję słowa aktywującego",
@@ -169,6 +177,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_bt_disconnected": "Disconnected {name}",
         "progress_bt_disconnected_all": "Disconnected all Bluetooth devices",
         "progress_bt_disconnect_failed": "Couldn't disconnect {name}",
+        "progress_audio_no_sinks": "No audio outputs available.",
+        "progress_audio_sink_not_found": "Audio output not found: {query}",
+        "progress_audio_switching": "Switching audio to {name}…",
+        "progress_audio_switched": "Audio on {name}",
+        "progress_audio_already_default": "Audio is already on {name}",
+        "progress_audio_switch_failed": "Couldn't switch audio to {name}",
         "tray_tooltip_idle": "Korder — voice transcription",
         "tray_tooltip_wake_listening": "Korder — listening for wake word",
         "tray_tooltip_dictating": "Korder — recording…",
