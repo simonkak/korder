@@ -866,6 +866,25 @@ class IntentParser:
 
         ops = segment_input_by_actions(transcript, actions)
         if ops is None:
+            # Phrase positioning failed — Gemma sometimes emits an
+            # English `phrase` ("minimize") for a Polish input
+            # ("Zminimalizuj Firefox") even though name + params are
+            # correct. Don't immediately go to regex (which discards
+            # the LLM's params and runs the action with empty params,
+            # yielding wrong behavior on parametric actions like
+            # minimize_window{target} or focus_window{target}).
+            # Instead try a relaxed dispatch: trust the schema-
+            # constrained action names, run their op_factories with
+            # the LLM's params, drop the surrounding text. The
+            # transcript itself doesn't get typed, which is the
+            # correct behavior for command utterances.
+            relaxed_ops = _dispatch_actions_by_name(actions)
+            if relaxed_ops:
+                log.info(
+                    "LLM phrase mismatch — dispatching %d action(s) by name+params: %r",
+                    len(relaxed_ops), relaxed_ops,
+                )
+                return relaxed_ops
             log.info("LLM action phrase not found in input, falling back to regex")
             return split_into_ops(transcript)
 
@@ -1448,6 +1467,52 @@ def _scrub_hallucinated_confirm(transcript: str, actions: list) -> None:
                 confirm, action.get("name"),
             )
             params["confirm"] = ""
+
+
+def _dispatch_actions_by_name(actions: list) -> list[tuple]:
+    """Build an ops list directly from the LLM's actions, ignoring the
+    `phrase` field entirely. Used as a relaxed fallback when phrase
+    positioning failed (e.g. Gemma emitted an English phrase for a
+    Polish input) but the action name + params are still trustworthy.
+
+    The schema constrains `name` to a const enum from the registry,
+    so an unknown name shouldn't appear; we still defend against it
+    to handle the legacy `{type, value}` shape and any future schema
+    drift. Skips entries with no resolvable action.
+
+    Returns [] when no entry produced a usable op — caller falls
+    further down to the regex parser."""
+    if not isinstance(actions, list):
+        return []
+    out: list[tuple] = []
+    for entry in actions:
+        if not isinstance(entry, dict):
+            continue
+        action_name = entry.get("name")
+        # Backward compat with old {type, value} shape.
+        if action_name is None and "type" in entry and "value" in entry:
+            action_name = _legacy_type_value_to_name(entry["type"], entry["value"])
+        if not isinstance(action_name, str) or not action_name:
+            continue
+        action = get_action(action_name)
+        if action is None:
+            # Try the trigger-phrase remap that segment_input_by_actions
+            # uses, in case Gemma emitted a trigger as the name.
+            from korder.actions.parser import _compile_trigger_regex
+            _, phrase_map = _compile_trigger_regex()
+            mapped = phrase_map.get(action_name.lower())
+            if mapped:
+                action = get_action(mapped)
+                action_name = mapped
+            if action is None:
+                continue
+        params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+        op = action.op_factory(params)
+        if op is None and action.parameters:
+            out.append(("pending_action", action_name))
+        elif op is not None:
+            out.append(op)
+    return out
 
 
 def segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | None:

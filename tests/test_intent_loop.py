@@ -329,6 +329,50 @@ def test_loop_does_not_force_when_action_has_no_tools():
     )
 
 
+# ---- relaxed dispatch when phrase mismatches ---------------------------
+
+
+def test_relaxed_dispatch_when_phrase_does_not_match_input():
+    """Field log: 'Zminimalizuj Firefox' → Gemma emitted phrase='minimize'
+    (English) which doesn't appear in the Polish input. Segmenter
+    returned None, code used to fall back to regex (which ran
+    minimize_window with NO target → minimized active Konsole).
+
+    Now the relaxed-dispatch path picks up the schema-validated
+    action name + params even when the phrase can't be located. The
+    target survives, KWin gets the by-name minimize call."""
+    p = IntentParser()
+
+    def side_effect(*args, **kwargs):
+        return _FakeResp({
+            "actions": [
+                {"phrase": "minimize",
+                 "name": "minimize_window",
+                 "params": {"target": "Firefox"}},
+            ],
+        })
+
+    captured: list[str] = []
+    with (
+        patch("korder.intent.urllib.request.urlopen", side_effect=side_effect),
+        patch(
+            "korder.kwin.minimize_window_by_name",
+            side_effect=lambda t: captured.append(t) or True,
+        ),
+        patch("korder.kwin.minimize_active_window") as minimize_active,
+    ):
+        ops = p.parse("Zminimalizuj Firefox.")
+        # Run the callable so the by-name dispatch fires.
+        for op in ops:
+            if op[0] == "callable":
+                op[1]()
+
+    assert captured == ["Firefox"], (
+        f"expected by-name minimize on Firefox; got captured={captured!r} ops={ops!r}"
+    )
+    minimize_active.assert_not_called()
+
+
 # ---- iteration-2 prompt content ----------------------------------------
 
 
