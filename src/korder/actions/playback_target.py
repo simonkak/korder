@@ -255,6 +255,7 @@ register(Action(
         ],
     },
     op_factory=_pause_player_op,
+    tools=["list_active_mpris_players"],
     parameters=_TARGET_PARAM,
 ))
 
@@ -295,5 +296,6 @@ register(Action(
         ],
     },
     op_factory=_resume_player_op,
+    tools=["list_active_mpris_players"],
     parameters=_TARGET_PARAM,
 ))

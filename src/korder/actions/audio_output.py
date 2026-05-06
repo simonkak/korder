@@ -271,6 +271,7 @@ register(Action(
         ],
     },
     op_factory=_switch_op,
+    tools=["list_audio_sinks"],
     parameters={
         "sink_name": {
             "type": "string",

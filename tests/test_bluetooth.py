@@ -114,6 +114,16 @@ def test_bluetooth_actions_registered():
     assert disconnect.parameters["device_name"].get("required") is not True
 
 
+def test_bluetooth_actions_declare_discovery_tool():
+    """Both connect and disconnect reference the paired-devices tool
+    so the iterative loop can advertise it during parameter resolution."""
+    for name in ("bluetooth_connect", "bluetooth_disconnect"):
+        action = get_action(name)
+        assert "list_paired_bluetooth_devices" in action.tools, (
+            f"{name} missing the list_paired_bluetooth_devices tool"
+        )
+
+
 def test_connect_op_with_empty_name_returns_pending():
     action = get_action("bluetooth_connect")
     assert action.op_factory({}) is None

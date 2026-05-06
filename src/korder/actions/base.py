@@ -18,6 +18,12 @@ class Action:
     op_factory: produces the (kind, value) op tuple to execute. Takes a
                 params dict so future parameterized actions (volume_set,
                 workspace_switch) can pass values through.
+    tools: list of tool names (registered in korder.tools) that the
+              LLM may call to gather context BEFORE filling this
+              action's params. The IntentParser advertises these tools
+              when this action is in scope and runs them in the loop
+              when the LLM emits matching tool_calls. Empty default —
+              most actions need no discovery.
 
     Actions that produce spoken output (issue #2) opt in by calling
     ``emit_progress_speak(text, lang)`` from inside their callable —
@@ -30,6 +36,7 @@ class Action:
     triggers: dict[str, list[str]]
     op_factory: Callable[[dict], Op]
     parameters: dict = field(default_factory=dict)  # JSON-schema for params, future use
+    tools: list[str] = field(default_factory=list)
 
     def all_triggers(self) -> list[str]:
         out: list[str] = []

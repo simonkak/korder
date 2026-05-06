@@ -251,6 +251,7 @@ register(Action(
         ],
     },
     op_factory=_connect_op,
+    tools=["list_paired_bluetooth_devices"],
     parameters={
         "device_name": {
             "type": "string",
@@ -293,6 +294,7 @@ register(Action(
         ],
     },
     op_factory=_disconnect_op,
+    tools=["list_paired_bluetooth_devices"],
     parameters={
         "device_name": {
             "type": "string",

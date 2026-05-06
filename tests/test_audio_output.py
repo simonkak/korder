@@ -152,6 +152,13 @@ def test_audio_output_action_registered():
     assert action.parameters["sink_name"].get("required") is True
 
 
+def test_audio_output_action_declares_discovery_tool():
+    """The action references list_audio_sinks so the iterative loop
+    in IntentParser can advertise it on turn 1."""
+    action = get_action("audio_output_switch")
+    assert "list_audio_sinks" in action.tools
+
+
 def test_switch_op_with_empty_name_returns_pending():
     action = get_action("audio_output_switch")
     assert action.op_factory({}) is None
