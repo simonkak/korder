@@ -121,7 +121,7 @@ first-class state**. Without those, every common-but-personal command
 
 ## High value, medium effort (4–12h each)
 
-### Action: `app_launcher` — "open Firefox", "open Konsole", "open my notes"
+### ✅ ~~Action: `app_launcher` — "open Firefox", "open Konsole", "open my notes"~~ — *Shipped in `src/korder/actions/launcher.py`. Hybrid resolution: scan XDG `.desktop` files (cached), token-overlap match against stem + Name + GenericName + Keywords + Comment + Exec basename, with stem matches weighted 2× and gated to ≥4-char tokens to avoid `app`/`kde`/`org` false positives. Confident match → `gtk-launch <stem>` (or `gio launch` fallback). Unresolved → KRunner D-Bus `query()` opens the launcher UI with the term pre-filled for user confirmation. Common case ('open Firefox') launches without UI flash; ambiguous queries fall through to Plasma's launcher.*
 - Phrase EN: "open Firefox", "launch Konsole", "open Spotify", "start Krita"
 - Phrase PL: "otwórz Firefoxa", "uruchom Konsolę", "otwórz Spotify"
 - Op kind: `subprocess` — call `gtk-launch` / `kioclient5 exec` / `gio launch` against the resolved `.desktop` file. Or use `qdbus6 org.kde.krunner` (the Plasma launcher) which already does fuzzy app-name matching.
