@@ -58,7 +58,9 @@ def test_focus_window_strips_whitespace():
 # ---- close_window / minimize_window --------------------------------------
 
 
-def test_close_window_calls_kwin():
+def test_close_window_with_no_target_closes_active():
+    """Bare 'close window' / 'zamknij okno' → operate on whatever's
+    currently focused. Same as before the target param was added."""
     with patch("korder.kwin.close_active_window", return_value=True) as close:
         action = get_action("close_window")
         kind, fn = action.op_factory({})
@@ -67,12 +69,51 @@ def test_close_window_calls_kwin():
     close.assert_called_once_with()
 
 
-def test_minimize_window_calls_kwin():
+def test_minimize_window_with_no_target_minimizes_active():
     with patch("korder.kwin.minimize_active_window", return_value=True) as minimize:
         action = get_action("minimize_window")
         _, fn = action.op_factory({})
         fn()
     minimize.assert_called_once_with()
+
+
+def test_close_window_with_target_closes_named_window():
+    """Field log: 'zminimalizuj okno Firefoxa' minimized the active
+    window because minimize_window had no target. Symmetric fix on
+    close_window — when target is present, route to the by-name
+    helper instead of close_active_window."""
+    captured: list[str] = []
+    with patch(
+        "korder.kwin.close_window_by_name",
+        side_effect=lambda t: captured.append(t) or True,
+    ):
+        action = get_action("close_window")
+        _, fn = action.op_factory({"target": "Firefox"})
+        fn()
+    assert captured == ["Firefox"]
+
+
+def test_minimize_window_with_target_minimizes_named_window():
+    captured: list[str] = []
+    with patch(
+        "korder.kwin.minimize_window_by_name",
+        side_effect=lambda t: captured.append(t) or True,
+    ):
+        action = get_action("minimize_window")
+        _, fn = action.op_factory({"target": "Firefox"})
+        fn()
+    assert captured == ["Firefox"]
+
+
+def test_close_and_minimize_declare_discovery_tool():
+    """Same shape as focus_window — when the LLM emits target it
+    needs to have called list_open_windows first; force-on-skip
+    handles the case where it didn't."""
+    for name in ("close_window", "minimize_window"):
+        action = get_action(name)
+        assert "list_open_windows" in action.tools, (
+            f"{name} missing list_open_windows declaration"
+        )
 
 
 # ---- tile_window ---------------------------------------------------------

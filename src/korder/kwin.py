@@ -274,10 +274,51 @@ def activate_window_by_name(target: str) -> bool:
     the visible tab over a minimized one. Activation uses the
     `workspace.activeWindow = best` setter — verified working on
     Plasma 6 (Plasma 5's `client.activate()` method was removed)."""
+    return _act_on_window_by_name(
+        target,
+        action_js="workspace.activeWindow = best;",
+        # When activating, prefer non-minimized — visible tab over
+        # an already-minimized one is what the user wants.
+        prefer_visible=True,
+    )
+
+
+def minimize_window_by_name(target: str) -> bool:
+    """Find the window matching ``target`` (same fuzzy scoring as
+    ``activate_window_by_name``) and minimize it. Tie-break flipped
+    relative to activate — when two windows match equally, prefer the
+    non-minimized one (minimizing an already-minimized window is a
+    no-op the user didn't ask for)."""
+    return _act_on_window_by_name(
+        target,
+        action_js="best.minimized = true;",
+        prefer_visible=True,
+    )
+
+
+def close_window_by_name(target: str) -> bool:
+    """Find the window matching ``target`` and close it via
+    ``closeWindow()`` (Plasma 6 KWin API). Same fuzzy match as the
+    activate / minimize variants."""
+    return _act_on_window_by_name(
+        target,
+        action_js="best.closeWindow();",
+        prefer_visible=True,
+    )
+
+
+def _act_on_window_by_name(target: str, *, action_js: str, prefer_visible: bool) -> bool:
+    """Shared fuzzy-match-then-act dispatcher for the by-name window
+    helpers. Builds a KWin script that scores every normal window
+    against ``target`` and runs ``action_js`` on the best match.
+    Returns True iff the KWin script ran (not iff a match was made —
+    that's a server-side decision invisible to qdbus)."""
     target = (target or "").strip()
     if not target:
         return False
     target_js = json.dumps(target)
+    tie_break_minimized = "0" if prefer_visible else "0.5"
+    tie_break_visible = "0.5" if prefer_visible else "0"
     js = f"""
     (function() {{
         const target = {target_js};
@@ -292,12 +333,12 @@ def activate_window_by_name(target: str) -> bool:
             const haystackTokens = new Set(haystack.match(/\\w+/g) || []);
             let score = 0;
             targetTokens.forEach(t => {{ if (haystackTokens.has(t)) score++; }});
-            const tieBreak = w.minimized ? 0 : 0.5;
+            const tieBreak = w.minimized ? {tie_break_minimized} : {tie_break_visible};
             const totalScore = score + tieBreak;
             if (totalScore > bestScore) {{ bestScore = totalScore; best = w; }}
         }});
         if (best && bestScore >= 1) {{
-            workspace.activeWindow = best;
+            {action_js}
         }}
     }})();
     """

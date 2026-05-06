@@ -96,53 +96,115 @@ register(Action(
 # ---- close_window / minimize_window --------------------------------------
 
 
-def _close_window() -> None:
+def _close_window(target: str = "") -> None:
+    target = (target or "").strip()
+    if target:
+        if kwin.close_window_by_name(target):
+            emit_progress(f"Closed {target}")
+            log.info("close_window: by-name dispatch for %r", target)
+        else:
+            emit_progress(f"Failed to close {target}")
+            log.warning("close_window: by-name KWin script failed for %r", target)
+        return
     if kwin.close_active_window():
         emit_progress("Closed window")
-        log.info("close_window: dispatched")
+        log.info("close_window: active dispatched")
     else:
         emit_progress("Failed to close window")
         log.warning("close_window: KWin script failed")
 
 
-def _minimize_window() -> None:
+def _minimize_window(target: str = "") -> None:
+    target = (target or "").strip()
+    if target:
+        if kwin.minimize_window_by_name(target):
+            emit_progress(f"Minimized {target}")
+            log.info("minimize_window: by-name dispatch for %r", target)
+        else:
+            emit_progress(f"Failed to minimize {target}")
+            log.warning("minimize_window: by-name KWin script failed for %r", target)
+        return
     if kwin.minimize_active_window():
         emit_progress("Minimized")
-        log.info("minimize_window: dispatched")
+        log.info("minimize_window: active dispatched")
     else:
         emit_progress("Failed to minimize")
         log.warning("minimize_window: KWin script failed")
 
 
+def _close_window_op(args: dict) -> tuple:
+    target = (args or {}).get("target", "")
+    if not isinstance(target, str):
+        target = ""
+    return ("callable", lambda t=target.strip(): _close_window(t))
+
+
+def _minimize_window_op(args: dict) -> tuple:
+    target = (args or {}).get("target", "")
+    if not isinstance(target, str):
+        target = ""
+    return ("callable", lambda t=target.strip(): _minimize_window(t))
+
+
 register(Action(
     name="close_window",
     description=(
-        "Close the currently active window. Use for 'close this window', "
-        "'close the active window', 'zamknij okno', 'zamknij to okno'. "
-        "Targets the focused window — does NOT close a specific app by "
-        "name (that would require focus_window first). Distinct from "
-        "shutdown / cancel / exit_write_mode."
+        "Close a window. With NO target → closes the currently active "
+        "window ('close this window', 'zamknij okno'). With a target "
+        "name in params.target → closes the named window even if it "
+        "isn't focused ('close Firefox', 'zamknij Firefoxa'). When the "
+        "user names a specific app, call list_open_windows first and "
+        "fill target with a literal name from the result. Distinct "
+        "from shutdown / cancel / exit_write_mode."
     ),
     triggers={
         "en": ["close window", "close this window"],
         "pl": ["zamknij okno", "zamknij to okno"],
     },
-    op_factory=lambda _args: ("callable", _close_window),
+    op_factory=_close_window_op,
+    tools=["list_open_windows"],
+    parameters={
+        "target": {
+            "type": "string",
+            "description": (
+                "Optional app name or window-title fragment. Pick a "
+                "literal value from list_open_windows results. Leave "
+                "EMPTY for the bare 'close window' / 'zamknij okno' "
+                "case — that closes whatever's active."
+            ),
+        },
+    },
 ))
 
 
 register(Action(
     name="minimize_window",
     description=(
-        "Minimize the currently active window. Use for 'minimize', "
-        "'minimize this window', 'zminimalizuj', 'zminimalizuj okno'. "
-        "Targets the focused window only."
+        "Minimize a window. With NO target → minimizes the currently "
+        "active window ('minimize', 'zminimalizuj'). With a target "
+        "name in params.target → minimizes the named window even if "
+        "it isn't focused ('minimize Firefox', 'zminimalizuj Firefoxa', "
+        "'Zminimalizuj okno Firefoxa'). When the user names a "
+        "specific app, call list_open_windows first and fill target "
+        "with a literal name from the result."
     ),
     triggers={
         "en": ["minimize", "minimize window"],
         "pl": ["zminimalizuj", "zminimalizuj okno"],
     },
-    op_factory=lambda _args: ("callable", _minimize_window),
+    op_factory=_minimize_window_op,
+    tools=["list_open_windows"],
+    parameters={
+        "target": {
+            "type": "string",
+            "description": (
+                "Optional app name or window-title fragment. Pick a "
+                "literal value from list_open_windows results. Leave "
+                "EMPTY for the bare 'minimize' / 'zminimalizuj' case "
+                "— that minimizes whatever's active."
+            ),
+        },
+    },
 ))
 
 

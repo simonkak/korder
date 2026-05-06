@@ -241,3 +241,39 @@ def test_activate_window_by_name_uses_token_overlap_score():
     assert "workspace.windowList()" in body
     assert "haystackTokens" in body
     assert "workspace.activeWindow = best" in body
+
+
+def test_minimize_window_by_name_runs_minimize_action():
+    """Same fuzzy matcher as activate, different action — the matched
+    window's `minimized` property is set to true."""
+    captured, fake_run = _capture_script_body()
+    with patch("korder.kwin.subprocess.run", side_effect=fake_run):
+        kwin.minimize_window_by_name("Firefox")
+    body = captured["body"]
+    assert "workspace.windowList()" in body
+    assert "best.minimized = true" in body
+    # The activate dispatch must NOT appear when the verb is minimize.
+    assert "workspace.activeWindow = best" not in body
+
+
+def test_close_window_by_name_runs_close_action():
+    """The matched window's `closeWindow()` method is called (Plasma
+    6 KWin scripting API)."""
+    captured, fake_run = _capture_script_body()
+    with patch("korder.kwin.subprocess.run", side_effect=fake_run):
+        kwin.close_window_by_name("Firefox")
+    body = captured["body"]
+    assert "best.closeWindow();" in body
+    assert "workspace.activeWindow = best" not in body
+    assert "best.minimized = true" not in body
+
+
+def test_minimize_close_by_name_empty_target_is_noop():
+    """Empty target → no script runs. Caller routes to the
+    active-window helper instead, never down this path."""
+    with patch("korder.kwin.subprocess.run", side_effect=lambda *a, **k: _ok()) as run:
+        assert kwin.minimize_window_by_name("") is False
+        assert kwin.minimize_window_by_name("   ") is False
+        assert kwin.close_window_by_name("") is False
+        assert kwin.close_window_by_name("   ") is False
+        run.assert_not_called()
