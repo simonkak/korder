@@ -110,6 +110,24 @@ class VolumeDucker:
                 continue
         log.info("ducker: resumed %d MPRIS service(s)", len(services))
 
+    def release_all(self) -> list[str]:
+        """Drop EVERY service from the auto-resume list. Returns the
+        services that were dropped (so the caller can report what
+        they did). Called when the user pauses without naming a
+        target ('Wstrzymaj odtwarzanie', 'pause everything') — the
+        ducker has already paused things at session start, and this
+        signals 'leave them paused on session end' for the whole
+        list. Equivalent to N release(svc) calls but atomic."""
+        with self._lock:
+            services = self._paused_services
+            self._paused_services = []
+        if services:
+            log.info(
+                "ducker: released ALL (%d service(s), user took control)",
+                len(services),
+            )
+        return services
+
     def release(self, service: str) -> None:
         """Drop a service from the auto-resume list mid-session.
         Called when an action (pause_player, resume_player) takes
@@ -155,3 +173,14 @@ def release_from_session_pause(service: str) -> None:
     the ducker hadn't paused this service in the first place."""
     if _active_ducker is not None:
         _active_ducker.release(service)
+
+
+def release_all_session_pauses() -> list[str]:
+    """Tell the active session ducker the user paused EVERYTHING —
+    drop the entire auto-resume list. Returns the dropped service
+    names. Used by pause_player when the LLM picks it without a
+    target on a 'pause everything' utterance ('Wstrzymaj
+    odtwarzanie', 'pause music')."""
+    if _active_ducker is not None:
+        return _active_ducker.release_all()
+    return []

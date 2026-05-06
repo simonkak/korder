@@ -19,7 +19,10 @@ import re
 
 from korder.actions.base import Action, register
 from korder.audio import _mpris
-from korder.audio.ducker import release_from_session_pause
+from korder.audio.ducker import (
+    release_all_session_pauses,
+    release_from_session_pause,
+)
 from korder.ui.progress import emit_progress
 
 log = logging.getLogger(__name__)
@@ -81,15 +84,40 @@ def _resolve_target(target: str, prefer_status: str) -> str | None:
 
 def _do_pause(target: str) -> None:
     if not target:
-        # Refuse to fire without a target. Field log: LLM emitted
-        # pause_player with empty params and phrase='ok' (a 2-char
-        # substring of 'okno' in the Polish input 'które okno jest');
-        # the previous "no target → pause whatever's Playing" fallback
-        # silently killed Spotify on a question that wasn't even a
-        # command. Bare pause/play belongs on play_pause; pause_player
-        # is the targeted variant by design.
-        emit_progress("pause_player: no target")
-        log.info("pause_player: refusing — empty target")
+        # No-target pause: claim ownership of everything the dictation
+        # ducker already paused at session start, so the post-session
+        # restore() leaves them paused. Field log: 'Wstrzymaj
+        # odtwarzanie' got mis-routed to pause_player by the LLM
+        # (should have been play_pause), this path used to refuse
+        # entirely, and the ducker then auto-resumed the music the
+        # user wanted paused. Releasing claims user-intent in line
+        # with what 'pause everything' should mean.
+        released = release_all_session_pauses()
+        if released:
+            names = ", ".join(_mpris.short_player_name(s) for s in released)
+            emit_progress(f"Paused {names}")
+            log.info("pause_player: released %d ducker pauses", len(released))
+            return
+        # Fallback: nothing in the ducker's list (no dictation context,
+        # or dictation but nothing was Playing at start). Pause every
+        # currently-Playing service via direct MPRIS — equivalent to
+        # what the media key would do but with explicit control so
+        # we know what got paused.
+        paused: list[str] = []
+        for svc in _mpris.list_players():
+            try:
+                if _mpris.player_status(svc) == "Playing":
+                    if _mpris.pause_player(svc):
+                        paused.append(svc)
+            except Exception:
+                continue
+        if paused:
+            names = ", ".join(_mpris.short_player_name(s) for s in paused)
+            emit_progress(f"Paused {names}")
+            log.info("pause_player: paused %d service(s) (no target)", len(paused))
+        else:
+            emit_progress("Nothing playing")
+            log.info("pause_player: nothing playing, no-op")
         return
     service = _resolve_target(target, prefer_status="Playing")
     if service is None:
@@ -113,11 +141,38 @@ def _do_pause(target: str) -> None:
 
 def _do_resume(target: str) -> None:
     if not target:
-        # Same rationale as pause_player: don't fall back to "resume
-        # whatever's Paused" without an explicit target. Bare
-        # play/resume belongs on play_pause.
-        emit_progress("resume_player: no target")
-        log.info("resume_player: refusing — empty target")
+        # No-target resume: drop everything from the ducker's auto-
+        # resume list (the session-end restore() would have replayed
+        # them anyway, but the user wants them NOW) and play them
+        # immediately. If nothing's in the ducker list, fall back to
+        # resuming any Paused MPRIS service.
+        released = release_all_session_pauses()
+        played: list[str] = []
+        for svc in released:
+            try:
+                if _mpris.play_player(svc):
+                    played.append(svc)
+            except Exception:
+                continue
+        if played:
+            names = ", ".join(_mpris.short_player_name(s) for s in played)
+            emit_progress(f"Resumed {names}")
+            log.info("resume_player: resumed %d ducker pauses", len(played))
+            return
+        for svc in _mpris.list_players():
+            try:
+                if _mpris.player_status(svc) == "Paused":
+                    if _mpris.play_player(svc):
+                        played.append(svc)
+            except Exception:
+                continue
+        if played:
+            names = ", ".join(_mpris.short_player_name(s) for s in played)
+            emit_progress(f"Resumed {names}")
+            log.info("resume_player: resumed %d service(s) (no target)", len(played))
+        else:
+            emit_progress("Nothing paused")
+            log.info("resume_player: nothing paused, no-op")
         return
     service = _resolve_target(target, prefer_status="Paused")
     if service is None:

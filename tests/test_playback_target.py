@@ -181,18 +181,54 @@ def test_resume_player_op_routes_to_correct_service():
     assert play_calls == [SPOTIFY]
 
 
-def test_pause_player_op_with_empty_target_refuses_to_fire():
-    """Empty target → refuse the action. The previous 'fall back to
-    most-Playing' behavior was destructive: field log showed Korder
-    silently pausing Spotify when the LLM emitted pause_player with
-    empty params on a Polish question fragment ('które okno jest').
-    Bare pause/play belongs on play_pause; pause_player is the
-    targeted variant by design."""
+def test_pause_player_op_with_empty_target_releases_ducker_pauses():
+    """No-target pause: drop the ducker's auto-resume list so the
+    services it paused at session start stay paused on session end.
+    Field log: 'Wstrzymaj odtwarzanie' got mis-routed to pause_player
+    by the LLM with empty params; previous refuse-to-fire behavior
+    let the ducker auto-resume the music the user wanted paused."""
+    from korder.audio.ducker import VolumeDucker, register_active_ducker
+
+    qdbus_calls: list[tuple] = []
+    p1, p2, p3 = _mock_mpris(
+        players=[SPOTIFY],
+        statuses={SPOTIFY: "Playing"},
+        titles={SPOTIFY: "Track"},
+    )
+    with (
+        p1, p2, p3,
+        patch.object(_mpris, "qdbus", side_effect=lambda *a: qdbus_calls.append(a) or ""),
+    ):
+        d = VolumeDucker(enabled=True)
+        d.duck()  # ducker pauses Spotify at "session start"
+        register_active_ducker(d)
+        try:
+            action = get_action("pause_player")
+            _, fn = action.op_factory({})  # no target
+            fn()
+            qdbus_calls.clear()
+            d.restore()  # session end
+        finally:
+            register_active_ducker(None)
+
+    play_targets = [c[0] for c in qdbus_calls if c[-1].endswith(".Play")]
+    assert SPOTIFY not in play_targets, (
+        "no-target pause must keep music paused — ducker should NOT auto-resume"
+    )
+
+
+def test_pause_player_op_with_empty_target_falls_back_to_mpris_pause():
+    """When no ducker is registered (test/headless) but there's
+    something Playing, no-target pause falls back to direct MPRIS
+    pause of Playing services. Same end-result: music stops."""
+    from korder.audio.ducker import register_active_ducker
+
+    register_active_ducker(None)  # no ducker context
     pause_calls: list[str] = []
     p1, p2, p3 = _mock_mpris(
         players=[SPOTIFY, FIREFOX_1],
-        statuses={SPOTIFY: "Paused", FIREFOX_1: "Playing"},
-        titles={SPOTIFY: "Track A", FIREFOX_1: "Tab B"},
+        statuses={SPOTIFY: "Playing", FIREFOX_1: "Paused"},
+        titles={SPOTIFY: "Track", FIREFOX_1: "Tab"},
     )
     with (
         p1, p2, p3,
@@ -201,7 +237,8 @@ def test_pause_player_op_with_empty_target_refuses_to_fire():
         action = get_action("pause_player")
         _, fn = action.op_factory({})
         fn()
-    assert pause_calls == [], "empty target must NOT pause anything"
+    assert SPOTIFY in pause_calls, "must pause the Playing service"
+    assert FIREFOX_1 not in pause_calls, "must not touch the already-Paused one"
 
 
 def test_pause_player_op_no_match_does_not_call_dbus():
