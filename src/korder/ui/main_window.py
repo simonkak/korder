@@ -650,15 +650,35 @@ class MainWindow(QMainWindow):
         self._write_mode = False
         self._emit_tray_state()
         if not transcribe_tail:
+            # System-initiated stop (auto-stop after a command, idle
+            # timeout). The user wasn't asked to provide a param via
+            # the mic; the OSD prompt is gone. Carrying _pending_action
+            # past this point would silently consume the NEXT session's
+            # first utterance as the leftover param. Field log: a
+            # spotify_play that went pending was rescued on retry, but
+            # the next 'hey jarvis' utterance got swallowed by the
+            # stale pending. Match cancel-path behavior. The 20s
+            # timeout in _process_commit remains the within-session
+            # fallback for normal "user paused mid-utterance" cases.
+            self._pending_action = None
             self._status.setText(t("status_idle"))
             self._osd.hide_after(300)
             return
         sr = self._recorder.sample_rate
         remaining = full[self._committed_samples:]
         if remaining.size < int(0.2 * sr) or not self._detector.has_speech(remaining):
+            # User-initiated stop (manual hotkey toggle, ESC) but no
+            # usable audio to transcribe. Same pending-clear rationale
+            # as above — the OSD prompt is closing without the user
+            # supplying the param.
+            self._pending_action = None
             self._status.setText(t("status_idle"))
             self._osd.hide_after(300)
             return
+        # Tail-transcribe path: the trailing audio MIGHT be the user's
+        # param (they finished saying it just as the session closed).
+        # Don't clear pending here — let _process_commit decide whether
+        # the resulting commit fulfills the pending action.
         self._status.setText(t("status_transcribing"))
         self._osd.set_thinking(self._osd._state.prompt or "", t("transcribing"))
         self._submit_transcribe(remaining, kind="commit")
