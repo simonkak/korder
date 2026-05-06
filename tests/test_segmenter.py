@@ -164,3 +164,29 @@ def test_parameterized_action_with_empty_params_returns_pending():
     )
     assert ops is not None
     assert ("pending_action", "spotify_play") in ops
+
+
+def test_segmenter_rejects_too_short_phrase():
+    """Field log: LLM emitted pause_player with phrase='ok' against
+    'które okno jest' — 'ok' is a 2-char substring of 'okno' and the
+    segmenter happily sliced the input around it, firing pause_player
+    on what should have been a no-op question. 3-char minimum kills
+    that class of false-match without rejecting any real trigger."""
+    ops = segment_input_by_actions(
+        "które okno jest",
+        [{"phrase": "ok", "name": "pause_player"}],
+    )
+    # Returning None signals the parse() wrapper to fall back to
+    # regex — same path used for any malformed LLM output.
+    assert ops is None
+
+
+def test_segmenter_accepts_three_char_phrases():
+    """Real triggers like 'tak', 'nie', 'yes' are 3 chars on the
+    boundary. The reject threshold is < 3, not <= 3, so these pass."""
+    ops = segment_input_by_actions(
+        "shutdown computer tak",
+        [{"phrase": "shutdown computer tak", "name": "shutdown",
+          "params": {"confirm": "tak"}}],
+    )
+    assert ops is not None

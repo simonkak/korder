@@ -80,11 +80,20 @@ def _resolve_target(target: str, prefer_status: str) -> str | None:
 
 
 def _do_pause(target: str) -> None:
+    if not target:
+        # Refuse to fire without a target. Field log: LLM emitted
+        # pause_player with empty params and phrase='ok' (a 2-char
+        # substring of 'okno' in the Polish input 'które okno jest');
+        # the previous "no target → pause whatever's Playing" fallback
+        # silently killed Spotify on a question that wasn't even a
+        # command. Bare pause/play belongs on play_pause; pause_player
+        # is the targeted variant by design.
+        emit_progress("pause_player: no target")
+        log.info("pause_player: refusing — empty target")
+        return
     service = _resolve_target(target, prefer_status="Playing")
     if service is None:
-        emit_progress(
-            f"No player matches {target!r}" if target else "Nothing is playing"
-        )
+        emit_progress(f"No player matches {target!r}")
         log.info("pause_player: no match for target=%r", target)
         return
     pretty = _mpris.short_player_name(service)
@@ -103,11 +112,16 @@ def _do_pause(target: str) -> None:
 
 
 def _do_resume(target: str) -> None:
+    if not target:
+        # Same rationale as pause_player: don't fall back to "resume
+        # whatever's Paused" without an explicit target. Bare
+        # play/resume belongs on play_pause.
+        emit_progress("resume_player: no target")
+        log.info("resume_player: refusing — empty target")
+        return
     service = _resolve_target(target, prefer_status="Paused")
     if service is None:
-        emit_progress(
-            f"No player matches {target!r}" if target else "No paused player to resume"
-        )
+        emit_progress(f"No player matches {target!r}")
         log.info("resume_player: no match for target=%r", target)
         return
     pretty = _mpris.short_player_name(service)

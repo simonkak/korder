@@ -1187,6 +1187,19 @@ def segment_input_by_actions(transcript: str, actions: list) -> list[tuple] | No
             action_name = _legacy_type_value_to_name(entry["type"], entry["value"])
         if not isinstance(phrase, str) or not phrase or not isinstance(action_name, str):
             continue
+        # Reject suspiciously short phrases. Field log: LLM emitted
+        # `pause_player` with phrase='ok' against input 'które okno
+        # jest' — 'ok' is a 2-char substring of 'okno' but isn't
+        # meaningfully a trigger for anything. Such phrases have a
+        # high false-match rate against arbitrary words in the input.
+        # 3-char minimum lets through real short triggers ('cofnij',
+        # 'tak', 'nie', 'yes') while killing the substring noise.
+        if len(phrase.strip()) < 3:
+            log.warning(
+                "rejecting LLM action with too-short phrase %r (name=%r)",
+                phrase, action_name,
+            )
+            return None
         action = get_action(action_name)
         if action is None:
             # Gemma sometimes returns a trigger phrase ("resume", "pauza")

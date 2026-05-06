@@ -181,10 +181,13 @@ def test_resume_player_op_routes_to_correct_service():
     assert play_calls == [SPOTIFY]
 
 
-def test_pause_player_op_with_empty_target_picks_playing():
-    """No target → pause whatever is currently Playing. This makes
-    the bare 'pause' utterance still useful via this action — though
-    the LLM should normally route bare 'pause' to play_pause."""
+def test_pause_player_op_with_empty_target_refuses_to_fire():
+    """Empty target → refuse the action. The previous 'fall back to
+    most-Playing' behavior was destructive: field log showed Korder
+    silently pausing Spotify when the LLM emitted pause_player with
+    empty params on a Polish question fragment ('które okno jest').
+    Bare pause/play belongs on play_pause; pause_player is the
+    targeted variant by design."""
     pause_calls: list[str] = []
     p1, p2, p3 = _mock_mpris(
         players=[SPOTIFY, FIREFOX_1],
@@ -198,7 +201,7 @@ def test_pause_player_op_with_empty_target_picks_playing():
         action = get_action("pause_player")
         _, fn = action.op_factory({})
         fn()
-    assert pause_calls == [FIREFOX_1]
+    assert pause_calls == [], "empty target must NOT pause anything"
 
 
 def test_pause_player_op_no_match_does_not_call_dbus():
