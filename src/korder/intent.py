@@ -387,19 +387,23 @@ _SYSTEM_PROMPT = (
     '   "response": "<optional natural-language reply, same language as input>",\n'
     '   "context": "<short topic phrase, or empty>"}\n'
     "\n"
-    "Tool-call loop (when system state matters for params):\n"
-    "- Some actions list `[tools: ...]` in the catalogue below. Those "
-    "tools enumerate live system state (audio sinks, paired BT devices, "
-    "media players, etc.). When you'd otherwise have to GUESS a "
-    "verbatim name for a param — particularly when the user named a "
-    "device / output / player in their own words — emit `tool_calls` "
-    "first, leave `actions` empty, and you'll see the tool results in "
-    "the next turn. Then dispatch with the literal name from the "
-    "results. The loop is bounded — don't repeat the same tool with "
-    "the same args twice.\n"
-    "- For actions with no `[tools: ...]` listed, no parametric guess "
-    "needed, or the param is already obvious from the input alone, "
-    "skip tool_calls and dispatch immediately.\n"
+    "Tool-call loop (when an action lists `[tools: ...]`):\n"
+    "- If the action you're about to emit lists `[tools: ...]` in the "
+    "catalogue below, you MUST call those tools first. Emit "
+    "`tool_calls` (one per listed tool, leaving `args: {}` for zero-"
+    "arg tools), keep `actions` EMPTY, and the next turn will show the "
+    "results. THEN, with the canonical names visible, emit the action.\n"
+    "- The user's words for sink / device / player names are NOT "
+    "canonical — only tool results are. Saying \"głośnik monitora\" "
+    "doesn't mean PipeWire's sink is named \"głośnik monitora\"; the "
+    "real name might be \"Głośniki monitora\" or anything else the "
+    "system advertises. Don't guess; let the tool tell you.\n"
+    "- If you skip a required tool call, Korder will force the "
+    "discovery and re-prompt you anyway, costing an extra round-trip. "
+    "Emit tool_calls upfront to keep dispatch fast.\n"
+    "- For actions WITHOUT `[tools: ...]`, dispatch immediately. The "
+    "loop is bounded — don't repeat the same tool with the same args "
+    "twice.\n"
     "\n"
     "Rules:\n"
     "- Questions are NOT commands. Interrogative inputs ('what's X?', "
@@ -1179,6 +1183,27 @@ class IntentParser:
                 tool_history_block=history_block,
             )
             tool_calls = list(self.last_tool_calls)
+            # Force-discovery on skip: if the LLM emitted actions that
+            # declare tools but didn't call those tools, synthesize
+            # the missing tool_calls and discard the LLM's first-pass
+            # action params. The next iteration will see the canonical
+            # data and re-emit. This is the safety net for Gemma E4B's
+            # tendency to commit to a guess even when an enumeration
+            # would be definitive — Field log: "głośnik monitora" went
+            # to sink_name="monitor speaker" without consulting
+            # list_audio_sinks. The substring resolver rescued that
+            # particular case but the design relies on the LLM seeing
+            # real names, not a fuzzy match downstream.
+            if actions and not tool_calls:
+                forced = self._compute_forced_tool_calls(actions, seen)
+                if forced:
+                    log.info(
+                        "intent loop: LLM emitted action(s) without consulting "
+                        "tools — forcing %d discovery call(s)",
+                        len(forced),
+                    )
+                    tool_calls = forced
+                    actions = []
             if actions or self.last_response or not tool_calls:
                 # Terminal state — nothing more to gather.
                 if iteration > 0:
@@ -1262,6 +1287,56 @@ class IntentParser:
             "",
         ])
         return "\n".join(lines)
+
+    @staticmethod
+    def _compute_forced_tool_calls(
+        actions: list,
+        already_seen: set[tuple],
+    ) -> list[dict]:
+        """For each action in ``actions`` that declares ``tools`` but
+        whose tools haven't been called yet this parse, build a
+        synthetic ``tool_calls`` list that runs each missing tool
+        with empty args. ``already_seen`` is the loop's repetition-
+        guard set; tools already in it are skipped (they've run in
+        a prior iteration of this parse).
+
+        DOES NOT mutate ``already_seen`` — the loop's main repetition
+        guard adds sigs as it actually executes them. Pre-adding here
+        would cause that guard to immediately reject every forced
+        tool. We only read.
+
+        Returns an empty list when every action either has no tools
+        or has already had its tools called."""
+        forced: list[dict] = []
+        for entry in actions:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str):
+                continue
+            action = get_action(name)
+            if action is None or not action.tools:
+                continue
+            for tool_name in action.tools:
+                # Zero-arg tools dominate the v1 catalogue — sig
+                # for the repetition guard is (name, ()) for those.
+                # When parametric tools land, the forced-call needs
+                # an opinion on what args to pass; for now empty {}
+                # suffices since every registered tool is zero-arg.
+                sig = (tool_name, ())
+                if sig in already_seen:
+                    continue
+                if get_tool(tool_name) is None:
+                    # The action references a tool that isn't
+                    # registered. Don't force; let the LLM's
+                    # original dispatch through as-is.
+                    continue
+                # Avoid duplicating the same forced call when multiple
+                # actions in the same emission share a tool.
+                if any(c["name"] == tool_name for c in forced):
+                    continue
+                forced.append({"name": tool_name, "args": {}})
+        return forced
 
     def _consume_stream(self, req, *, on_partial_response) -> tuple[str, str]:
         """Read a streaming ollama response line by line (NDJSON).

@@ -247,6 +247,88 @@ def test_loop_handles_unknown_tool():
             register_tool(tool)
 
 
+# ---- force-on-skip ------------------------------------------------------
+
+
+def test_loop_forces_discovery_when_llm_skips_tool_for_bound_action():
+    """Field-log scenario: Gemma emitted audio_output_switch with a
+    guessed sink_name and NO tool_calls. The runtime should detect
+    that the action lists `[tools: list_audio_sinks]`, run that tool
+    anyway, and re-prompt so the LLM picks a literal sink name."""
+    p = IntentParser()
+    iter_responses = iter([
+        # Iteration 1 — LLM dispatches without consulting tools.
+        _FakeResp({
+            "actions": [
+                {"phrase": "Przełącz dźwięk na głośnik",
+                 "name": "audio_output_switch",
+                 "params": {"sink_name": "monitor speaker"}},
+            ],
+        }),
+        # Iteration 2 — after forced discovery, the LLM re-emits
+        # with a literal name from the tool result.
+        _FakeResp({
+            "actions": [
+                {"phrase": "Przełącz dźwięk na głośnik",
+                 "name": "audio_output_switch",
+                 "params": {"sink_name": "Głośniki monitora"}},
+            ],
+        }),
+    ])
+
+    captured_prompts: list[str] = []
+
+    def fake_urlopen(req, *args, **kwargs):
+        body = json.loads(req.data.decode("utf-8"))
+        captured_prompts.append(body.get("prompt", ""))
+        return next(iter_responses)
+
+    # Mock the actual sink list to avoid hitting wpctl.
+    with (
+        patch("korder.intent.urllib.request.urlopen", side_effect=fake_urlopen),
+        patch(
+            "korder.actions.audio_output._list_sinks",
+            return_value=([(59, "Głośniki monitora"), (95, "Denon DHT-S517")], 95),
+        ),
+    ):
+        ops = p.parse("Przełącz dźwięk na głośnik monitora.")
+
+    # Two iterations: forced after iter 1.
+    assert len(captured_prompts) == 2, (
+        f"expected 2 LLM calls (iter 1 + forced re-prompt); got {len(captured_prompts)}"
+    )
+    # Iter 2 prompt must contain the canonical sink list — that's the
+    # whole point of the force.
+    assert "Głośniki monitora" in captured_prompts[1]
+    assert "list_audio_sinks" in captured_prompts[1]
+    # Final ops must contain a callable (the audio_output_switch
+    # callable factory). The corrected sink_name "Głośniki monitora"
+    # is what reaches the action factory in iter 2.
+    assert any(op[0] == "callable" for op in ops), (
+        f"expected the action to dispatch with corrected params; got {ops!r}"
+    )
+
+
+def test_loop_does_not_force_when_action_has_no_tools():
+    """Actions without `tools=[...]` (the vast majority — press_enter,
+    media keys, dictation) must NOT trigger a forced second iteration.
+    That would tank latency for the common path."""
+    p = IntentParser()
+    call_count = [0]
+
+    def side_effect(*args, **kwargs):
+        call_count[0] += 1
+        return _FakeResp({
+            "actions": [{"phrase": "press enter", "name": "press_enter"}],
+        })
+
+    with patch("korder.intent.urllib.request.urlopen", side_effect=side_effect):
+        p.parse("press enter")
+    assert call_count[0] == 1, (
+        f"non-tool-bound action should single-pass; got {call_count[0]} calls"
+    )
+
+
 # ---- iteration-2 prompt content ----------------------------------------
 
 
