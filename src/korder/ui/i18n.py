@@ -103,6 +103,13 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_audio_switched": "Dźwięk na {name}",
         "progress_audio_already_default": "Dźwięk już idzie przez {name}",
         "progress_audio_switch_failed": "Nie udało się przełączyć dźwięku na {name}",
+        # Vision actions (describe_window) — screenshot + LLM vision +
+        # spoken description.
+        "progress_describe_focusing": "Aktywuję okno {name}…",
+        "progress_describe_capturing": "Robię zrzut okna…",
+        "progress_describe_thinking": "Analizuję obraz…",
+        "progress_describe_capture_failed": "Nie udało się zrobić zrzutu okna.",
+        "progress_describe_failed": "Nie udało się opisać okna.",
         # Tray icon tooltip (Plasma system tray hover label).
         "tray_tooltip_idle": "Korder — transkrypcja głosu",
         "tray_tooltip_wake_listening": "Korder — nasłuchuję słowa aktywującego",
@@ -183,6 +190,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_audio_switched": "Audio on {name}",
         "progress_audio_already_default": "Audio is already on {name}",
         "progress_audio_switch_failed": "Couldn't switch audio to {name}",
+        "progress_describe_focusing": "Focusing {name}…",
+        "progress_describe_capturing": "Capturing window…",
+        "progress_describe_thinking": "Analyzing image…",
+        "progress_describe_capture_failed": "Failed to capture window.",
+        "progress_describe_failed": "Failed to describe window.",
         "tray_tooltip_idle": "Korder — voice transcription",
         "tray_tooltip_wake_listening": "Korder — listening for wake word",
         "tray_tooltip_dictating": "Korder — recording…",
