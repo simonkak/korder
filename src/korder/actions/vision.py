@@ -94,6 +94,241 @@ def _extract_target_from_transcript(transcript: str) -> str:
 _LAST_CAPTURE_DEBUG_PATH = "/tmp/korder_last_capture.png"
 
 
+def _resolve_window_uuid(target: str) -> tuple[str, str]:
+    """Look up the KWin internalId UUID for a window matching ``target``
+    via the existing kwin_bridge window list. Token-overlap match
+    (mirrors KWin's substring matcher). Returns (uuid, friendly_name)
+    on success, ('', '') on failure (target not found, bridge offline)."""
+    try:
+        from korder import kwin_bridge
+        windows = kwin_bridge.list_windows(timeout_s=1.0) or []
+    except Exception:
+        return ("", "")
+    if not windows:
+        return ("", "")
+    target_tokens = {t.lower() for t in re.findall(r"\w+", target)}
+    if not target_tokens:
+        return ("", "")
+    best: tuple[int, dict] | None = None
+    for w in windows:
+        if not isinstance(w, dict):
+            continue
+        klass = (w.get("resourceClass") or "").lower()
+        caption = (w.get("caption") or "").lower()
+        haystack_tokens = set(re.findall(r"\w+", klass + " " + caption))
+        score = 0
+        for t in target_tokens:
+            if t in haystack_tokens:
+                score += 2
+            elif len(t) >= 3:
+                for h in haystack_tokens:
+                    if len(h) >= 3 and (t in h or h in t):
+                        score += 1
+                        break
+        if score > 0 and (best is None or score > best[0]):
+            best = (score, w)
+    if best is None:
+        return ("", "")
+    win = best[1]
+    uuid = (win.get("id") or "").strip()
+    friendly = (win.get("resourceClass") or win.get("caption") or "").strip()
+    return (uuid, friendly)
+
+
+def _capture_window_by_uuid(uuid: str) -> str | None:
+    """Capture a specific window by its KWin internalId UUID via the
+    org.kde.KWin.ScreenShot2 D-Bus interface. No focus change — the
+    window stays where it is. Returns the saved-PNG path or None on
+    any failure (D-Bus not available, KWin doesn't recognize the UUID,
+    write error, empty file).
+
+    Plasma 6 only — ScreenShot2 was introduced in Plasma 5.27 and
+    has been stable since 6.0. The interface returns metadata in a
+    QVariantMap; we don't read it (filename is fixed by our FD)."""
+    try:
+        from PySide6.QtDBus import (
+            QDBusConnection,
+            QDBusInterface,
+            QDBusUnixFileDescriptor,
+        )
+    except ImportError:
+        return None
+    fd, path = tempfile.mkstemp(prefix="korder_kwin_capture_", suffix=".png")
+    try:
+        bus = QDBusConnection.sessionBus()
+        if not bus.isConnected():
+            os.close(fd)
+            os.unlink(path)
+            return None
+        iface = QDBusInterface(
+            "org.kde.KWin",
+            "/org/kde/KWin/ScreenShot2",
+            "org.kde.KWin.ScreenShot2",
+            bus,
+        )
+        if not iface.isValid():
+            os.close(fd)
+            os.unlink(path)
+            return None
+        # CaptureWindow(handle: str, options: dict, pipe: fd) → metadata
+        reply = iface.call(
+            "CaptureWindow",
+            uuid,
+            {},
+            QDBusUnixFileDescriptor(fd),
+        )
+        # KWin has dup'd our FD into its own copy; close ours so the
+        # tempfile inode isn't held open longer than needed.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        # call() returns a QDBusMessage; check for D-Bus-level error.
+        err = reply.errorMessage() if hasattr(reply, "errorMessage") else ""
+        if err:
+            log.warning("ScreenShot2 CaptureWindow error: %s", err)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return None
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            log.warning("ScreenShot2 wrote no data to %s", path)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return None
+        # Stable debug snapshot, same as the spectacle path.
+        try:
+            import shutil
+            shutil.copyfile(path, _LAST_CAPTURE_DEBUG_PATH)
+        except OSError as e:
+            log.warning("describe_window: debug snapshot copy failed: %s", e)
+        return path
+    except Exception as e:
+        log.warning("ScreenShot2 CaptureWindow raised: %s", e)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return None
+
+
+def _capture_target_window(target: str) -> str | None:
+    """Shared target-to-screenshot dispatcher used by every vision-class
+    action (describe_window, read_screen_text, future ones).
+
+    Empty target → captures the currently active window via
+    Spectacle. Named target → tries ScreenShot2's CaptureWindow by
+    UUID first (no focus change); falls back to activate-then-
+    spectacle if UUID lookup fails or ScreenShot2 doesn't return a
+    usable file. Logs which method actually ran so a wrong-window
+    capture is easy to diagnose."""
+    target = (target or "").strip()
+    if not target:
+        path = _capture_active_window()
+        active = _peek_active_window_caption()
+        log.info(
+            "vision capture: method=spectacle-active, active=%r, path=%r",
+            active, _LAST_CAPTURE_DEBUG_PATH if path else "(none)",
+        )
+        return path
+
+    uuid, friendly = _resolve_window_uuid(target)
+    if uuid:
+        path = _capture_window_by_uuid(uuid)
+        if path:
+            log.info(
+                "vision capture: method=screenshot2, target=%r→%r, "
+                "uuid=%s…, path=%r",
+                target, friendly, uuid[:8],
+                _LAST_CAPTURE_DEBUG_PATH,
+            )
+            return path
+        log.info(
+            "vision capture: ScreenShot2 failed for uuid=%s — falling back",
+            uuid[:8] + "…" if uuid else "(none)",
+        )
+    else:
+        log.info(
+            "vision capture: UUID lookup miss for target=%r — falling back",
+            target,
+        )
+
+    # Fallback: activate + spectacle. Same path as before — has the
+    # focus-changing side effect, but works when the bridge is
+    # unavailable or KWin doesn't recognize the UUID.
+    kwin.activate_window_by_name(target)
+    time.sleep(_FOCUS_SETTLE_S)
+    path = _capture_active_window()
+    active = _peek_active_window_caption()
+    log.info(
+        "vision capture: method=spectacle-fallback, active=%r, path=%r",
+        active, _LAST_CAPTURE_DEBUG_PATH if path else "(none)",
+    )
+    return path
+
+
+def _ocr_image(image_path: str, langs: str = "pol+eng") -> str:
+    """Run Tesseract on a screenshot, return the extracted plain
+    text. Empty string on any failure (binary missing, lang pack
+    missing, image unreadable). Polish + English by default — both
+    are commonly installed on a Polish KDE install and Tesseract
+    handles mixed-language pages reasonably."""
+    try:
+        result = subprocess.run(
+            ["tesseract", image_path, "-", "-l", langs],
+            capture_output=True,
+            timeout=30,
+            check=False,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        log.warning("ocr: tesseract failed: %s", e)
+        return ""
+    if result.returncode != 0:
+        log.warning(
+            "ocr: tesseract rc=%d stderr=%r",
+            result.returncode,
+            (result.stderr or "")[:200],
+        )
+        return ""
+    return (result.stdout or "").strip()
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Push ``text`` to the Wayland clipboard via wl-copy. Returns
+    True on success. wl-copy is the canonical Wayland clipboard
+    tool and is already a Korder OS dep (per README)."""
+    if not text:
+        return False
+    try:
+        result = subprocess.run(
+            ["wl-copy"],
+            input=text,
+            capture_output=True,
+            timeout=5,
+            check=False,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        log.warning("clipboard: wl-copy failed: %s", e)
+        return False
+    if result.returncode != 0:
+        log.warning(
+            "clipboard: wl-copy rc=%d stderr=%r",
+            result.returncode,
+            (result.stderr or "")[:200],
+        )
+        return False
+    return True
+
+
 def _peek_active_window_caption() -> str:
     """Best-effort: ask the kwin_bridge which window is currently
     active. Returns 'class: caption' or empty string on any failure.
@@ -260,32 +495,11 @@ def _do_describe_window(target: str) -> None:
     lang = "pl" if locale == "pl" else "en"
     log.info("describe_window: starting, target=%r locale=%s", target, locale)
 
-    # 1. Focus the named window (best-effort). Even if matching fails
-    # KWin returns success-iff-script-ran, so we capture whatever
-    # ends up active and let the vision model describe that.
+    # 1+2. Capture target window (or active if no target).
     if target:
         emit_progress(tf("progress_describe_focusing", name=target))
-        kwin.activate_window_by_name(target)
-        time.sleep(_FOCUS_SETTLE_S)
-
-    # 2. Screenshot active window.
     emit_progress(t("progress_describe_capturing"))
-    t0 = time.time()
-    img_path = _capture_active_window()
-    # Diagnostic: which window did we actually capture? KWin's
-    # active flag in list_windows is the source of truth. If
-    # activate_window_by_name silently failed (target not found, or
-    # focus race), the capture is of the wrong window — and the
-    # vision model's output describes whatever was there. Log it so
-    # mismatches are easy to diagnose without inspecting the PNG.
-    active_caption = _peek_active_window_caption()
-    log.info(
-        "describe_window: capture %s in %.1fs, active=%r, debug=%s",
-        "ok" if img_path else "FAILED",
-        time.time() - t0,
-        active_caption,
-        _LAST_CAPTURE_DEBUG_PATH if img_path else "(none)",
-    )
+    img_path = _capture_target_window(target)
     if img_path is None:
         emit_progress(t("progress_describe_capture_failed"))
         return
@@ -358,6 +572,109 @@ register(Action(
                 "Optional app name or window-title fragment. Pick a "
                 "literal value from list_open_windows results. Empty "
                 "captures whatever is currently active."
+            ),
+        },
+    },
+))
+
+
+# ---- read_screen_text -------------------------------------------------
+
+
+def _do_read_screen_text(target: str) -> None:
+    target = (target or "").strip()
+    locale = current_locale()
+    lang = "pl" if locale == "pl" else "en"
+    log.info("read_screen_text: starting, target=%r locale=%s", target, locale)
+
+    emit_progress(t("progress_describe_capturing"))
+    img_path = _capture_target_window(target)
+    if img_path is None:
+        emit_progress(t("progress_describe_capture_failed"))
+        return
+
+    try:
+        emit_progress(t("progress_ocr_running"))
+        t0 = time.time()
+        text = _ocr_image(img_path)
+        log.info(
+            "read_screen_text: OCR %s in %.1fs (%d chars, %d words)",
+            "ok" if text else "EMPTY",
+            time.time() - t0,
+            len(text),
+            len(text.split()) if text else 0,
+        )
+    finally:
+        try:
+            os.unlink(img_path)
+        except OSError:
+            pass
+
+    if not text:
+        emit_progress(t("progress_ocr_empty"))
+        return
+
+    # Push the full text to the clipboard — that's the primary
+    # output. The user can paste it wherever. Spoken acknowledgement
+    # is brief — "copied N words" — because reading the whole OCR
+    # transcript aloud would be useless for a long article.
+    copied = _copy_to_clipboard(text)
+    if not copied:
+        emit_progress(t("progress_ocr_clipboard_failed"))
+        return
+
+    word_count = len(text.split())
+    if locale == "pl":
+        ack = f"Skopiowano {word_count} słów do schowka."
+    else:
+        ack = f"Copied {word_count} words to clipboard."
+    log.info("read_screen_text: clipboard ok, speaking ack")
+    emit_progress_speak(ack, lang=lang)
+
+
+def _read_screen_text_op(args: dict) -> tuple:
+    target = (args or {}).get("target", "")
+    if not isinstance(target, str):
+        target = ""
+    return ("callable", lambda t=target.strip(): _do_read_screen_text(t))
+
+
+register(Action(
+    name="read_screen_text",
+    description=(
+        "Extract plain text from a window via OCR (Tesseract) and "
+        "push it to the clipboard. Brief spoken acknowledgement — "
+        "the full text isn't read aloud (could be long). Empty "
+        "target → reads the active window. Named target → reads "
+        "that window without changing focus. "
+        "USE for 'read the screen' / 'przeczytaj ekran' / 'OCR' / "
+        "'extract text from X' / 'skopiuj tekst'. "
+        "SKIP for vision-style queries about content meaning — "
+        "that's describe_window."
+    ),
+    triggers={
+        "en": [
+            "read the screen",
+            "read screen",
+            "extract text",
+            "ocr",
+        ],
+        "pl": [
+            "przeczytaj ekran",
+            "skopiuj tekst",
+            "wyciągnij tekst",
+            "wyciagnij tekst",
+        ],
+    },
+    op_factory=_read_screen_text_op,
+    tools=["list_open_windows"],
+    parameters={
+        "target": {
+            "type": "string",
+            "description": (
+                "Optional app name or window-title fragment. Pick a "
+                "literal value from list_open_windows results. Empty "
+                "reads whatever is currently active."
             ),
         },
     },

@@ -110,6 +110,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_describe_thinking": "Analizuję obraz…",
         "progress_describe_capture_failed": "Nie udało się zrobić zrzutu okna.",
         "progress_describe_failed": "Nie udało się opisać okna.",
+        # OCR (read_screen_text)
+        "progress_ocr_running": "Odczytuję tekst z obrazu…",
+        "progress_ocr_empty": "Nie znaleziono tekstu na obrazie.",
+        "progress_ocr_clipboard_failed": "Nie udało się skopiować tekstu do schowka.",
         # Tray icon tooltip (Plasma system tray hover label).
         "tray_tooltip_idle": "Korder — transkrypcja głosu",
         "tray_tooltip_wake_listening": "Korder — nasłuchuję słowa aktywującego",
@@ -195,6 +199,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "progress_describe_thinking": "Analyzing image…",
         "progress_describe_capture_failed": "Failed to capture window.",
         "progress_describe_failed": "Failed to describe window.",
+        "progress_ocr_running": "Reading text from image…",
+        "progress_ocr_empty": "No text found in the image.",
+        "progress_ocr_clipboard_failed": "Failed to copy text to clipboard.",
         "tray_tooltip_idle": "Korder — voice transcription",
         "tray_tooltip_wake_listening": "Korder — listening for wake word",
         "tray_tooltip_dictating": "Korder — recording…",

@@ -120,6 +120,149 @@ def test_target_fill_skipped_when_action_is_not_describe_window():
     assert override is None
 
 
+# ---- read_screen_text action -------------------------------------------
+
+
+def test_read_screen_text_action_registered():
+    action = get_action("read_screen_text")
+    assert action is not None
+    assert "target" in action.parameters
+    assert "list_open_windows" in action.tools
+
+
+def test_read_screen_text_full_flow_copies_and_speaks_ack():
+    """Happy path: capture → tesseract → wl-copy → speak ack with
+    word count."""
+    spoken: list[tuple[str, str]] = []
+    clipboard: list[str] = []
+
+    def fake_copy(text: str) -> bool:
+        clipboard.append(text)
+        return True
+
+    with (
+        patch("korder.actions.vision._capture_target_window",
+              return_value="/tmp/fake.png"),
+        patch("korder.actions.vision._ocr_image",
+              return_value="Hello world this is OCR output"),
+        patch("korder.actions.vision._copy_to_clipboard",
+              side_effect=fake_copy),
+        patch("korder.actions.vision.emit_progress_speak",
+              side_effect=lambda t, lang="auto": spoken.append((t, lang))),
+        patch("korder.actions.vision.os.unlink"),
+    ):
+        action = get_action("read_screen_text")
+        _, fn = action.op_factory({"target": "Firefox"})
+        fn()
+    assert clipboard == ["Hello world this is OCR output"]
+    assert len(spoken) == 1
+    text, lang = spoken[0]
+    # Acknowledgement mentions the word count.
+    assert "6" in text  # 6 words in the OCR output
+    assert lang in ("pl", "en")
+
+
+def test_read_screen_text_skips_when_capture_failed():
+    spoken: list[tuple[str, str]] = []
+    with (
+        patch("korder.actions.vision._capture_target_window", return_value=None),
+        patch("korder.actions.vision._ocr_image") as ocr_call,
+        patch("korder.actions.vision._copy_to_clipboard") as copy_call,
+        patch("korder.actions.vision.emit_progress_speak",
+              side_effect=lambda t, lang="auto": spoken.append((t, lang))),
+    ):
+        action = get_action("read_screen_text")
+        _, fn = action.op_factory({"target": "Firefox"})
+        fn()
+    ocr_call.assert_not_called()
+    copy_call.assert_not_called()
+    assert spoken == []
+
+
+def test_read_screen_text_skips_when_ocr_empty():
+    """No text → don't push empty string to clipboard, don't speak."""
+    spoken: list[tuple[str, str]] = []
+    with (
+        patch("korder.actions.vision._capture_target_window",
+              return_value="/tmp/fake.png"),
+        patch("korder.actions.vision._ocr_image", return_value=""),
+        patch("korder.actions.vision._copy_to_clipboard") as copy_call,
+        patch("korder.actions.vision.emit_progress_speak",
+              side_effect=lambda t, lang="auto": spoken.append((t, lang))),
+        patch("korder.actions.vision.os.unlink"),
+    ):
+        action = get_action("read_screen_text")
+        _, fn = action.op_factory({})
+        fn()
+    copy_call.assert_not_called()
+    assert spoken == []
+
+
+# ---- _ocr_image ----------------------------------------------------------
+
+
+def test_ocr_image_invokes_tesseract_with_lang_pack():
+    """Verifies the tesseract CLI shape — image path, output to
+    stdout, pol+eng language pack."""
+    captured: list[list] = []
+
+    class _OkRun:
+        returncode = 0
+        stdout = "extracted text"
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        captured.append(list(cmd))
+        return _OkRun()
+
+    with patch("korder.actions.vision.subprocess.run", side_effect=fake_run):
+        result = vision._ocr_image("/tmp/x.png")
+    assert result == "extracted text"
+    assert "tesseract" in captured[0][0]
+    assert "/tmp/x.png" in captured[0]
+    assert "pol+eng" in captured[0]
+
+
+def test_ocr_image_returns_empty_on_tesseract_failure():
+    class _FailRun:
+        returncode = 1
+        stdout = ""
+        stderr = "tesseract: cannot open"
+
+    with patch("korder.actions.vision.subprocess.run", return_value=_FailRun()):
+        assert vision._ocr_image("/tmp/x.png") == ""
+
+
+# ---- _copy_to_clipboard --------------------------------------------------
+
+
+def test_copy_to_clipboard_sends_text_to_wl_copy():
+    captured: dict = {}
+
+    class _OkRun:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        captured["cmd"] = list(cmd)
+        captured["input"] = kw.get("input")
+        return _OkRun()
+
+    with patch("korder.actions.vision.subprocess.run", side_effect=fake_run):
+        ok = vision._copy_to_clipboard("hello world")
+    assert ok is True
+    assert captured["cmd"] == ["wl-copy"]
+    assert captured["input"] == "hello world"
+
+
+def test_copy_to_clipboard_returns_false_on_empty_text():
+    """No-op for empty input — don't shell out at all."""
+    with patch("korder.actions.vision.subprocess.run") as run:
+        assert vision._copy_to_clipboard("") is False
+        run.assert_not_called()
+
+
 # ---- executor flow -------------------------------------------------------
 
 
