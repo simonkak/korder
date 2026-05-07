@@ -16,6 +16,7 @@ or any phrase isn't found in the input.
 from __future__ import annotations
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -867,6 +868,19 @@ class IntentParser:
         # to confirm or cancel.
         _scrub_hallucinated_confirm(transcript, actions)
 
+        # Safety net 2: Spotify misroute. Gemma E4B's Polish play-verb
+        # prior wins over named-Spotify context for short queries
+        # ('Odtwórz Queen w Spotify' / 'Włącz moderat w Spotify' →
+        # play_pause instead of spotify_play). Override deterministically
+        # when the pattern is unambiguous.
+        spotify_override = _maybe_spotify_misroute_override(transcript, actions)
+        if spotify_override is not None:
+            log.info(
+                "spotify misroute override: play_pause -> spotify_play(params=%r)",
+                spotify_override["params"],
+            )
+            actions = [spotify_override]
+
         log.info("LLM actions for %r: %r", transcript, actions)
 
         # Supplement: if LLM came back empty but the regex parser sees an
@@ -1534,6 +1548,106 @@ class IntentParser:
         if i >= n or text[i] != '"':
             return -1
         return i + 1
+
+
+_SPOTIFY_PLAY_VERBS = frozenset({
+    "play", "pause", "resume",
+    "odtwórz", "odtworz",
+    "puść", "pusc",
+    "zagraj",
+    "włącz", "wlacz",
+})
+_SPOTIFY_PREPOSITIONS = frozenset({
+    "in", "on", "the", "a",
+    "w", "na", "do",
+})
+_SPOTIFY_KIND_CUES = {
+    # Polish + English cue words that signal `kind`. The cue word
+    # itself is dropped from the query; kind is set in params.
+    "album": "album", "płyta": "album", "plyta": "album",
+    "krążek": "album", "krazek": "album",
+    "track": "track", "song": "track",
+    "utwór": "track", "utwor": "track", "piosenka": "track",
+    "artist": "artist", "band": "artist",
+    "wykonawca": "artist", "zespół": "artist", "zespol": "artist",
+    "grupa": "artist",
+    "playlist": "playlist", "playlista": "playlist",
+}
+_SPOTIFY_OVERRIDE_DROP = (
+    _SPOTIFY_PLAY_VERBS | _SPOTIFY_PREPOSITIONS | {"spotify"}
+)
+
+
+def _maybe_spotify_misroute_override(
+    transcript: str,
+    actions: list,
+) -> dict | None:
+    """If the LLM emitted exactly ``play_pause`` but the transcript
+    names Spotify and has substantive non-trigger content, return a
+    replacement spotify_play action with the query extracted
+    deterministically. Otherwise None.
+
+    Field log pattern: 'Odtwórz Queen w Spotify' / 'Włącz moderat w
+    Spotify' / 'Odtwórz w Spotify zespół Moderat' — Gemma E4B's verb
+    prior on Polish play verbs (Odtwórz / Włącz) wins over the named-
+    Spotify context for short single-word artist queries, even with
+    the prompt's catalogue and examples explicitly saying otherwise.
+    Prompt-level fixes plateaued; this is the deterministic safety
+    net for the specific failure mode.
+
+    Conservative: fires only for SINGLE play_pause emission, only
+    when 'spotify' appears in the transcript, only when the token-
+    drop yields at least one query token. False-positive risk is
+    dictation like 'play music, by the way Spotify is open' — rare
+    in voice-command usage; acceptable trade-off."""
+    if len(actions) != 1:
+        return None
+    entry = actions[0]
+    if not isinstance(entry, dict):
+        return None
+    name = entry.get("name")
+    # Two trigger conditions — both have the same fix (extract query
+    # from non-trigger tokens, dispatch as spotify_play):
+    #   1. LLM emitted play_pause: classic verb-prior misroute.
+    #   2. LLM emitted spotify_play but with empty params: it picked
+    #      the right action but didn't fill the query — without the
+    #      override this goes pending and asks the user for a query
+    #      they already said.
+    existing_params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+    spotify_play_empty = (
+        name == "spotify_play"
+        and not (existing_params.get("query") or "").strip()
+        and not (existing_params.get("uri") or "").strip()
+    )
+    if name != "play_pause" and not spotify_play_empty:
+        return None
+    if "spotify" not in transcript.lower():
+        return None
+
+    query_tokens: list[str] = []
+    detected_kind: str | None = None
+    for raw in re.split(r"[\s.,!?;:]+", transcript):
+        if not raw:
+            continue
+        clean = raw.lower()
+        if clean in _SPOTIFY_OVERRIDE_DROP:
+            continue
+        if clean in _SPOTIFY_KIND_CUES:
+            # Last cue wins if the user said multiple — rare but
+            # possible ("Odtwórz album zespół X" → kind=artist).
+            detected_kind = _SPOTIFY_KIND_CUES[clean]
+            continue
+        query_tokens.append(raw)
+    if not query_tokens:
+        return None
+    params: dict = {"query": " ".join(query_tokens)}
+    if detected_kind is not None:
+        params["kind"] = detected_kind
+    return {
+        "phrase": transcript.strip(),
+        "name": "spotify_play",
+        "params": params,
+    }
 
 
 def _scrub_hallucinated_confirm(transcript: str, actions: list) -> None:
