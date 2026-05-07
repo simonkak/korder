@@ -54,6 +54,39 @@ class Turn:
 # prompt enough to risk a meaningful latency or accuracy regression.
 _MAX_HISTORY_TURNS = 4
 
+# When an action produces output the LLM should remember (vision
+# description, OCR summary), it can stash a synthetic Turn here. The
+# next IntentParser.parse() drains the buffer and inserts it into
+# history before running the LLM, so the follow-up turn sees the
+# action's output as if Gemma had emitted it as a `response`. Module-
+# global by design — actions run in the inject worker thread, parse()
+# runs in the next dictation cycle; the GIL makes the single-pointer
+# swap safe without explicit locking.
+_PENDING_SYNTHETIC_TURN: tuple[str, str] | None = None
+
+
+def post_synthetic_turn(user_text: str, response: str) -> None:
+    """Queue a synthetic Turn — pretends the LLM said `response` in
+    answer to `user_text` last round. Used by vision-class actions
+    so follow-ups have conversational context without needing a
+    second LLM round-trip just to record what we already produced."""
+    global _PENDING_SYNTHETIC_TURN
+    user_text = (user_text or "").strip()
+    response = (response or "").strip()
+    if not user_text or not response:
+        return
+    _PENDING_SYNTHETIC_TURN = (user_text, response)
+
+
+def _drain_synthetic_turn() -> tuple[str, str] | None:
+    """Consume and return any pending synthetic Turn. Idempotent —
+    second call returns None."""
+    global _PENDING_SYNTHETIC_TURN
+    pending = _PENDING_SYNTHETIC_TURN
+    _PENDING_SYNTHETIC_TURN = None
+    return pending
+
+
 # Hard cap on the LLM tool-call loop within a single parse call. The
 # LLM iterates: emit tool_calls → Korder runs them → results fed back
 # → repeat until LLM emits actions / response. The cap stops a runaway
@@ -847,6 +880,27 @@ class IntentParser:
     ) -> list[tuple]:
         if not transcript:
             return []
+        # Drain any synthetic Turn left by a vision-class action from
+        # the previous round. Inserts it into history BEFORE we call
+        # the LLM so the prompt's 'Recent conversation' block surfaces
+        # the action's output as if Gemma had said it as a `response`.
+        # Lets follow-ups like 'and the title?' / 'a co z autorem?'
+        # bind to the description without a fresh dispatch.
+        synthetic = _drain_synthetic_turn()
+        if synthetic is not None:
+            prior_user, prior_response = synthetic
+            self._history.append(Turn(
+                user_text=prior_user,
+                action_name="",
+                response=prior_response,
+                context="",
+            ))
+            if len(self._history) > _MAX_HISTORY_TURNS:
+                self._history = self._history[-_MAX_HISTORY_TURNS:]
+            log.info(
+                "intent: drained synthetic turn (user=%r, response=%d chars)",
+                prior_user[:40], len(prior_response),
+            )
         try:
             actions = self._run_intent_loop(
                 transcript,

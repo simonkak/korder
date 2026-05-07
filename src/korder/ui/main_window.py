@@ -31,7 +31,11 @@ from korder.audio import _mpris
 from korder.audio.tts import SpeechEngine
 from korder.ui.osd import OSDWindow
 from korder.ui.i18n import t
-from korder.ui.progress import progress_signal, progress_speak_signal
+from korder.ui.progress import (
+    keep_session_open_signal,
+    progress_signal,
+    progress_speak_signal,
+)
 
 log = logging.getLogger(__name__)
 
@@ -326,6 +330,11 @@ class MainWindow(QMainWindow):
         # _resume_after_tts). Stores the original_text we were given
         # so replay sees the same arguments.
         self._deferred_inject_done: str | None = None
+        # Vision-class actions request via the keep_session_open
+        # signal — the mic stays open after the action finishes so
+        # the user can ask a follow-up. Cleared when the next
+        # _on_inject_done consumes it OR when the session ends.
+        self._keep_session_open_pending: bool = False
         # Soft "go" chime on dictation start (mirrors the Plasma
         # "ready" cue users expect from voice assistants). Audible
         # signal that mic just opened — but transcription is
@@ -345,6 +354,7 @@ class MainWindow(QMainWindow):
         # timer if playback never reports finished.
         self._await_tts_for_answer_reset = False
         progress_speak_signal().connect(self._on_speak_text)
+        keep_session_open_signal().connect(self._on_keep_session_open)
         if self._tts is not None:
             self._tts.playback_finished.connect(self._resume_after_tts)
             self._tts.playback_finished.connect(self._on_tts_done_check_answer_reset)
@@ -1090,6 +1100,24 @@ class MainWindow(QMainWindow):
         command_fired = self._auto_stop_pending
         self._auto_stop_pending = False  # always reset, never leak
 
+        # Vision-class follow-up gate. If a vision action requested
+        # the session stay open (keep_session_open signal seen during
+        # the worker's run), suppress auto-stop and transition back
+        # to listening instead — same shape as the conversational-
+        # answer path, so 'opisz Firefox' → description spoken →
+        # 'a co z autorem?' lands in the same session with the
+        # description already in history (post_synthetic_turn).
+        keep_open = self._keep_session_open_pending
+        self._keep_session_open_pending = False
+        if keep_open and command_fired:
+            if self._recorder.is_recording:
+                # 800 ms dwell so the OSD's last description-frame
+                # stays readable, then flip back to listening for
+                # the follow-up. _reset_to_listening_after_answer
+                # already snips the TTS bleed window for us.
+                QTimer.singleShot(800, self._reset_to_listening_after_answer)
+            return
+
         # Auto-stop if a command-style action just ran AND auto-stop is
         # configured. Deferred so the OSD's post-execution frame renders
         # before recording stops.
@@ -1307,6 +1335,7 @@ class MainWindow(QMainWindow):
         in-flight TTS — cancel means cancel everything."""
         log.info("cancel_session: aborting recording on user request")
         self._auto_stop_pending = False
+        self._keep_session_open_pending = False
         self._pending_action = None
         if self._tts is not None:
             self._tts.cancel()
@@ -1333,6 +1362,15 @@ class MainWindow(QMainWindow):
         if not text:
             return
         self._osd.set_executing_progress(text)
+
+    def _on_keep_session_open(self) -> None:
+        """A vision-class action just produced spoken output and asks
+        that the dictation session NOT auto-stop afterwards. Sets a
+        one-shot flag _on_inject_done consumes — when set, the
+        post-action sequence skips auto-stop and instead schedules
+        a transition back to listening once TTS finishes, so the
+        user can ask a follow-up about what was just described/read."""
+        self._keep_session_open_pending = True
 
     def _on_speak_text(self, text: str, lang: str) -> None:
         """TTS-routed counterpart to _on_executing_progress. Triggered

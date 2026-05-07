@@ -237,30 +237,71 @@ def test_ocr_image_returns_empty_on_tesseract_failure():
 
 
 def test_copy_to_clipboard_sends_text_to_wl_copy():
-    captured: dict = {}
+    """wl-copy daemonizes — we use Popen, not run, so the process
+    can fork-and-detach without us waiting on its child. Test
+    verifies the byte stream gets written + stdin closed."""
+    captured: dict = {"cmd": None, "input_bytes": b""}
 
-    class _OkRun:
-        returncode = 0
-        stdout = ""
-        stderr = ""
+    class _FakeStdin:
+        def __init__(self):
+            self._closed = False
 
-    def fake_run(cmd, **kw):
-        captured["cmd"] = list(cmd)
-        captured["input"] = kw.get("input")
-        return _OkRun()
+        def write(self, data):
+            captured["input_bytes"] += data
+            return len(data)
 
-    with patch("korder.actions.vision.subprocess.run", side_effect=fake_run):
+        def close(self):
+            self._closed = True
+
+    class _FakePopen:
+        def __init__(self, cmd, **kw):
+            captured["cmd"] = list(cmd)
+            self.stdin = _FakeStdin()
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    with patch("korder.actions.vision.subprocess.Popen", _FakePopen):
         ok = vision._copy_to_clipboard("hello world")
     assert ok is True
     assert captured["cmd"] == ["wl-copy"]
-    assert captured["input"] == "hello world"
+    assert captured["input_bytes"] == b"hello world"
+
+
+def test_copy_to_clipboard_tolerates_daemonized_wl_copy():
+    """wl-copy's daemon child keeps running until something pastes.
+    Popen.wait() raises TimeoutExpired but we treat that as success
+    (the parent forked, our text is committed)."""
+    class _FakeStdin:
+        def write(self, data):
+            return len(data)
+
+        def close(self):
+            pass
+
+    class _FakePopen:
+        def __init__(self, cmd, **kw):
+            self.stdin = _FakeStdin()
+
+        def wait(self, timeout=None):
+            import subprocess
+            raise subprocess.TimeoutExpired(cmd=["wl-copy"], timeout=timeout or 1)
+
+        def kill(self):
+            pass
+
+    with patch("korder.actions.vision.subprocess.Popen", _FakePopen):
+        assert vision._copy_to_clipboard("hello") is True
 
 
 def test_copy_to_clipboard_returns_false_on_empty_text():
-    """No-op for empty input — don't shell out at all."""
-    with patch("korder.actions.vision.subprocess.run") as run:
+    """No-op for empty input — don't spawn wl-copy at all."""
+    with patch("korder.actions.vision.subprocess.Popen") as popen:
         assert vision._copy_to_clipboard("") is False
-        run.assert_not_called()
+        popen.assert_not_called()
 
 
 # ---- executor flow -------------------------------------------------------

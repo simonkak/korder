@@ -34,7 +34,11 @@ import urllib.request
 from korder import config, kwin
 from korder.actions.base import Action, register
 from korder.ui.i18n import current_locale, t, tf
-from korder.ui.progress import emit_progress, emit_progress_speak
+from korder.ui.progress import (
+    emit_progress,
+    emit_progress_speak,
+    request_keep_session_open,
+)
 
 log = logging.getLogger(__name__)
 
@@ -303,29 +307,53 @@ def _ocr_image(image_path: str, langs: str = "pol+eng") -> str:
 
 def _copy_to_clipboard(text: str) -> bool:
     """Push ``text`` to the Wayland clipboard via wl-copy. Returns
-    True on success. wl-copy is the canonical Wayland clipboard
-    tool and is already a Korder OS dep (per README)."""
+    True iff the byte stream made it past stdin into wl-copy's
+    process; True is "best-effort committed", not "definitely on the
+    clipboard."
+
+    Implementation note: wl-copy daemonizes — it forks a child that
+    stays alive holding the clipboard contents until something
+    pastes (or the user clears it). subprocess.run() with timeout
+    waits for ALL processes (including the daemon child) to exit,
+    so it consistently times out at 5 s on a healthy wl-copy.
+
+    Use Popen instead: write the bytes, close stdin, give wl-copy a
+    short window to fork-and-detach, then return without waiting on
+    the daemon. Mirrors how shells handle background pipelines."""
     if not text:
         return False
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["wl-copy"],
-            input=text,
-            capture_output=True,
-            timeout=5,
-            check=False,
-            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        log.warning("clipboard: wl-copy failed: %s", e)
+        log.warning("clipboard: wl-copy spawn failed: %s", e)
         return False
-    if result.returncode != 0:
-        log.warning(
-            "clipboard: wl-copy rc=%d stderr=%r",
-            result.returncode,
-            (result.stderr or "")[:200],
-        )
+    try:
+        if proc.stdin is None:
+            proc.kill()
+            return False
+        proc.stdin.write(text.encode("utf-8"))
+        proc.stdin.close()
+    except (OSError, BrokenPipeError) as e:
+        log.warning("clipboard: wl-copy stdin write failed: %s", e)
+        try:
+            proc.kill()
+        except Exception:
+            pass
         return False
+    # Brief wait for the parent to fork-and-exit. If wl-copy is
+    # daemonizing properly the parent exits in milliseconds; the
+    # backgrounded child keeps the clipboard alive on its own.
+    try:
+        proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        # Still running — that's fine, it's the daemon child holding
+        # the clipboard. We're committed.
+        pass
     return True
 
 
@@ -527,9 +555,31 @@ def _do_describe_window(target: str) -> None:
         emit_progress(t("progress_describe_failed"))
         return
 
-    # 4. Emit result. emit_progress_speak fires both the OSD progress
-    # line and the TTS path (when [tts] enabled).
-    log.info("describe_window: speaking description (%d chars, lang=%s)", len(description), lang)
+    # 4. Emit result. Three coordinated signals:
+    #   - emit_progress_speak: renders to OSD + queues TTS.
+    #   - request_keep_session_open: tells MainWindow to skip auto-
+    #     stop so the user can ask a follow-up about what was just
+    #     described, instead of needing a fresh wake-word activation.
+    #   - post_synthetic_turn: writes a synthetic Turn into the
+    #     parser's history so the next turn's prompt sees the
+    #     description as if Gemma had emitted it as a `response` —
+    #     follow-ups like 'and the title?' / 'a co jest na zdjęciu?'
+    #     bind to the description without a re-dispatch.
+    log.info(
+        "describe_window: speaking description (%d chars, lang=%s)",
+        len(description), lang,
+    )
+    request_keep_session_open()
+    if locale == "pl":
+        synthetic_user = (
+            f"opisz okno {target}" if target else "opisz aktywne okno"
+        )
+    else:
+        synthetic_user = (
+            f"describe {target}" if target else "describe active window"
+        )
+    from korder.intent import post_synthetic_turn
+    post_synthetic_turn(synthetic_user, description)
     emit_progress_speak(description, lang=lang)
 
 
@@ -626,9 +676,26 @@ def _do_read_screen_text(target: str) -> None:
     word_count = len(text.split())
     if locale == "pl":
         ack = f"Skopiowano {word_count} słów do schowka."
+        synthetic_user = (
+            f"przeczytaj okno {target}" if target else "przeczytaj ekran"
+        )
     else:
         ack = f"Copied {word_count} words to clipboard."
+        synthetic_user = (
+            f"read {target}" if target else "read the screen"
+        )
     log.info("read_screen_text: clipboard ok, speaking ack")
+    # Same triad as describe_window: keep session open + post synthetic
+    # turn so a follow-up like 'czytaj fragment z imieniem' (read the
+    # part with the name) binds to the OCR'd content via history.
+    request_keep_session_open()
+    from korder.intent import post_synthetic_turn
+    # The synthetic response combines the spoken ack with a brief
+    # excerpt of the actual OCR text so follow-ups can quote
+    # specifics. Cap so a 5000-word PDF doesn't blow the prompt.
+    excerpt = text[:1500].strip()
+    synthetic_response = ack + "\n\nText: " + excerpt
+    post_synthetic_turn(synthetic_user, synthetic_response)
     emit_progress_speak(ack, lang=lang)
 
 

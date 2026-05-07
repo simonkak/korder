@@ -29,6 +29,13 @@ from PySide6.QtCore import QObject, Signal
 class _ProgressBus(QObject):
     progress = Signal(str)
     progress_speak = Signal(str, str)
+    # Vision-class actions (describe_window, read_screen_text) emit
+    # this to ask the dictation session to stay open after the action
+    # finishes — so the user can ask a follow-up question about what
+    # was just described/read. Without it, auto_stop_after_action
+    # closes the mic the moment the action's callable returns and the
+    # follow-up needs a fresh wake-word activation.
+    keep_session_open = Signal()
 
 
 _bus = _ProgressBus()
@@ -52,6 +59,16 @@ def emit_progress_speak(text: str, lang: str = "auto") -> None:
     _bus.progress_speak.emit(text, lang or "auto")
 
 
+def request_keep_session_open() -> None:
+    """Ask the dictation session to stay open after the current
+    action finishes, instead of auto-stopping. Used by vision-class
+    actions whose spoken output (describe_window's description, OCR
+    word count) is a conversational turn the user might want to
+    follow up on. MainWindow connects the matching signal and skips
+    the auto-stop, transitioning back to listening once TTS finishes."""
+    _bus.keep_session_open.emit()
+
+
 def progress_signal() -> Signal:
     """The OSD-only Signal a slot should connect to (typically once, at startup)."""
     return _bus.progress
@@ -60,3 +77,9 @@ def progress_signal() -> Signal:
 def progress_speak_signal() -> Signal:
     """The TTS-routing Signal. Slot signature: (text: str, lang: str)."""
     return _bus.progress_speak
+
+
+def keep_session_open_signal() -> Signal:
+    """Signal vision-style actions emit to keep the mic open for
+    follow-ups. Slot signature: ()."""
+    return _bus.keep_session_open
