@@ -86,6 +86,35 @@ def _extract_target_from_transcript(transcript: str) -> str:
     return " ".join(out)
 
 
+# Stable copy of the most recent capture, kept across runs for
+# debugging. The temp file used by the live call is unlinked after
+# the vision call returns; this snapshot survives so the user can
+# inspect what was actually screenshot when describe_window's output
+# looks wrong.
+_LAST_CAPTURE_DEBUG_PATH = "/tmp/korder_last_capture.png"
+
+
+def _peek_active_window_caption() -> str:
+    """Best-effort: ask the kwin_bridge which window is currently
+    active. Returns 'class: caption' or empty string on any failure.
+    Used purely for diagnostic logging during describe_window so we
+    can tell whether the focus switch actually landed on the target.
+    """
+    try:
+        from korder import kwin_bridge
+        windows = kwin_bridge.list_windows(timeout_s=0.5) or []
+    except Exception:
+        return ""
+    for w in windows:
+        if isinstance(w, dict) and w.get("active"):
+            klass = (w.get("resourceClass") or "").strip()
+            caption = (w.get("caption") or "").strip()
+            if klass and caption:
+                return f"{klass}: {caption}"
+            return klass or caption
+    return ""
+
+
 def _capture_active_window() -> str | None:
     """Capture the currently active window to a temp PNG. Returns the
     path (caller cleans up) or None on any failure — spectacle missing,
@@ -93,6 +122,10 @@ def _capture_active_window() -> str | None:
 
     Uses --background --nonotify so Spectacle doesn't flash a UI or
     pop a "screenshot saved" notification while Korder is mid-action.
+
+    Also writes a debug snapshot to _LAST_CAPTURE_DEBUG_PATH (stable
+    path) so the user can inspect the captured frame after the live
+    temp file is unlinked.
     """
     fd, path = tempfile.mkstemp(prefix="korder_vision_", suffix=".png")
     os.close(fd)
@@ -129,6 +162,14 @@ def _capture_active_window() -> str | None:
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         log.warning("describe_window: spectacle wrote no data to %s", path)
         return None
+    # Debug snapshot — best-effort copy alongside the live temp file
+    # so the user can inspect the last capture even after the live
+    # path is unlinked.
+    try:
+        import shutil
+        shutil.copyfile(path, _LAST_CAPTURE_DEBUG_PATH)
+    except OSError as e:
+        log.warning("describe_window: debug snapshot copy failed: %s", e)
     return path
 
 
@@ -231,10 +272,19 @@ def _do_describe_window(target: str) -> None:
     emit_progress(t("progress_describe_capturing"))
     t0 = time.time()
     img_path = _capture_active_window()
+    # Diagnostic: which window did we actually capture? KWin's
+    # active flag in list_windows is the source of truth. If
+    # activate_window_by_name silently failed (target not found, or
+    # focus race), the capture is of the wrong window — and the
+    # vision model's output describes whatever was there. Log it so
+    # mismatches are easy to diagnose without inspecting the PNG.
+    active_caption = _peek_active_window_caption()
     log.info(
-        "describe_window: capture %s in %.1fs",
+        "describe_window: capture %s in %.1fs, active=%r, debug=%s",
         "ok" if img_path else "FAILED",
         time.time() - t0,
+        active_caption,
+        _LAST_CAPTURE_DEBUG_PATH if img_path else "(none)",
     )
     if img_path is None:
         emit_progress(t("progress_describe_capture_failed"))

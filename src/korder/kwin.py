@@ -319,6 +319,14 @@ def _act_on_window_by_name(target: str, *, action_js: str, prefer_visible: bool)
     target_js = json.dumps(target)
     tie_break_minimized = "0" if prefer_visible else "0.5"
     tie_break_visible = "0.5" if prefer_visible else "0"
+    # Matching: each target token contributes 2 points to the score
+    # for each EXACT haystack token it equals, OR 1 point for each
+    # haystack token that contains it as a substring (or vice versa).
+    # The substring fallback is what makes Polish inflections work
+    # ('firefoxa' is a substring of nothing, but 'firefox' from the
+    # haystack contains 'firefox' which is a prefix of 'firefoxa' —
+    # symmetric containment catches both directions). 3-char minimum
+    # on the substring side avoids 'a' / 'on' matching everything.
     js = f"""
     (function() {{
         const target = {target_js};
@@ -330,9 +338,22 @@ def _act_on_window_by_name(target: str, *, action_js: str, prefer_visible: bool)
             if (!w.normalWindow) return;
             if (w.skipTaskbar) return;
             const haystack = ((w.caption || "") + " " + (w.resourceClass || "")).toLowerCase();
-            const haystackTokens = new Set(haystack.match(/\\w+/g) || []);
+            const haystackTokens = haystack.match(/\\w+/g) || [];
+            const haystackSet = new Set(haystackTokens);
             let score = 0;
-            targetTokens.forEach(t => {{ if (haystackTokens.has(t)) score++; }});
+            targetTokens.forEach(t => {{
+                if (haystackSet.has(t)) {{
+                    score += 2;
+                }} else if (t.length >= 3) {{
+                    for (let i = 0; i < haystackTokens.length; i++) {{
+                        const h = haystackTokens[i];
+                        if (h.length >= 3 && (h.indexOf(t) !== -1 || t.indexOf(h) !== -1)) {{
+                            score += 1;
+                            break;
+                        }}
+                    }}
+                }}
+            }});
             const tieBreak = w.minimized ? {tie_break_minimized} : {tie_break_visible};
             const totalScore = score + tieBreak;
             if (totalScore > bestScore) {{ bestScore = totalScore; best = w; }}
