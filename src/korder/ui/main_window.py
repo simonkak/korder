@@ -256,6 +256,22 @@ class MainWindow(QMainWindow):
         self._workers: set[_TranscribeWorker] = set()
         self._inject_workers: set[_InjectWorker] = set()
         self._commit_queue: list[str] = []
+        # Session token bumped on every cancel / stop. Each Whisper +
+        # inject worker captures the current value at submit time;
+        # the receiving slots drop results whose token no longer
+        # matches. Without this, a Whisper transcribe that started
+        # mid-TTS-bleed and finished AFTER the user pressed Esc could
+        # still feed _on_commit_text → spawn a parse → fire a
+        # follow-up TTS, even though the user already cancelled.
+        # Field log: pressing Esc during read_screen_text playback
+        # produced commits like "Uw konsola znak praw autorskich,
+        # korder..." (the user's own TTS read back through the mic)
+        # and Gemma then conversationally answered them. Bumping
+        # the token invalidates every in-flight worker; direct
+        # (non-signal) callers of the same slots — see
+        # _force_resume_after_cancel and _resume_after_tts replaying
+        # a deferred handler — pass force=True to bypass the check.
+        self._session_token: int = 0
         # Rolling context for Whisper's initial_prompt. Holds the last
         # few committed transcripts; their concatenation is passed as
         # the prompt for the next transcribe call so Whisper's decoder
@@ -474,6 +490,12 @@ class MainWindow(QMainWindow):
         the voice MUST shut up, even though there's no recording
         to abort).
         """
+        # Bump the session token first — any Whisper / inject worker
+        # already in flight finishes against the OLD token and gets
+        # dropped at the receiving slot. _force_resume_after_cancel's
+        # direct replay of a deferred inject_done passes force=True
+        # so it isn't affected.
+        self._session_token += 1
         # Always-stop bits, regardless of recorder state.
         if self._tts is not None:
             self._tts.cancel()
@@ -635,6 +657,15 @@ class MainWindow(QMainWindow):
         "I teraz co myślisz?" the user reported."""
         if not self._recorder.is_recording:
             return
+        # Bump the session token so any in-flight Whisper / inject
+        # worker that completes after this point is treated as stale
+        # by its receive slot. The tail-transcribe submitted below
+        # gets the NEW token, so it still goes through. Without this,
+        # a partial worker that started just before stop and finishes
+        # after could fire _on_partial_text → stability commit on
+        # audio that included TTS bleed, producing the garbled
+        # follow-up commits the user reported during cancel.
+        self._session_token += 1
         self._partial_timer.stop()
         self._osd_throttle_timer.stop()
         self._wake_idle_timer.stop()
@@ -800,6 +831,7 @@ class MainWindow(QMainWindow):
             audio = np.ascontiguousarray(audio)
         prompt = self._build_initial_prompt()
         worker = _TranscribeWorker(self._engine, audio, initial_prompt=prompt)
+        worker._session_token = self._session_token
         if kind == "partial":
             self._partial_in_flight = True
             worker.finished_text.connect(self._on_partial_text)
@@ -812,6 +844,12 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _on_partial_text(self, text: str) -> None:
+        if self._is_stale_worker(self.sender()):
+            # Reset in-flight flag so the next partial-tick can submit
+            # a fresh partial — otherwise the gate at _on_partial_tick
+            # would think a partial is still pending and stay quiet.
+            self._partial_in_flight = False
+            return
         self._partial_in_flight = False
         if not self._recorder.is_recording:
             return
@@ -936,6 +974,24 @@ class MainWindow(QMainWindow):
         self._ptt.blockSignals(False)
         self._ptt.setText("Stop" if rec else "Start dictating")
 
+    def _is_stale_worker(self, worker) -> bool:
+        """True when the sending worker's session token is older than
+        the current one — meaning the user cancelled / stopped after
+        this worker was submitted. Receiving slots drop the result so
+        the bleed doesn't produce a commit / parse / TTS round-trip.
+
+        Returns False when ``worker`` is None (direct call, not a
+        signal slot — the caller owns the lifetime explicitly) or
+        the worker predates the guard (legacy test stubs that don't
+        set the token attribute).
+        """
+        if worker is None:
+            return False
+        token = getattr(worker, "_session_token", None)
+        if token is None:
+            return False
+        return token != self._session_token
+
     def _reap(self, worker: _TranscribeWorker) -> None:
         self._workers.discard(worker)
         worker.deleteLater()
@@ -988,6 +1044,9 @@ class MainWindow(QMainWindow):
         self._end_dictation_lifecycle()
 
     def _on_commit_text(self, text: str) -> None:
+        if self._is_stale_worker(self.sender()):
+            log.info("commit dropped (stale session): %r", text[:60])
+            return
         text = text.strip()
         if not text:
             if not self._recorder.is_recording:
@@ -1041,6 +1100,7 @@ class MainWindow(QMainWindow):
                 self._injector, payload, text, self._write_mode,
                 ducker=self._ducker,
             )
+            worker._session_token = self._session_token
             worker.done.connect(self._on_inject_done)
             worker.failed.connect(self._on_inject_failed)
             worker.mode_changed.connect(self._on_mode_changed)
@@ -1068,7 +1128,16 @@ class MainWindow(QMainWindow):
         else:
             self._status.setText("Idle.")
 
-    def _on_inject_done(self, original_text: str) -> None:
+    def _on_inject_done(self, original_text: str, *, force: bool = False) -> None:
+        # ``force=True`` lets direct (non-signal) callers — see
+        # _force_resume_after_cancel and _resume_after_tts replaying
+        # a deferred handler — bypass the stale check. The bump in
+        # cancel_recording / _stop_recording invalidates the worker
+        # that originally emitted ``done``, but the deferred replay
+        # still needs to fire so the OSD lands in the correct state.
+        if not force and self._is_stale_worker(self.sender()):
+            log.info("inject_done dropped (stale session)")
+            return
         # If TTS is reading an action's spoken response (e.g.
         # describe_window's vision description, now_playing's track
         # info), defer the entire post-inject sequence until playback
@@ -1300,6 +1369,8 @@ class MainWindow(QMainWindow):
 
     def _on_parse_started(self, prompt: str) -> None:
         """LLM parse is starting (only fires for the slow LLM parser)."""
+        if self._is_stale_worker(self.sender()):
+            return
         if self._injector and self._injector.is_slow_parser:
             self._osd.set_thinking(prompt)
 
@@ -1308,6 +1379,8 @@ class MainWindow(QMainWindow):
         before it can reason. Fires instead of parse_started when the
         model wasn't resident at request time. The same parse_done
         signal then transitions to Executing once the call returns."""
+        if self._is_stale_worker(self.sender()):
+            return
         if self._injector and self._injector.is_slow_parser:
             self._osd.set_loading(prompt)
 
@@ -1315,6 +1388,8 @@ class MainWindow(QMainWindow):
         """LLM parse finished. We don't have the ops at this point (worker
         keeps them locally) — just transition to a generic 'executing'
         status. The real action description would need an extra signal."""
+        if self._is_stale_worker(self.sender()):
+            return
         if self._injector and self._injector.is_slow_parser:
             self._osd.set_executing(self._osd._state.prompt or "")
 
@@ -1324,6 +1399,8 @@ class MainWindow(QMainWindow):
         as a contextual prompt. Cleared on the next round's
         _on_pending_action and on cancel/error paths so a stale
         response doesn't leak into a different turn."""
+        if self._is_stale_worker(self.sender()):
+            return
         self._last_llm_response = response or ""
 
     def _on_parse_response_partial(self, cumulative_text: str) -> None:
@@ -1341,6 +1418,8 @@ class MainWindow(QMainWindow):
         Action-only turns never emit on this signal, so we don't
         need a guard against accidentally clobbering a non-
         conversational state with prose."""
+        if self._is_stale_worker(self.sender()):
+            return
         if not cumulative_text:
             return
         if self._osd._state.stateKind != "thinking":
@@ -1365,12 +1444,16 @@ class MainWindow(QMainWindow):
         self.cancel_recording()
 
     def _on_inject_failed(self, msg: str) -> None:
+        if self._is_stale_worker(self.sender()):
+            return
         self.statusBar().showMessage(f"Inject failed: {msg}", 8000)
         self._auto_stop_pending = False
 
     def _on_command_executed(self) -> None:
         """Worker reports a non-text, non-mode-toggle action ran. Flag set
         so _on_inject_done can stop recording after the UI update lands."""
+        if self._is_stale_worker(self.sender()):
+            return
         self._auto_stop_pending = True
 
     def _on_executing_progress(self, text: str) -> None:
@@ -1458,7 +1541,7 @@ class MainWindow(QMainWindow):
         if deferred is not None:
             self._deferred_inject_done = None
             log.info("inject_done deferred-resume after TTS, dwell 800 ms")
-            QTimer.singleShot(800, lambda t=deferred: self._on_inject_done(t))
+            QTimer.singleShot(800, lambda t=deferred: self._on_inject_done(t, force=True))
 
     def _snip_tts_bleed_window(self) -> None:
         """Advance _committed_samples past whatever the mic captured
@@ -1502,7 +1585,7 @@ class MainWindow(QMainWindow):
         self._snip_tts_bleed_window()
         if deferred is not None:
             log.info("inject_done deferred-resume on cancel (no dwell)")
-            self._on_inject_done(deferred)
+            self._on_inject_done(deferred, force=True)
 
     def _on_tts_done_check_answer_reset(self) -> None:
         """Second slot bound to playback_finished. When a
@@ -1540,6 +1623,8 @@ class MainWindow(QMainWindow):
 
     def _on_mode_changed(self, write_mode: bool) -> None:
         """Worker reports the user toggled write mode mid-commit."""
+        if self._is_stale_worker(self.sender()):
+            return
         self._write_mode = write_mode
         self.statusBar().showMessage(
             t("status_write_mode_on") if write_mode else t("status_write_mode_off"),
@@ -1549,6 +1634,8 @@ class MainWindow(QMainWindow):
     def _on_pending_action(self, action_name: str) -> None:
         """Worker reports a parameterized action with empty params —
         wait for the next commit and treat it as the parameter."""
+        if self._is_stale_worker(self.sender()):
+            return
         log.info("pending action set: %r", action_name)
         self._pending_action = action_name
         self._pending_action_time = time.time()
@@ -1619,6 +1706,7 @@ class MainWindow(QMainWindow):
             self._injector, "", param_text, self._write_mode,
             prebuilt_ops=[op], ducker=self._ducker,
         )
+        worker._session_token = self._session_token
         worker.done.connect(self._on_inject_done)
         worker.failed.connect(self._on_inject_failed)
         worker.mode_changed.connect(self._on_mode_changed)

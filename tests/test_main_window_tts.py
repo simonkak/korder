@@ -134,6 +134,7 @@ def test_cancel_recording_stops_tts_even_when_recorder_idle(monkeypatch):
         _status = MagicMock()
         _pending_partial_text = None
         _recent_transcripts = MagicMock()
+        _session_token = 0
         def _sync_button(self): pass
         def _emit_tray_state(self): pass
 
@@ -254,3 +255,159 @@ def test_late_playback_finished_after_force_resume_is_noop():
         "late playback_finished after force-resume must be a no-op"
     )
     assert stub._tts_active_count == 0
+
+
+# ---- session-token guard against stale post-cancel results --------------
+
+def test_stale_commit_text_dropped_after_cancel():
+    """Regression: pressing Esc mid-TTS bumps the session token, so
+    a Whisper transcribe that started on TTS-bleed audio and finishes
+    AFTER cancel (a) doesn't fire _process_commit, (b) doesn't queue
+    a parse, (c) doesn't trigger a follow-up TTS round-trip.
+
+    Field log: read_screen_text playback bled into the open mic;
+    the captured fragment ('Uw konsola znak praw autorskich,
+    korder...' — Korder's own voice) was transcribed and then
+    Gemma conversationally answered it, with TTS speaking the
+    answer. Token guard at _on_commit_text drops the result before
+    any of that can fire."""
+    import types
+    from unittest.mock import MagicMock
+    from korder.ui import main_window as mw
+
+    stub = MagicMock()
+    stub._session_token = 7
+    stub._is_stale_worker = types.MethodType(mw.MainWindow._is_stale_worker, stub)
+    stub._on_commit_text = types.MethodType(mw.MainWindow._on_commit_text, stub)
+
+    # Simulate a worker submitted before cancel (token=6, current=7).
+    stale_worker = MagicMock()
+    stale_worker._session_token = 6
+    stub.sender.return_value = stale_worker
+
+    stub._on_commit_text("Uw konsola znak praw autorskich, korder")
+
+    # _process_commit must not have been called — the bleed never
+    # reaches the parse stage.
+    stub._process_commit.assert_not_called()
+
+
+def test_fresh_commit_text_processes_normally():
+    """The token guard MUST NOT drop legitimate results from the
+    current session — otherwise the user couldn't dictate after
+    a cancel ever cleared. Worker token == current token →
+    _process_commit fires."""
+    import types
+    from unittest.mock import MagicMock
+    from korder.ui import main_window as mw
+
+    stub = MagicMock()
+    stub._session_token = 7
+    stub._is_stale_worker = types.MethodType(mw.MainWindow._is_stale_worker, stub)
+    stub._on_commit_text = types.MethodType(mw.MainWindow._on_commit_text, stub)
+    # Pretend recorder / pending state are untouched (MagicMock auto-handles).
+    stub._inject_workers = []
+    stub._pending_action = None
+    stub._inject_chk.isChecked.return_value = False
+    stub._injector = None
+    stub._recorder.is_recording = True
+
+    fresh_worker = MagicMock()
+    fresh_worker._session_token = 7  # matches current
+    stub.sender.return_value = fresh_worker
+
+    stub._on_commit_text("przeczytaj ekran")
+
+    stub._process_commit.assert_called_once_with("przeczytaj ekran")
+
+
+def test_cancel_recording_bumps_session_token():
+    """Esc → cancel_recording bumps the token before tearing down,
+    so any in-flight Whisper / inject worker that finishes after
+    has its result dropped at the slot."""
+    import types
+    from unittest.mock import MagicMock
+    from korder.ui import main_window as mw
+
+    tts = MagicMock()
+    recorder = MagicMock()
+    recorder.is_recording = False  # short-circuit the recorder branch
+
+    class _Stub:
+        _recorder = recorder
+        _tts = tts
+        _ducker = None
+        _chime_pending_timer = None
+        _tts_active_count = 0
+        _await_tts_for_answer_reset = False
+        _dictation_via_wake = False
+        _partial_timer = MagicMock()
+        _osd_throttle_timer = MagicMock()
+        _wake_idle_timer = MagicMock()
+        _osd = MagicMock()
+        _status = MagicMock()
+        _pending_partial_text = None
+        _recent_transcripts = MagicMock()
+        _session_token = 0
+        def _sync_button(self): pass
+        def _emit_tray_state(self): pass
+
+    stub = _Stub()
+    stub._force_resume_after_cancel = types.MethodType(
+        mw.MainWindow._force_resume_after_cancel, stub,
+    )
+    stub._snip_tts_bleed_window = types.MethodType(
+        mw.MainWindow._snip_tts_bleed_window, stub,
+    )
+    stub.cancel_recording = types.MethodType(mw.MainWindow.cancel_recording, stub)
+
+    with patch.object(_mpris, "qdbus", return_value=""):
+        stub.cancel_recording()
+
+    assert stub._session_token == 1, "cancel_recording must bump the session token"
+
+
+def test_stop_recording_bumps_session_token():
+    """The auto-stop / toggle path also reaches in-flight workers —
+    stop bumps the token too. Without this, a partial worker still
+    chewing audio when stop fires could land its result and fire
+    a stability commit on bleed."""
+    import types
+    from unittest.mock import MagicMock
+    from korder.ui import main_window as mw
+
+    recorder = MagicMock()
+    recorder.is_recording = True
+    recorder.stop.return_value = MagicMock(size=0)
+
+    detector = MagicMock()
+    # Force the early-exit path so we don't need to mock the full
+    # tail-transcribe pipeline.
+    detector.has_speech.return_value = False
+
+    class _Stub:
+        _recorder = recorder
+        _detector = detector
+        _ducker = None
+        _injector = None
+        _partial_timer = MagicMock()
+        _osd_throttle_timer = MagicMock()
+        _wake_idle_timer = MagicMock()
+        _osd = MagicMock()
+        _status = MagicMock()
+        _pending_partial_text = None
+        _recent_transcripts = MagicMock()
+        _committed_samples = 0
+        _pending_action = "x"  # gets cleared by _stop_recording's no-tail branch
+        _write_mode = False
+        _dictation_via_wake = False
+        _session_token = 0
+        def _emit_tray_state(self): pass
+        def _end_dictation_lifecycle(self): pass
+
+    stub = _Stub()
+    stub._stop_recording = types.MethodType(mw.MainWindow._stop_recording, stub)
+
+    stub._stop_recording(transcribe_tail=False)
+
+    assert stub._session_token == 1, "_stop_recording must bump the session token"
