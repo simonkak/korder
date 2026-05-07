@@ -63,6 +63,7 @@ production-grade, but everything works on a quiet desk mic with a 7800 XT.
     - Web actions (xdg-routed, opens default browser): web search (DuckDuckGo / Google / Bing / Startpage / Ecosia), YouTube search, Wikipedia (auto-picks language from system locale), Maps
     - System: lock screen via `xdg-screensaver lock`; shutdown / reboot / sleep via `systemctl` (each gated behind voice confirmation — saying just *"shutdown computer"* doesn't fire it, you have to say *"yes"* / *"tak"* to a follow-up question)
     - End-by-voice: *"cancel that"* / *"nevermind"* / *"forget it"* / *"nieważne"* aborts mid-recording, and graceful-end phrasings like *"that's all"* / *"we're done"* / *"koniec"* / *"zakończ"* / *"to wszystko"* / *"stop listening"* close the session the same way — pending text and queued actions in the utterance go nowhere either way
+- **Tool-driven discovery loop for parametric actions** — actions whose params reference live system state (audio sinks, paired Bluetooth devices, active MPRIS players, open windows, Spotify search results) declare a list of read-only tools. The intent loop iterates: Gemma can emit `tool_calls` to enumerate state, Korder runs each tool and feeds results back, the next turn dispatches the action with the canonical name verbatim from the tool result. Bounded by `MAX_TOOL_ITERATIONS=5` plus a same-args repetition guard. When Gemma skips a tool that an emitted action declares, Korder force-calls it (zero-arg tools with `{}`, parametric tools with args name-matched against the action's params). Failure modes cascade: tool fails → empty list → loop continues; LLM phrase doesn't match input → relaxed dispatch by name+params; LLM emits `pending_action` while regex would have dispatched → regex backstop swaps. The fallback chain composes — every layer is opportunistic, never load-bearing. v1 tool catalog: `list_audio_sinks`, `list_paired_bluetooth_devices`, `list_active_mpris_players`, `list_open_windows`, `search_spotify`. Adding a new tool is one file under `src/korder/tools/<domain>.py` calling `register_tool(...)`.
 - **Pending parameter handling with LLM-generated prompts** — say *"Spotify play"* and Gemma both detects the action AND emits a contextual question in the same JSON response: *"Co chcesz odtworzyć w Spotify?"* in Polish, *"What do you want to play on Spotify?"* in English. The follow-up utterance becomes the search query. Same pattern works for confirmation (*"Czy uśpić komputer? Powiedz tak lub nie."*), web search (*"Co chcesz wyszukać w sieci?"*), and any future parameterized action — the LLM picks up the action's description + parameter name and phrases an appropriate ask in the input language. Falls back to hand-written i18n templates when the LLM is unavailable or the model omits the response field.
 - **Conversational answers + follow-up memory** — ask a factual question Korder isn't expected to dispatch (*"Jaka jest stolica Francji?"*, *"ile to siedem razy osiem?"*) and Gemma answers directly in the OSD instead of opening a Wikipedia tab. The current dictation session keeps a rolling 4-turn history plus a structured `context` field — Gemma identifies the conversation's current subject ("Budapeszt", "Linkin Park") each turn and the next prompt surfaces it as a `Current topic:` line, so bare follow-ups bind to it cleanly. *"Co powiesz o Budapeszcie?"* → *"Ile ma mieszkańców?"* answers about Budapest's population, then *"A co powiesz o Warszawie?"* swaps the topic and *"A ile ono ma mieszkańców?"* answers about Warsaw. Same channel powers action-param inference: *"Co powiesz o zespole Linkin Park?"* → *"Czy możesz otworzyć ich w Spotify?"* fires `spotify_play(query="Linkin Park")` with no follow-up prompt. Small-talk works too (*"Czy lubisz kotki?"* → *"Tak, lubię kotki — są urocze."*). History + context both clear at session end (mic close, cancel, idle timeout) so cross-session topics never leak into a new *"hey jarvis"*. The model is told to say *"I don't know"* plainly rather than hallucinate when uncertain — it still occasionally gets facts wrong, but doesn't try to confidently invent them. Live-data questions (current time, today's weather) are intentionally not answered.
 - **Graceful session end** — the cancel-by-voice path covers polite end signals as well as aborts. *"Ok, dzięki. Koniec."* / *"Zakończę."* / *"that's all"* / *"we're done"* / *"stop listening"* / *"to wszystko"* / *"wystarczy"* all close the session as cleanly as *"cancel that"* / *"nieważne"*. Same drop-everything semantics — pending text and queued actions in the same utterance go nowhere.
@@ -340,6 +341,30 @@ meaningfully slower than E2B at the median (630 ms vs 556 ms).
 similar VRAM win) or running on a machine where every 100 ms of latency
 matters more than getting Polish synonyms right.
 
+### Why not a bigger or different model?
+
+Spot-tested on the same regression bar (mix of conversational PL/EN
+questions, parametric Spotify dispatch, window targeting, audio-output
+switching, basic key actions). None replaced E4B as the resting choice;
+notes for posterity:
+
+| Tag | Footprint | Outcome |
+|---|---|---|
+| `gemma4:e4b-it-q8_0` | 12 GB | No measurable improvement over the Q4_K_M default. The Gemma-E4B compliance ceiling on multi-step tool dispatch isn't precision-bound; Q8 weights don't move it. |
+| `gemma4:26b-a4b-it-q4_K_M` (MoE: 25 B / 3.8 B active) | 17 GB | Token-generation degeneration under Q4. Long repeating loops, occasional script slips (Tamil characters mid-Polish JSON). MoE routing is more sensitive to aggressive quantization than dense models — expert selection logits flip on small numerical changes. The Q8 version doesn't fit a 16 GB card. |
+| `qwen2.5:14b` (Q4) | 9 GB | Dispatches `play_pause` (media-key keypress) for *"Spotify play X"*. Qwen 2.5's post-training prior on the verb "play" routes to media-control APIs; Gemma's prior happens to align with Korder's `spotify_play` framing. |
+| `qwen3.5:9b` (Q4, no thinking) | 6.6 GB | Cleaner Spotify dispatch than E4B (no trailing-text bleed) but conversational queries silently produce empty `response` fields. |
+| `qwen3.5:9b` (Q4, with thinking) | 6.6 GB | Worse — reasoning leaks past schema constraints, model picks `sleep` for unrelated inputs, hallucinates greetings into the response slot. Korder's `/api/chat` + `think:true` path that works for Gemma's thinking doesn't compose with Qwen 3's reasoning format. |
+
+Pattern: **each model is good at some of Korder's cases and bad at
+others**, and Korder's prompt has been tuned for Gemma's behavior over
+months of fixes. The architecture work — tool registry, iterative loop,
+force-on-skip, relaxed dispatch, regex backstop, pending-cleanup — is
+what compensates for E4B's quirks; swapping models doesn't add measurable
+value on top of that. The next reach for "actually better" would be a
+larger Gemma 4 dense (`gemma4:31b-it-q4_K_M` is 18 GB and won't fit a
+16 GB card) or a model family yet to be released.
+
 ## Voice commands (when LLM mode is on)
 
 Say these in normal speech; phrasing variations work because Gemma
@@ -414,6 +439,21 @@ LLM prompt and regex parser pick it up automatically.
   intent parser uses JSON output rather than function calling, with
   measured numbers from a head-to-head against the `function-calling`
   branch.
+- **Action registry** lives in `src/korder/actions/`. One module per
+  domain; each calls `register(Action(...))` at import time. The
+  `Action` dataclass carries `name`, `description` (what the LLM reads),
+  `triggers` (regex-mode fallback phrases per locale), `parameters`
+  (JSON-Schema for `params`), `op_factory` (returns the op tuple to
+  execute), and `tools` (list of read-only tool names the LLM may call
+  before filling params).
+- **Tool registry** lives in `src/korder/tools/`. Same shape as the
+  action registry but for read-only context providers. The `Tool`
+  dataclass carries `name`, `description`, `executor` (called as
+  `executor(**args)`), and `args_schema` (JSON-Schema for tool args;
+  empty for zero-arg tools). `intent.py:_run_intent_loop` orchestrates
+  the iterative discovery flow: Gemma emits `tool_calls`, Korder runs
+  the executors and renders results back into the next turn's prompt
+  via `_render_tool_history`.
 
 ## License
 
