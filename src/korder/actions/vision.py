@@ -503,18 +503,33 @@ def _vision_describe(image_path: str, target_hint: str = "") -> str:
         "options": {"temperature": 0.2},
         "keep_alive": 300.0,
     }
-    try:
-        req = urllib.request.Request(
-            _OLLAMA_URL,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+    # Retry once on empty response. Field log: Gemma E4B's vision
+    # pathway intermittently emits a stop token immediately after
+    # the image patches with done_reason='stop' but response='' —
+    # essentially a no-op generation. The same payload, retried,
+    # produces a proper description. Costs ~10s extra on the rare
+    # empty path; cheaper than failing the action.
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(
+                _OLLAMA_URL,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=_VISION_TIMEOUT_S) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, json.JSONDecodeError, OSError, ValueError) as e:
+            log.warning("describe_window: vision call failed: %s", e)
+            return ""
+        result = (body.get("response") or "").strip()
+        if result:
+            return result
+        log.info(
+            "describe_window: vision returned empty (attempt %d/2, "
+            "done_reason=%r, eval_count=%s)",
+            attempt + 1, body.get("done_reason"), body.get("eval_count"),
         )
-        with urllib.request.urlopen(req, timeout=_VISION_TIMEOUT_S) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, json.JSONDecodeError, OSError, ValueError) as e:
-        log.warning("describe_window: vision call failed: %s", e)
-        return ""
-    return (body.get("response") or "").strip()
+    return ""
 
 
 def _do_describe_window(target: str) -> None:
@@ -595,10 +610,15 @@ register(Action(
     description=(
         "Take a screenshot of a window and describe its contents "
         "aloud via a vision model. Empty target → captures the active "
-        "window. Named target → activates that window first (via "
-        "fuzzy-match against open windows), then captures. "
-        "USE for 'describe X' / 'co widzisz w X' / 'what's on screen' / "
-        "equivalents. SKIP for non-vision questions."
+        "window. Named target → that window. "
+        "Put the user's LITERAL app name into params.target — "
+        "'Firefox' stays 'Firefox', NOT generalized to 'browser'; "
+        "'Konsole' stays 'Konsole', NOT 'terminal'. Polish "
+        "inflections like 'Firefoxa' are fine; the matcher handles "
+        "them. "
+        "USE for 'describe X' / 'co widzisz w X' / 'opisz okno X' / "
+        "'what's on screen' / equivalents. SKIP for non-vision "
+        "questions."
     ),
     triggers={
         "en": [
