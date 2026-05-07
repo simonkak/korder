@@ -1083,6 +1083,26 @@ class MainWindow(QMainWindow):
             log.info("inject_done deferred — TTS in flight (count=%d)", self._tts_active_count)
             return
 
+        # Vision-class follow-up gate FIRST — before set_committed.
+        # set_committed would flip the OSD state from 'executing' to
+        # 'committed', which makes _reset_to_listening_after_answer
+        # (the slot we schedule below) no-op. Keeping the executing
+        # state means the OSD continues to render the description /
+        # OCR ack until the dwell expires, then transitions to
+        # listening cleanly.
+        keep_open = self._keep_session_open_pending
+        self._keep_session_open_pending = False
+        if keep_open and self._auto_stop_pending:
+            self._auto_stop_pending = False  # suppress auto-stop
+            if self._recorder.is_recording:
+                # 800 ms dwell so the OSD's last description / ack
+                # frame stays readable, then flip back to listening
+                # so the user can ask a follow-up.
+                # _reset_to_listening_after_answer also snips the
+                # TTS bleed window.
+                QTimer.singleShot(800, self._reset_to_listening_after_answer)
+            return
+
         # Post-inject: status line clears, prompt stays bright.
         # BUT: if the worker just emitted pending_action (and the main
         # thread set self._pending_action), don't override the
@@ -1099,24 +1119,6 @@ class MainWindow(QMainWindow):
         # fired during this inject worker's run.
         command_fired = self._auto_stop_pending
         self._auto_stop_pending = False  # always reset, never leak
-
-        # Vision-class follow-up gate. If a vision action requested
-        # the session stay open (keep_session_open signal seen during
-        # the worker's run), suppress auto-stop and transition back
-        # to listening instead — same shape as the conversational-
-        # answer path, so 'opisz Firefox' → description spoken →
-        # 'a co z autorem?' lands in the same session with the
-        # description already in history (post_synthetic_turn).
-        keep_open = self._keep_session_open_pending
-        self._keep_session_open_pending = False
-        if keep_open and command_fired:
-            if self._recorder.is_recording:
-                # 800 ms dwell so the OSD's last description-frame
-                # stays readable, then flip back to listening for
-                # the follow-up. _reset_to_listening_after_answer
-                # already snips the TTS bleed window for us.
-                QTimer.singleShot(800, self._reset_to_listening_after_answer)
-            return
 
         # Auto-stop if a command-style action just ran AND auto-stop is
         # configured. Deferred so the OSD's post-execution frame renders
