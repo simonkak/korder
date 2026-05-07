@@ -884,6 +884,19 @@ class IntentParser:
             )
             actions = [spotify_override]
 
+        # Safety net 3: describe_window target fill. Gemma E4B drops
+        # the target param for Polish phrasings like 'Opisz okno
+        # Firefoxa' even with an example in the prompt. When the
+        # target slot is empty but the transcript clearly names one,
+        # fill it deterministically.
+        describe_override = _maybe_describe_window_target_fill(transcript, actions)
+        if describe_override is not None:
+            log.info(
+                "describe_window target fill: %r",
+                describe_override["params"],
+            )
+            actions = [describe_override]
+
         log.info("LLM actions for %r: %r", transcript, actions)
 
         # Supplement: if LLM came back empty but the regex parser sees an
@@ -1037,13 +1050,19 @@ class IntentParser:
         # rather than ~10s, so the regex fallback path engages quickly
         # when the model degrades.
         options = {"temperature": 0.0, "num_predict": 256}
-        # Tighten the schema when '?' marks the input as a question:
-        # actions array forced empty, response forced non-empty. Schema
-        # enforcement does what prose hints couldn't — even E4B's bias
-        # toward action selection can't fabricate a non-empty array
-        # when the constraint engine refuses every token of one.
-        question_mode = _looks_interrogative(transcript)
-        format_value = self._format_constraint(question_mode=question_mode)
+        # The trailing '?' is a soft interrogative hint, surfaced to
+        # the LLM in the user prompt prefix (see _build_user_prompt).
+        # Field log: Whisper sometimes adds '?' to imperatives based
+        # on rising intonation, especially in Polish ('Opisz okno
+        # Firefoxa?' was meant as an imperative). The schema-forced
+        # question_mode (actions=[], response minLength=1) used to
+        # turn that into a degenerate token-repetition loop because
+        # Gemma had no good answer for an imperative being treated
+        # as a question. Drop the schema enforcement; keep the prompt
+        # hint. E4B's bias toward dispatching imperatives is fine on
+        # its own; for genuine questions the prompt hint biases it
+        # back toward `response`.
+        format_value = self._format_constraint(question_mode=False)
         stream = on_partial_response is not None
 
         system_prompt = _build_system_prompt(self.show_triggers_in_prompt)
@@ -1666,6 +1685,47 @@ def _maybe_spotify_misroute_override(
         "phrase": transcript.strip(),
         "name": "spotify_play",
         "params": params,
+    }
+
+
+def _maybe_describe_window_target_fill(
+    transcript: str,
+    actions: list,
+) -> dict | None:
+    """If the LLM emitted exactly ``describe_window`` with empty
+    target but the transcript names one, return a replacement action
+    with target filled. Otherwise None.
+
+    Field log: 'Opisz okno Firefoxa?' (Whisper added the question
+    mark) routed to describe_window via regex fallback after
+    question-mode degeneration. Regex doesn't extract target, so the
+    action ran with target='' and captured the wrong window. Same
+    fix shape as the Spotify override — transcript-driven extraction
+    when the LLM didn't fill the param. KWin's fuzzy match downstream
+    handles minor inflection ('Firefoxa' → 'Firefox')."""
+    if len(actions) != 1:
+        return None
+    entry = actions[0]
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("name") != "describe_window":
+        return None
+    existing_params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+    if (existing_params.get("target") or "").strip():
+        return None  # LLM already filled it; respect that
+    # Lazy-import to avoid circular dep — vision.py imports intent.py
+    # transitively via korder.config + korder.kwin.
+    try:
+        from korder.actions.vision import _extract_target_from_transcript
+    except Exception:
+        return None
+    target = _extract_target_from_transcript(transcript)
+    if not target:
+        return None
+    return {
+        "phrase": entry.get("phrase") or transcript.strip(),
+        "name": "describe_window",
+        "params": {"target": target},
     }
 
 

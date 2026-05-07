@@ -38,6 +38,88 @@ def test_describe_window_op_with_no_target_returns_callable():
     assert op[0] == "callable"
 
 
+# ---- _extract_target_from_transcript -----------------------------------
+
+
+def test_extract_target_from_polish_imperative():
+    """'Opisz okno Firefoxa' — strip 'opisz', 'okno', leaves 'Firefoxa'.
+    Polish inflection is preserved as-is; KWin's fuzzy match downstream
+    handles morphology."""
+    assert vision._extract_target_from_transcript("Opisz okno Firefoxa") == "Firefoxa"
+
+
+def test_extract_target_from_english_imperative():
+    assert vision._extract_target_from_transcript("describe Firefox") == "Firefox"
+
+
+def test_extract_target_from_what_do_you_see_form():
+    """'What do you see in Firefox' / 'co widzisz w Firefoxie'."""
+    assert vision._extract_target_from_transcript("what do you see in Firefox") == "Firefox"
+    assert vision._extract_target_from_transcript("co widzisz w Firefoxie") == "Firefoxie"
+
+
+def test_extract_target_drops_punctuation():
+    """Trailing '?' or '.' from Whisper shouldn't end up in the target."""
+    assert vision._extract_target_from_transcript("Opisz okno Firefoxa?") == "Firefoxa"
+    assert vision._extract_target_from_transcript("describe Firefox.") == "Firefox"
+
+
+def test_extract_target_returns_empty_when_no_target():
+    """Bare describe verb with no named target — nothing to extract."""
+    assert vision._extract_target_from_transcript("Opisz") == ""
+    assert vision._extract_target_from_transcript("co widzisz") == ""
+
+
+# ---- _maybe_describe_window_target_fill (parse-layer override) ---------
+
+
+def test_target_fill_when_llm_emitted_empty_target():
+    """Field log: 'Opisz okno Firefoxa' → LLM emitted describe_window
+    with empty target. Override extracts 'Firefoxa' from transcript."""
+    from korder.intent import _maybe_describe_window_target_fill
+    actions = [{"phrase": "describe", "name": "describe_window"}]
+    override = _maybe_describe_window_target_fill(
+        "Opisz okno Firefoxa", actions,
+    )
+    assert override is not None
+    assert override["name"] == "describe_window"
+    assert override["params"]["target"] == "Firefoxa"
+
+
+def test_target_fill_skipped_when_llm_already_filled():
+    """LLM did its job — don't second-guess."""
+    from korder.intent import _maybe_describe_window_target_fill
+    actions = [{
+        "phrase": "describe",
+        "name": "describe_window",
+        "params": {"target": "Firefox"},
+    }]
+    override = _maybe_describe_window_target_fill(
+        "Opisz okno Firefoxa", actions,
+    )
+    assert override is None
+
+
+def test_target_fill_skipped_when_no_target_in_transcript():
+    """Bare verb — nothing to extract, leave the empty-target action
+    alone (it'll capture the active window, which is a sensible
+    default for 'describe what you see')."""
+    from korder.intent import _maybe_describe_window_target_fill
+    actions = [{"phrase": "Opisz", "name": "describe_window"}]
+    override = _maybe_describe_window_target_fill("Opisz", actions)
+    assert override is None
+
+
+def test_target_fill_skipped_when_action_is_not_describe_window():
+    """Other actions don't get this override — only describe_window."""
+    from korder.intent import _maybe_describe_window_target_fill
+    actions = [{"phrase": "press enter", "name": "press_enter"}]
+    override = _maybe_describe_window_target_fill(
+        "press enter", actions,
+    )
+    assert override is None
+
+
 # ---- executor flow -------------------------------------------------------
 
 

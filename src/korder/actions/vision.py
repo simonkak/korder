@@ -24,6 +24,7 @@ import base64
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -39,11 +40,50 @@ log = logging.getLogger(__name__)
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
 _SPECTACLE_TIMEOUT_S = 5.0
-_VISION_TIMEOUT_S = 60.0
+# Vision pathway needs additional GPU work over a text-only forward
+# pass — first call after a non-vision turn is meaningfully slower
+# than steady-state. Smoke-tested at ~10s warm; bumping to 120s leaves
+# headroom for a cold vision pathway load on shared GPU under load.
+_VISION_TIMEOUT_S = 120.0
 # Settle delay between activate_window_by_name and the screenshot —
 # KWin takes a frame or two to commit the focus change. Without this
 # the capture races and grabs the previous active window.
 _FOCUS_SETTLE_S = 0.25
+
+# Polish + English trigger words to strip when extracting a target
+# from the user's transcript. Mirrors the Spotify override's drop
+# list — when the LLM dispatched describe_window with empty target
+# but the transcript clearly names a window, we extract here.
+_DESCRIBE_VERBS = frozenset({
+    "describe", "show",
+    "opisz", "pokaż", "pokaz",
+})
+_DESCRIBE_FILLERS = frozenset({
+    "the", "a", "an",
+    "okno", "okno.",  # Polish "window"
+    "window", "of",
+    "what", "do", "you", "see", "in",
+    "co", "widzisz", "w", "na",
+    "is", "on", "screen",
+})
+_DESCRIBE_DROP = _DESCRIBE_VERBS | _DESCRIBE_FILLERS
+
+
+def _extract_target_from_transcript(transcript: str) -> str:
+    """Strip describe-action trigger words and common fillers from
+    the transcript; what's left is the user's named target. Polish
+    inflections may produce non-canonical forms ('Firefoxa' instead
+    of 'Firefox') — we rely on KWin's downstream fuzzy matcher to
+    normalize. Returns the joined remaining tokens or empty string.
+    """
+    out: list[str] = []
+    for raw in re.split(r"[\s.,!?;:]+", transcript):
+        if not raw:
+            continue
+        if raw.lower() in _DESCRIBE_DROP:
+            continue
+        out.append(raw)
+    return " ".join(out)
 
 
 def _capture_active_window() -> str | None:
