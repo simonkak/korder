@@ -172,6 +172,29 @@ def list_windows(timeout_s: float = 1.0) -> list[dict]:
     )
 
 
+def shutdown() -> None:
+    """Unregister the bridge from the session bus. Called on app quit
+    so the next Korder instance can re-register the service name
+    cleanly without inheriting the torn-down Qt/D-Bus state. Idempotent.
+
+    Without this, registerService() on the next launch may fail with
+    "another Korder instance may already own this name" if the system
+    bus daemon hasn't yet reaped the old session-scoped registration."""
+    global _BRIDGE
+    bridge = _BRIDGE
+    if bridge is None:
+        return
+    _BRIDGE = None
+    try:
+        bus = QDBusConnection.sessionBus()
+        if bus.isConnected():
+            bus.unregisterObject(_PATH)
+            bus.unregisterService(_SERVICE)
+    except Exception:
+        # Best-effort — bus may already be tearing down.
+        pass
+
+
 def _set_bridge_for_test(bridge: Optional[_Bridge]) -> None:
     """Test hook: swap the global bridge for a stub. None resets."""
     global _BRIDGE

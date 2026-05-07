@@ -928,14 +928,45 @@ class MainWindow(QMainWindow):
         self.hide()
 
     def shutdown(self) -> None:
-        """Called from app shutdown to flush in-flight workers."""
-        # Belt-and-braces: if quit fires while still recording, restore
-        # the volume before workers wind down. atexit catches the rest.
-        self._end_dictation_lifecycle()
+        """Called from app shutdown to flush in-flight workers and
+        release every audio / DSP resource that could hold the process
+        alive after Qt's event loop exits.
+
+        PortAudio's callback thread is not Python-daemonic — leaving
+        an InputStream open (which happens whenever wake-listening or
+        a dictation session is active) means the process hangs after
+        the tray's Quit fires QApplication.quit(). We must:
+
+        1. Stop wake-listening (drops the wake detector's subscription).
+        2. Stop any active dictation (drops the dictation subscriber
+           and, when no other subscribers remain, closes the stream).
+        3. Wait for in-flight workers so they don't try to dispatch
+           against torn-down state.
+        4. Restore ducker state in case we paused volume and a worker
+           never ran.
+        """
+        # 1. Wake first — its callback path is the one that keeps the
+        # mic stream subscribed in idle. Idempotent.
+        try:
+            self.stop_wake_listening()
+        except Exception as e:
+            log.warning("shutdown: stop_wake_listening failed: %s", e)
+        # 2. Active dictation — transcribe_tail=False because we're
+        # shutting down, not the user pausing.
+        try:
+            if self._recorder.is_recording:
+                self._stop_recording(transcribe_tail=False)
+        except Exception as e:
+            log.warning("shutdown: stop_recording failed: %s", e)
+        # 3. Drain in-flight workers. 2s ceiling per worker — beyond
+        # that we'd rather leak than hang the user's quit.
         for w in list(self._workers):
             w.wait(2000)
         for w in list(self._inject_workers):
             w.wait(2000)
+        # 4. Belt-and-braces ducker restore. atexit catches the
+        # really-broken case but explicit teardown is cleaner.
+        self._end_dictation_lifecycle()
 
     def _on_commit_text(self, text: str) -> None:
         text = text.strip()

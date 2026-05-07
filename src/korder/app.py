@@ -338,12 +338,33 @@ def _run_app() -> int:
     server = _start_ipc_server(window)
 
     def _on_quit() -> None:
-        server.close()
-        window.shutdown()
-        if tts_engine is not None:
-            tts_engine.shutdown()
-        osd.hide_now()
-        tray.hide()
+        """Best-effort cleanup. Each step is wrapped so a single failure
+        doesn't skip the rest — the user clicked Quit and the process
+        should actually exit. Order matters:
+
+        1. IPC server first — stops accepting new toggle/cancel calls
+           that could try to start a session post-shutdown.
+        2. window.shutdown() — stops wake-listening, ends any active
+           dictation, drains workers. Releases PortAudio.
+        3. TTS — stops any in-flight Piper synthesis.
+        4. KWin bridge — unregisters the D-Bus service so the next
+           Korder instance can re-register cleanly.
+        5. OSD + tray — visual cleanup; harmless if order shifts.
+        """
+        from korder import kwin_bridge
+
+        for step_name, fn in [
+            ("ipc-server.close", server.close),
+            ("window.shutdown", window.shutdown),
+            ("tts.shutdown", (tts_engine.shutdown if tts_engine is not None else lambda: None)),
+            ("kwin_bridge.shutdown", kwin_bridge.shutdown),
+            ("osd.hide_now", osd.hide_now),
+            ("tray.hide", tray.hide),
+        ]:
+            try:
+                fn()
+            except Exception as e:
+                log.warning("shutdown step %s failed: %s", step_name, e)
 
     app.aboutToQuit.connect(_on_quit)
 
