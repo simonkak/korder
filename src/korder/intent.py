@@ -541,6 +541,16 @@ _SYSTEM_PROMPT = (
     "describe', read_screen_text for 'read aloud / przeczytaj'. "
     "Trailing '?' on these is a Whisper artifact, not a meta-"
     "question about your capabilities.\n"
+    "FOLLOW-UPS USE HISTORY CONTENT: when 'Recent conversation' "
+    "shows an Assistant turn, that text is YOUR PRIOR OUTPUT — "
+    "from a vision action you ran, an OCR you performed, or a "
+    "factual answer you gave. Treat it as fully authoritative, the "
+    "same as if you remembered seeing it directly. For follow-ups "
+    "like 'o czym są te logi?', 'and the title?', 'what's on that "
+    "page?', 'jak się ten zespół nazywał?' — use the prior "
+    "Assistant content to answer. NEVER claim 'I don't have access' "
+    "/ 'nie mam dostępu' when the relevant content is already in "
+    "the Recent conversation block.\n"
     "\n"
     "`context` field: populate with the primary subject of THIS turn — "
     "a short phrase (proper noun / place / topic), NOT a sentence. "
@@ -614,7 +624,12 @@ def _render_history(history: list[Turn]) -> str:
     free-text assistant prose."""
     if not history:
         return ""
-    lines = ["Recent conversation in this session (oldest first):"]
+    lines = [
+        "Recent conversation in this session (oldest first). "
+        "Treat Assistant lines as YOUR own prior output — text you "
+        "produced (vision description, OCR, factual answer) — and "
+        "use them as authoritative context for follow-up questions:",
+    ]
     for turn in history:
         lines.append(f"  User: {turn.user_text!r}")
         if turn.response:
@@ -1758,17 +1773,17 @@ def _maybe_describe_window_target_fill(
     transcript: str,
     actions: list,
 ) -> dict | None:
-    """If the LLM emitted exactly ``describe_window`` with empty
-    target but the transcript names one, return a replacement action
-    with target filled. Otherwise None.
+    """If the LLM emitted exactly ``describe_window`` with EMPTY or
+    GENERIC target but the transcript names a real app, return a
+    replacement action with target filled. Otherwise None.
 
-    Field log: 'Opisz okno Firefoxa?' (Whisper added the question
-    mark) routed to describe_window via regex fallback after
-    question-mode degeneration. Regex doesn't extract target, so the
-    action ran with target='' and captured the wrong window. Same
-    fix shape as the Spotify override — transcript-driven extraction
-    when the LLM didn't fill the param. KWin's fuzzy match downstream
-    handles minor inflection ('Firefoxa' → 'Firefox')."""
+    Generic target = 'window' / 'browser' / 'screen' / etc. — Gemma
+    occasionally generalizes the user's literal app name to a
+    category word. Field log: 'Opisz co jest w oknie Firefox' →
+    target='window', then UUID lookup misses and the active window
+    is captured (often Konsole, not Firefox). Same shape as the
+    empty-target fix.
+    """
     if len(actions) != 1:
         return None
     entry = actions[0]
@@ -1777,16 +1792,26 @@ def _maybe_describe_window_target_fill(
     if entry.get("name") != "describe_window":
         return None
     existing_params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
-    if (existing_params.get("target") or "").strip():
-        return None  # LLM already filled it; respect that
+    existing_target = (existing_params.get("target") or "").strip()
     # Lazy-import to avoid circular dep — vision.py imports intent.py
     # transitively via korder.config + korder.kwin.
     try:
-        from korder.actions.vision import _extract_target_from_transcript
+        from korder.actions.vision import (
+            _extract_target_from_transcript,
+            _is_generic_target,
+        )
     except Exception:
         return None
+    if existing_target and not _is_generic_target(existing_target):
+        return None  # LLM gave us a real-looking app name; respect it
     target = _extract_target_from_transcript(transcript)
     if not target:
+        return None
+    # Don't replace a non-empty generic target with another generic
+    # one. If extraction yielded something equally useless, leave the
+    # LLM's emission alone (action's own resolver will fall back to
+    # active window).
+    if _is_generic_target(target):
         return None
     return {
         "phrase": entry.get("phrase") or transcript.strip(),

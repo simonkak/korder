@@ -123,6 +123,58 @@ def test_target_fill_skipped_when_action_is_not_describe_window():
     assert override is None
 
 
+def test_target_fill_overrides_generic_target():
+    """Field log: 'Opisz co jest w oknie Firefox' → Gemma emitted
+    target='window' (generalization). The override should treat
+    that as effectively empty and re-extract 'Firefox' from the
+    transcript."""
+    from korder.intent import _maybe_describe_window_target_fill
+    actions = [{
+        "phrase": "Opisz",
+        "name": "describe_window",
+        "params": {"target": "window"},
+    }]
+    override = _maybe_describe_window_target_fill(
+        "Opisz co jest w oknie Firefox", actions,
+    )
+    assert override is not None
+    assert override["params"]["target"] == "Firefox"
+
+
+def test_target_fill_overrides_browser_generalization():
+    """'browser' is a common Gemma generalization for 'Firefox' /
+    'Chrome' / 'Konsole's web sibling. Override re-extracts the
+    real app."""
+    from korder.intent import _maybe_describe_window_target_fill
+    actions = [{
+        "phrase": "describe",
+        "name": "describe_window",
+        "params": {"target": "browser"},
+    }]
+    override = _maybe_describe_window_target_fill(
+        "describe Firefox", actions,
+    )
+    assert override is not None
+    assert override["params"]["target"] == "Firefox"
+
+
+def test_target_fill_skipped_when_only_generic_in_transcript():
+    """User said something like 'opisz okno' with no app name. The
+    transcript extraction yields no real target. Don't override
+    with another generic — let the action fall back to active
+    window naturally."""
+    from korder.intent import _maybe_describe_window_target_fill
+    actions = [{
+        "phrase": "Opisz",
+        "name": "describe_window",
+        "params": {"target": "window"},
+    }]
+    override = _maybe_describe_window_target_fill(
+        "Opisz okno", actions,
+    )
+    assert override is None
+
+
 # ---- read_screen_text action -------------------------------------------
 
 

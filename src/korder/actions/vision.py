@@ -63,12 +63,28 @@ _DESCRIBE_VERBS = frozenset({
     "opisz", "pokaż", "pokaz",
 })
 _DESCRIBE_FILLERS = frozenset({
-    "the", "a", "an",
-    "okno", "okno.",  # Polish "window"
-    "window", "of",
+    "the", "a", "an", "of",
     "what", "do", "you", "see", "in",
-    "co", "widzisz", "w", "na",
-    "is", "on", "screen",
+    "is", "on", "screen", "now",
+    # Polish "window" inflections (nominative, locative, genitive,
+    # accusative, instrumental) and "screen" inflections — we drop
+    # these so the user's NAMED target (Firefox / Konsole / etc.)
+    # remains after the strip pass.
+    "okno", "oknie", "okna", "okno.", "okien", "oknem",
+    "ekran", "ekranie", "ekranu", "ekranem", "ekrany",
+    # Polish question / form words for 'what / what you see / what's'
+    "co", "widzisz", "widać",
+    "w", "na", "do", "z",
+    "jest", "są",
+})
+# Generic target words the LLM tends to substitute for the user's
+# actual app name. When _maybe_describe_window_target_fill sees one
+# of these as the LLM-emitted target, it treats it as if the target
+# were empty and extracts from the transcript instead.
+_DESCRIBE_GENERIC_TARGETS = frozenset({
+    "window", "browser", "screen", "active window", "current window",
+    "okno", "oknie", "okna", "ekran", "ekranie",
+    "przeglądarka", "przegladarka", "monitor",
 })
 _DESCRIBE_DROP = _DESCRIBE_VERBS | _DESCRIBE_FILLERS
 
@@ -88,6 +104,16 @@ def _extract_target_from_transcript(transcript: str) -> str:
             continue
         out.append(raw)
     return " ".join(out)
+
+
+def _is_generic_target(target: str) -> bool:
+    """True iff the LLM emitted a generic target word (e.g. 'window',
+    'browser') instead of the user's actual app name. The runtime
+    override treats these as effectively empty so target-fill from
+    transcript can produce a real app name."""
+    if not target:
+        return False
+    return target.strip().lower() in _DESCRIBE_GENERIC_TARGETS
 
 
 # Stable copy of the most recent capture, kept across runs for
