@@ -363,9 +363,13 @@ _EXAMPLES_BLOCK = (
     '    "Wznów" → {"actions": [{"phrase": "Wznów", "name": "play_pause"}]}\n'
     '    "wstrzymaj" → {"actions": [{"phrase": "wstrzymaj", "name": "play_pause"}]}\n'
     '    "Pauzuj" → {"actions": [{"phrase": "Pauzuj", "name": "play_pause"}]}\n'
+    '    "Odtwórz" → {"actions": [{"phrase": "Odtwórz", "name": "play_pause"}]}\n'
     '    "Zatrzymaj odtwarzanie" → {"actions": [{"phrase": "Zatrzymaj odtwarzanie", "name": "stop_playback"}]}\n'
     '    "play music" → {"actions": [{"phrase": "play music", "name": "play_pause"}]}\n'
     '    "Pause Spotify" → {"actions": [{"phrase": "Pause Spotify", "name": "pause_player", "params": {"target": "Spotify"}}]}\n'
+    "  Polish play-verb + named subject + Spotify → spotify_play (NOT play_pause):\n"
+    '    "Odtwórz Queen w Spotify" → {"actions": [{"phrase": "Odtwórz Queen w Spotify", "name": "spotify_play", "params": {"query": "Queen"}}]}\n'
+    '    "Włącz Hybrid Theory na Spotify" → {"actions": [{"phrase": "Włącz Hybrid Theory na Spotify", "name": "spotify_play", "params": {"query": "Hybrid Theory"}}]}\n'
     '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
     '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_play", "params": {"query": "Linkin Park"}}]}\n'
     '  "Odtwórz Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz Lose Yourself w Spotify", "name": "spotify_play", "params": {"query": "Lose Yourself"}}]}\n'

@@ -143,11 +143,12 @@ register(Action(
     name="play_pause",
     description=(
         "Toggle the currently active media playback between play and pause. "
-        "Use for ANY imperative meaning start, pause, resume, or toggle "
-        "music / video — match the user's intent, not the literal phrase. "
-        "Distinct from stop_playback, which fully halts rather than just "
-        "pausing. If the user is plainly saying 'pause' / 'play' / 'resume' / "
-        "the equivalent in their language, this is the action."
+        "USE for BARE 'pause' / 'play' / 'resume' / equivalent in any "
+        "language WITH NO specific player or song named. "
+        "SKIP when the user names Spotify (route to spotify_play — they "
+        "want something searched, not the global media key) or another "
+        "media player (route to resume_player / pause_player). Distinct "
+        "from stop_playback, which fully halts rather than just pausing."
     ),
     triggers={
         "en": ["play music", "pause music", "toggle music", "pause", "resume"],
