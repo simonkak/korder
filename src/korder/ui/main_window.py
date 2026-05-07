@@ -1142,7 +1142,17 @@ class MainWindow(QMainWindow):
         ):
             answer = self._last_llm_response
             self._last_llm_response = ""
-            QTimer.singleShot(120, lambda a=answer: self._show_conversational_answer(a))
+            # Pass the user's transcript through so language detection
+            # for TTS uses the INPUT language, not the answer's. Field
+            # log: Gemma sometimes replies in English to a Polish
+            # question (capability denial in particular: 'I cannot read
+            # your screen' for 'Co widzisz w oknie?'). Detecting lang
+            # from the answer's content then plays English TTS over a
+            # Polish session — wrong voice for the wrong reason.
+            QTimer.singleShot(
+                120,
+                lambda a=answer, t=original_text: self._show_conversational_answer(a, t),
+            )
             return
 
         # Pure-dictation path: the LLM produced no command actions this
@@ -1160,7 +1170,7 @@ class MainWindow(QMainWindow):
         ):
             QTimer.singleShot(700, self._reset_to_listening_after_miss)
 
-    def _show_conversational_answer(self, answer: str) -> None:
+    def _show_conversational_answer(self, answer: str, user_transcript: str = "") -> None:
         """Display Gemma's free-form reply for a no-action conversational
         query (math, definition, translation, general knowledge).
         Reuses the executing-progress visual treatment — italic, accent
@@ -1191,7 +1201,16 @@ class MainWindow(QMainWindow):
         # + suppress_when_playing coordination for free.
         if self._tts is not None and not self._is_tts_suppressed():
             from korder.audio.tts import _detect_lang
-            lang = _detect_lang(answer)
+            # Prefer the user's input language over the answer's
+            # content language. When Gemma occasionally responds in
+            # English to a Polish question, content-only detection
+            # picks English voice — wrong locale for the user's
+            # session. Falling back to answer-content lang only
+            # when we don't have a transcript (legacy callers).
+            if user_transcript.strip():
+                lang = _detect_lang(user_transcript)
+            else:
+                lang = _detect_lang(answer)
             self._await_tts_for_answer_reset = True
             self._on_speak_text(answer, lang)
             # Fallback: if playback_finished never fires (engine

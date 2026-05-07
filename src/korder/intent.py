@@ -404,9 +404,11 @@ _EXAMPLES_BLOCK = (
     "  Polish play-verb + named subject + Spotify → spotify_play (NOT play_pause):\n"
     '    "Odtwórz Queen w Spotify" → {"actions": [{"phrase": "Odtwórz Queen w Spotify", "name": "spotify_play", "params": {"query": "Queen"}}]}\n'
     '    "Włącz Hybrid Theory na Spotify" → {"actions": [{"phrase": "Włącz Hybrid Theory na Spotify", "name": "spotify_play", "params": {"query": "Hybrid Theory"}}]}\n'
-    "  describe_window — extract the named app/window into params.target:\n"
+    "  describe_window — extract the named app/window into params.target. Trailing '?' doesn't make it a meta-question:\n"
     '    "Opisz okno Firefoxa" → {"actions": [{"phrase": "Opisz okno Firefoxa", "name": "describe_window", "params": {"target": "Firefox"}}]}\n'
+    '    "Co widzisz w oknie Firefox?" → {"actions": [{"phrase": "Co widzisz w oknie Firefox", "name": "describe_window", "params": {"target": "Firefox"}}]}\n'
     '    "describe Konsole" → {"actions": [{"phrase": "describe Konsole", "name": "describe_window", "params": {"target": "Konsole"}}]}\n'
+    '    "what do you see on screen?" → {"actions": [{"phrase": "what do you see on screen", "name": "describe_window"}]}\n'
     '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
     '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_play", "params": {"query": "Linkin Park"}}]}\n'
     '  "Odtwórz Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz Lose Yourself w Spotify", "name": "spotify_play", "params": {"query": "Lose Yourself"}}]}\n'
@@ -529,6 +531,16 @@ _SYSTEM_PROMPT = (
     "actions for explicit imperatives that command the system to do "
     "something — 'focus X', 'close this', 'show desktop', 'przełącz "
     "na X', 'zminimalizuj wszystko'.\n"
+    "VISION CAPABILITY: you DO have screen access via the "
+    "describe_window and read_screen_text actions. NEVER respond "
+    "'I cannot see your screen' / 'I can't read this' / 'nie mam "
+    "dostępu do ekranu' / similar capability-denials for questions "
+    "like 'co widzisz w oknie X?', 'opisz tę stronę', 'what's on "
+    "the screen?', 'read this to me'. Dispatch the appropriate "
+    "vision action — describe_window for 'what do you see / "
+    "describe', read_screen_text for 'read aloud / przeczytaj'. "
+    "Trailing '?' on these is a Whisper artifact, not a meta-"
+    "question about your capabilities.\n"
     "\n"
     "`context` field: populate with the primary subject of THIS turn — "
     "a short phrase (proper noun / place / topic), NOT a sentence. "
