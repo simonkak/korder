@@ -130,9 +130,10 @@ def test_read_screen_text_action_registered():
     assert "list_open_windows" in action.tools
 
 
-def test_read_screen_text_full_flow_copies_and_speaks_ack():
-    """Happy path: capture → tesseract → wl-copy → speak ack with
-    word count."""
+def test_read_screen_text_speaks_the_ocr_text_aloud():
+    """'przeczytaj' = 'read aloud' in Polish. The action should SPEAK
+    the OCR'd text (with a length cap), not just announce a word
+    count. Clipboard is a side effect for paste convenience."""
     spoken: list[tuple[str, str]] = []
     clipboard: list[str] = []
 
@@ -154,12 +155,58 @@ def test_read_screen_text_full_flow_copies_and_speaks_ack():
         action = get_action("read_screen_text")
         _, fn = action.op_factory({"target": "Firefox"})
         fn()
+    # Clipboard gets the full text.
     assert clipboard == ["Hello world this is OCR output"]
+    # TTS gets the literal OCR text (it's short enough to fit under
+    # the speech cap without truncation).
     assert len(spoken) == 1
     text, lang = spoken[0]
-    # Acknowledgement mentions the word count.
-    assert "6" in text  # 6 words in the OCR output
+    assert text == "Hello world this is OCR output"
     assert lang in ("pl", "en")
+
+
+def test_read_screen_text_truncates_long_text_for_speech():
+    """OCR results longer than the speech cap get truncated at a
+    sentence boundary and gain a 'rest on clipboard' suffix. Full
+    text stays on the clipboard."""
+    long_text = (
+        "First sentence. " * 30 +
+        "Second part of the text. " * 30
+    )
+    spoken: list[str] = []
+    clipboard: list[str] = []
+
+    with (
+        patch("korder.actions.vision._capture_target_window",
+              return_value="/tmp/fake.png"),
+        patch("korder.actions.vision._ocr_image", return_value=long_text),
+        patch("korder.actions.vision._copy_to_clipboard",
+              side_effect=lambda t: clipboard.append(t) or True),
+        patch("korder.actions.vision.emit_progress_speak",
+              side_effect=lambda t, lang="auto": spoken.append(t)),
+        patch("korder.actions.vision.os.unlink"),
+    ):
+        action = get_action("read_screen_text")
+        _, fn = action.op_factory({})
+        fn()
+    # Full text on clipboard.
+    assert clipboard == [long_text]
+    # Spoken text is shorter than the original AND ends with the
+    # locale-aware "rest on clipboard" suffix.
+    assert len(spoken) == 1
+    spoken_text = spoken[0]
+    assert len(spoken_text) < len(long_text)
+    assert any(
+        marker in spoken_text
+        for marker in ("Reszta w schowku.", "rest is on the clipboard.")
+    )
+
+
+def test_trim_for_speech_passthrough_short_text():
+    """Text under the cap is returned as-is, no suffix added."""
+    short = "Just a short sentence."
+    assert vision._trim_for_speech(short, locale="pl") == short
+    assert vision._trim_for_speech(short, locale="en") == short
 
 
 def test_read_screen_text_skips_when_capture_failed():

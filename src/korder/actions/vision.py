@@ -664,39 +664,75 @@ def _do_read_screen_text(target: str) -> None:
         emit_progress(t("progress_ocr_empty"))
         return
 
-    # Push the full text to the clipboard — that's the primary
-    # output. The user can paste it wherever. Spoken acknowledgement
-    # is brief — "copied N words" — because reading the whole OCR
-    # transcript aloud would be useless for a long article.
-    copied = _copy_to_clipboard(text)
-    if not copied:
-        emit_progress(t("progress_ocr_clipboard_failed"))
-        return
+    # Clipboard is a side effect; primary output is SPOKEN text.
+    # 'przeczytaj' / 'read' = read aloud. The clipboard is a
+    # convenience so the user can paste verbatim afterwards.
+    _copy_to_clipboard(text)
 
-    word_count = len(text.split())
+    # Cap what we read aloud — long pages produce minutes of TTS
+    # that no one actually wants. Cut at the nearest sentence
+    # boundary inside the cap; append a short "rest is on clipboard"
+    # note when truncated so the user knows the full text is
+    # available without re-running the action.
+    spoken_text = _trim_for_speech(text, locale=locale)
+    log.info(
+        "read_screen_text: speaking %d/%d chars (truncated=%s)",
+        len(spoken_text),
+        len(text),
+        len(spoken_text) < len(text),
+    )
+
     if locale == "pl":
-        ack = f"Skopiowano {word_count} słów do schowka."
         synthetic_user = (
             f"przeczytaj okno {target}" if target else "przeczytaj ekran"
         )
     else:
-        ack = f"Copied {word_count} words to clipboard."
         synthetic_user = (
             f"read {target}" if target else "read the screen"
         )
-    log.info("read_screen_text: clipboard ok, speaking ack")
-    # Same triad as describe_window: keep session open + post synthetic
-    # turn so a follow-up like 'czytaj fragment z imieniem' (read the
-    # part with the name) binds to the OCR'd content via history.
     request_keep_session_open()
     from korder.intent import post_synthetic_turn
-    # The synthetic response combines the spoken ack with a brief
-    # excerpt of the actual OCR text so follow-ups can quote
-    # specifics. Cap so a 5000-word PDF doesn't blow the prompt.
+    # Synthetic response stores the FULL OCR text (capped) so
+    # follow-ups can quote specifics — not just the spoken excerpt.
+    # 1500-char cap keeps the prompt bounded.
     excerpt = text[:1500].strip()
-    synthetic_response = ack + "\n\nText: " + excerpt
-    post_synthetic_turn(synthetic_user, synthetic_response)
-    emit_progress_speak(ack, lang=lang)
+    post_synthetic_turn(synthetic_user, excerpt)
+    emit_progress_speak(spoken_text, lang=lang)
+
+
+# Speech length cap. Past this, TTS playback gets long enough that
+# "read me this" stops feeling responsive — the user might want to
+# cancel and have the rest in clipboard. Sentence-aware so we don't
+# cut mid-word.
+_SPEECH_CAP_CHARS = 800
+
+
+def _trim_for_speech(text: str, *, locale: str) -> str:
+    """Cap ``text`` at ~_SPEECH_CAP_CHARS, breaking on a sentence
+    boundary when possible. Appends a short "rest on clipboard"
+    note (locale-aware) when truncation actually happens. The full
+    text is in the clipboard regardless; this helper only shapes
+    what the TTS engine reads aloud."""
+    text = text.strip()
+    if len(text) <= _SPEECH_CAP_CHARS:
+        return text
+    head = text[:_SPEECH_CAP_CHARS]
+    # Prefer a strong sentence boundary near the cap so we don't
+    # cut mid-clause. Fall back to the cap if nothing usable found.
+    boundary = max(
+        head.rfind(". "),
+        head.rfind("? "),
+        head.rfind("! "),
+        head.rfind("\n"),
+    )
+    if boundary > _SPEECH_CAP_CHARS // 2:
+        head = head[: boundary + 1]
+    head = head.rstrip()
+    if locale == "pl":
+        suffix = " Reszta w schowku."
+    else:
+        suffix = " The rest is on the clipboard."
+    return head + suffix
 
 
 def _read_screen_text_op(args: dict) -> tuple:
@@ -709,15 +745,17 @@ def _read_screen_text_op(args: dict) -> tuple:
 register(Action(
     name="read_screen_text",
     description=(
-        "Extract plain text from a window via OCR (Tesseract) and "
-        "push it to the clipboard. Brief spoken acknowledgement — "
-        "the full text isn't read aloud (could be long). Empty "
-        "target → reads the active window. Named target → reads "
-        "that window without changing focus. "
-        "USE for 'read the screen' / 'przeczytaj ekran' / 'OCR' / "
-        "'extract text from X' / 'skopiuj tekst'. "
-        "SKIP for vision-style queries about content meaning — "
-        "that's describe_window."
+        "Read the visible text of a window aloud via TTS (OCR'd by "
+        "Tesseract, then spoken). Long content is capped at a few "
+        "sentences for speech with the rest pushed to the clipboard "
+        "as a side effect. Empty target → reads the active window. "
+        "Named target → reads that window. "
+        "USE for 'przeczytaj ekran' / 'przeczytaj okno X' / 'read "
+        "the screen' / 'read me what's on this page' — the user "
+        "wants to HEAR the content. "
+        "SKIP for clipboard-only intents (no spoken output requested) "
+        "and for vision-style queries about content meaning — that's "
+        "describe_window."
     ),
     triggers={
         "en": [
