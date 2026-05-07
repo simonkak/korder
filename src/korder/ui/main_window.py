@@ -317,6 +317,15 @@ class MainWindow(QMainWindow):
         # count is purely about the local TTS-in-flight signal —
         # not about which media services to release later.
         self._tts_active_count = 0
+        # When _on_inject_done fires while TTS is reading an action's
+        # spoken response (describe_window, future TTS-emitting
+        # actions), the OSD is currently showing the description via
+        # the executing-progress path. Don't clobber it with
+        # set_committed AND don't auto-stop yet — defer the whole
+        # handler until playback completes (replayed in
+        # _resume_after_tts). Stores the original_text we were given
+        # so replay sees the same arguments.
+        self._deferred_inject_done: str | None = None
         # Soft "go" chime on dictation start (mirrors the Plasma
         # "ready" cue users expect from voice assistants). Audible
         # signal that mic just opened — but transcription is
@@ -1050,6 +1059,20 @@ class MainWindow(QMainWindow):
             self._status.setText("Idle.")
 
     def _on_inject_done(self, original_text: str) -> None:
+        # If TTS is reading an action's spoken response (e.g.
+        # describe_window's vision description, now_playing's track
+        # info), defer the entire post-inject sequence until playback
+        # finishes. The OSD currently shows the description via the
+        # executing-progress path; calling set_committed here would
+        # clobber it, and auto-stop would close the session before
+        # the user finishes hearing the answer. _resume_after_tts
+        # replays this handler with a small dwell once the engine
+        # signals playback_finished.
+        if self._tts_active_count > 0 and self._deferred_inject_done is None:
+            self._deferred_inject_done = original_text
+            log.info("inject_done deferred — TTS in flight (count=%d)", self._tts_active_count)
+            return
+
         # Post-inject: status line clears, prompt stays bright.
         # BUT: if the worker just emitted pending_action (and the main
         # thread set self._pending_action), don't override the
@@ -1357,11 +1380,26 @@ class MainWindow(QMainWindow):
         ref count and snips the bleed window when the last utterance
         finishes. MPRIS pause/resume is owned by the dictation
         lifecycle now (ducker.duck/restore at recording start/end),
-        so there's nothing media-side to release here."""
+        so there's nothing media-side to release here.
+
+        Also replays a deferred _on_inject_done (set in
+        _deferred_inject_done) when the post-inject sequence was
+        held back so the user could read along with the TTS read of
+        an action's spoken response. Replayed with an 800 ms dwell
+        so the OSD's final description-frame stays visible briefly
+        after playback ends, then transitions to the post-inject
+        committed/auto-stop path."""
         self._tts_active_count = max(0, self._tts_active_count - 1)
         if self._tts_active_count > 0:
             return  # more TTS in flight
         self._snip_tts_bleed_window()
+        # getattr keeps lightweight test stubs (which don't init this
+        # field) from needing knowledge of the deferred-handler hook.
+        deferred = getattr(self, "_deferred_inject_done", None)
+        if deferred is not None:
+            self._deferred_inject_done = None
+            log.info("inject_done deferred-resume after TTS, dwell 800 ms")
+            QTimer.singleShot(800, lambda t=deferred: self._on_inject_done(t))
 
     def _snip_tts_bleed_window(self) -> None:
         """Advance _committed_samples past whatever the mic captured
@@ -1393,9 +1431,19 @@ class MainWindow(QMainWindow):
         bleed window. MPRIS pause/resume is owned by the dictation
         lifecycle now, so there's nothing media-side to release —
         cancel paths typically also stop the recorder, which calls
-        ducker.restore() and resumes any paused services."""
+        ducker.restore() and resumes any paused services. Also
+        clears the deferred inject_done state — if cancel arrived
+        while we were waiting for TTS to finish, the deferred handler
+        is stale, run it now without the dwell so the OSD doesn't
+        sit on a frozen description."""
         self._tts_active_count = 0
+        deferred = getattr(self, "_deferred_inject_done", None)
+        if hasattr(self, "_deferred_inject_done"):
+            self._deferred_inject_done = None
         self._snip_tts_bleed_window()
+        if deferred is not None:
+            log.info("inject_done deferred-resume on cancel (no dwell)")
+            self._on_inject_done(deferred)
 
     def _on_tts_done_check_answer_reset(self) -> None:
         """Second slot bound to playback_finished. When a
