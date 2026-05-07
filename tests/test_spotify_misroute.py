@@ -112,6 +112,56 @@ def test_skipped_when_spotify_play_already_has_uri():
     assert override is None
 
 
+def test_overrides_when_query_is_not_in_transcript():
+    """Field log: 'Odtwórz Moderat w Spotify' → Gemma emitted
+    spotify_play{query='Moderator'} (false Polish declension reversal,
+    'Moderat' became 'Moderator'). The query 'moderator' isn't in the
+    transcript verbatim, so the override re-extracts the real subject
+    'Moderat' and dispatches with that."""
+    actions = [{
+        "phrase": "Odtwórz",
+        "name": "spotify_play",
+        "params": {"query": "Moderator"},
+    }]
+    override = _maybe_spotify_misroute_override(
+        "Odtwórz Moderat w Spotify", actions,
+    )
+    assert override is not None
+    assert override["params"]["query"] == "Moderat"
+
+
+def test_skipped_when_query_is_in_transcript():
+    """LLM extracted a verbatim subject — don't override correct
+    output. Common case: 'Spotify play Linkin Park' →
+    spotify_play{query='Linkin Park'}, query is in transcript, leave
+    alone."""
+    actions = [{
+        "phrase": "Spotify play Linkin Park",
+        "name": "spotify_play",
+        "params": {"query": "Linkin Park"},
+    }]
+    override = _maybe_spotify_misroute_override(
+        "Spotify play Linkin Park", actions,
+    )
+    assert override is None
+
+
+def test_skipped_when_query_substring_with_kind_cue_stripped():
+    """'Odtwórz album Hybrid Theory w Spotify' → query='Hybrid Theory'
+    (LLM correctly stripped the 'album' cue). 'hybrid theory' IS in
+    the transcript, so the override leaves it alone — even though the
+    LLM-emitted query has fewer tokens than the transcript."""
+    actions = [{
+        "phrase": "Odtwórz album Hybrid Theory w Spotify",
+        "name": "spotify_play",
+        "params": {"query": "Hybrid Theory", "kind": "album"},
+    }]
+    override = _maybe_spotify_misroute_override(
+        "Odtwórz album Hybrid Theory w Spotify", actions,
+    )
+    assert override is None
+
+
 def test_skipped_when_no_spotify_mention():
     """Bare play_pause without Spotify is a real play_pause request."""
     actions = [{"phrase": "Odtwórz", "name": "play_pause"}]

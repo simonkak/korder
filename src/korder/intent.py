@@ -1606,20 +1606,36 @@ def _maybe_spotify_misroute_override(
     if not isinstance(entry, dict):
         return None
     name = entry.get("name")
-    # Two trigger conditions — both have the same fix (extract query
+    # Three trigger conditions — all have the same fix (extract query
     # from non-trigger tokens, dispatch as spotify_play):
     #   1. LLM emitted play_pause: classic verb-prior misroute.
-    #   2. LLM emitted spotify_play but with empty params: it picked
-    #      the right action but didn't fill the query — without the
-    #      override this goes pending and asks the user for a query
-    #      they already said.
+    #   2. LLM emitted spotify_play with empty params: it picked the
+    #      right action but didn't fill the query — without the
+    #      override this goes pending and re-prompts the user.
+    #   3. LLM emitted spotify_play with a query that ISN'T a verbatim
+    #      substring of the transcript: Gemma "corrected" the user's
+    #      word (e.g. 'Odtwórz Moderat w Spotify' → query='Moderator',
+    #      a false Polish declension reversal). The user said exactly
+    #      what they meant; the LLM's reinterpretation is wrong.
     existing_params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+    existing_query = (existing_params.get("query") or "").strip()
+    existing_uri = (existing_params.get("uri") or "").strip()
     spotify_play_empty = (
         name == "spotify_play"
-        and not (existing_params.get("query") or "").strip()
-        and not (existing_params.get("uri") or "").strip()
+        and not existing_query
+        and not existing_uri
     )
-    if name != "play_pause" and not spotify_play_empty:
+    spotify_play_query_invalid = (
+        name == "spotify_play"
+        and bool(existing_query)
+        and not existing_uri
+        and existing_query.lower() not in transcript.lower()
+    )
+    if (
+        name != "play_pause"
+        and not spotify_play_empty
+        and not spotify_play_query_invalid
+    ):
         return None
     if "spotify" not in transcript.lower():
         return None
