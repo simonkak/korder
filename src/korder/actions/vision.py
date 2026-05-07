@@ -164,6 +164,7 @@ def _do_describe_window(target: str) -> None:
     target = (target or "").strip()
     locale = current_locale()
     lang = "pl" if locale == "pl" else "en"
+    log.info("describe_window: starting, target=%r locale=%s", target, locale)
 
     # 1. Focus the named window (best-effort). Even if matching fails
     # KWin returns success-iff-script-ran, so we capture whatever
@@ -175,7 +176,13 @@ def _do_describe_window(target: str) -> None:
 
     # 2. Screenshot active window.
     emit_progress(t("progress_describe_capturing"))
+    t0 = time.time()
     img_path = _capture_active_window()
+    log.info(
+        "describe_window: capture %s in %.1fs",
+        "ok" if img_path else "FAILED",
+        time.time() - t0,
+    )
     if img_path is None:
         emit_progress(t("progress_describe_capture_failed"))
         return
@@ -185,7 +192,14 @@ def _do_describe_window(target: str) -> None:
     # specific stage we're in.
     try:
         emit_progress(t("progress_describe_thinking"))
+        t0 = time.time()
         description = _vision_describe(img_path, target_hint=target)
+        log.info(
+            "describe_window: vision %s in %.1fs (%d chars)",
+            "ok" if description else "EMPTY",
+            time.time() - t0,
+            len(description),
+        )
     finally:
         try:
             os.unlink(img_path)
@@ -198,6 +212,7 @@ def _do_describe_window(target: str) -> None:
 
     # 4. Emit result. emit_progress_speak fires both the OSD progress
     # line and the TTS path (when [tts] enabled).
+    log.info("describe_window: speaking description (%d chars, lang=%s)", len(description), lang)
     emit_progress_speak(description, lang=lang)
 
 

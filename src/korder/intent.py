@@ -371,6 +371,9 @@ _EXAMPLES_BLOCK = (
     "  Polish play-verb + named subject + Spotify → spotify_play (NOT play_pause):\n"
     '    "Odtwórz Queen w Spotify" → {"actions": [{"phrase": "Odtwórz Queen w Spotify", "name": "spotify_play", "params": {"query": "Queen"}}]}\n'
     '    "Włącz Hybrid Theory na Spotify" → {"actions": [{"phrase": "Włącz Hybrid Theory na Spotify", "name": "spotify_play", "params": {"query": "Hybrid Theory"}}]}\n'
+    "  describe_window — extract the named app/window into params.target:\n"
+    '    "Opisz okno Firefoxa" → {"actions": [{"phrase": "Opisz okno Firefoxa", "name": "describe_window", "params": {"target": "Firefox"}}]}\n'
+    '    "describe Konsole" → {"actions": [{"phrase": "describe Konsole", "name": "describe_window", "params": {"target": "Konsole"}}]}\n'
     '  "press enter and run it" → {"actions": [{"phrase": "press enter", "name": "press_enter"}]}\n'
     '  "Spotify zagraj Linkin Park" → {"actions": [{"phrase": "Spotify zagraj Linkin Park", "name": "spotify_play", "params": {"query": "Linkin Park"}}]}\n'
     '  "Odtwórz Lose Yourself w Spotify" → {"actions": [{"phrase": "Odtwórz Lose Yourself w Spotify", "name": "spotify_play", "params": {"query": "Lose Yourself"}}]}\n'
