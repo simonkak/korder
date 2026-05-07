@@ -150,9 +150,16 @@ def _vision_describe(image_path: str, target_hint: str = "") -> str:
     locale = current_locale()
     if locale == "pl":
         instruction = (
-            "Krótko opisz, co widać w tym oknie. 1-2 zdania, "
-            "po polsku. Skup się na zawartości — tytule strony, "
-            "głównych elementach, tekście."
+            "Opisz krótko (1-2 zdania, po polsku) co użytkownik "
+            "widzi w głównym obszarze tego okna — może to być "
+            "strona internetowa, film, dokument, rozmowa, "
+            "terminal, kod, edytor, gra, obraz, mapa, panel "
+            "ustawień, lub cokolwiek innego. Pomiń pasek adresu, "
+            "karty, paski narzędzi, menu, ikony, paski tytułowe i "
+            "inne elementy interfejsu. Opisz konkretną zawartość "
+            "którą widzisz; jeśli nie potrafisz odczytać treści "
+            "lub obraz jest niejasny, powiedz to wprost zamiast "
+            "zgadywać."
         )
         if target_hint:
             instruction = (
@@ -160,9 +167,15 @@ def _vision_describe(image_path: str, target_hint: str = "") -> str:
             )
     else:
         instruction = (
-            "Briefly describe what is visible in this window. "
-            "1-2 sentences. Focus on content — page title, main "
-            "elements, text."
+            "Briefly (1-2 sentences) describe what the user sees "
+            "in the main area of this window — could be a webpage, "
+            "video, document, conversation, terminal, code, "
+            "editor, game, image, map, settings panel, or "
+            "anything else. Skip the URL bar, tabs, toolbars, "
+            "menus, icons, title bar, and other UI chrome. "
+            "Describe the actual content visible; if you can't "
+            "read the content or the image is unclear, say so "
+            "directly instead of guessing."
         )
         if target_hint:
             instruction = (
