@@ -40,14 +40,12 @@ def _list_active_mpris_players() -> list[dict]:
 register_tool(Tool(
     name="list_active_mpris_players",
     description=(
-        "Enumerate currently-running MPRIS media players (Spotify, "
-        "Firefox, mpv, browser MPRIS bridges). Returns a list of "
-        "{short_name, status, title, artist} entries with status one "
-        "of 'Playing' / 'Paused' / 'Stopped'. Call this before filling "
-        "target params for pause_player / resume_player so you can "
-        "quote one of these short_name values verbatim instead of "
-        "guessing. Title and artist help disambiguate when the user "
-        "names a track or tab title rather than the player itself."
+        "List running MPRIS players: [{short_name, status, title, "
+        "artist}, …]. USE before pause_player / resume_player when "
+        "the user named a player or song — title/artist disambiguate "
+        "when the name refers to a track or tab. "
+        "SKIP for bare 'pause' / 'play' verbs (those route to "
+        "play_pause; no target needed)."
     ),
     executor=_list_active_mpris_players,
 ))

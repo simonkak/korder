@@ -40,13 +40,11 @@ def _list_audio_sinks() -> list[dict]:
 register_tool(Tool(
     name="list_audio_sinks",
     description=(
-        "Enumerate currently-available PipeWire audio output sinks. "
-        "Returns a list of {name, is_default} entries with the LITERAL "
-        "sink names the system advertises — these are the strings the "
-        "user's machine uses, in the user's system language. Call this "
-        "before filling sink_name params for the audio_output_switch "
-        "action so you can quote one of these names verbatim instead "
-        "of guessing or translating."
+        "List PipeWire audio sinks: [{name, is_default}, …]. "
+        "USE before audio_output_switch when the user named an output — "
+        "pick a literal name from the result. "
+        "SKIP for non-audio actions and for utterances that don't name "
+        "a sink."
     ),
     executor=_list_audio_sinks,
 ))

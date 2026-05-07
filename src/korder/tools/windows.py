@@ -60,17 +60,14 @@ def _list_open_windows() -> list[dict]:
 register_tool(Tool(
     name="list_open_windows",
     description=(
-        "Enumerate currently-open windows on the user's desktop. "
-        "Returns a list of {resourceClass, caption, active, minimized} "
-        "entries with the LITERAL window titles and app classes KWin "
-        "advertises. Call this when:\n"
-        "- the user wants to focus a specific app / tab "
-        "(focus_window's target param) and you need the canonical "
-        "name to fill it;\n"
-        "- the user ASKS about windows ('which window is active?', "
-        "'co jest otwarte?', 'what's open right now?') — read the "
-        "list and answer in `response`. The 'active' flag marks the "
-        "currently-focused window."
+        "List open windows: [{resourceClass, caption, active, "
+        "minimized}, …]. USE (a) before focus_window / close_window / "
+        "minimize_window with a target — pick a literal name; "
+        "(b) for window-state QUESTIONS ('which is active?', "
+        "'co jest otwarte?') — answer in `response` using the names. "
+        "The 'active' flag marks the focused window. "
+        "SKIP for non-window actions and target-less 'close window' / "
+        "'minimize' (those operate on the active window)."
     ),
     executor=_list_open_windows,
 ))

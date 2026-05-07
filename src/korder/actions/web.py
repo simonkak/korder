@@ -166,14 +166,11 @@ def _maps_search_op(args: dict) -> tuple | None:
 register(Action(
     name="web_search",
     description=(
-        "Open the user's default browser on a generic web-search results "
-        "page. Use ONLY when the user explicitly asks to SEARCH the web — "
-        "phrasings like 'search the web for X', 'google X', 'wyszukaj w "
-        "internecie X'. Do NOT use for general factual questions ('what "
-        "is X', 'co to jest X', 'how tall is X') — answer those directly "
-        "via the response field instead. Only dispatch when the user "
-        "wants the browser opened on results. Extract the actual search "
-        "terms into params.query without the trigger word."
+        "Open the browser on a web-search results page. Extract the "
+        "search terms into params.query (drop the trigger word). "
+        "USE when the user asks to SEARCH the web ('google X', "
+        "'wyszukaj X'). SKIP for factual questions ('what is X', "
+        "'how tall is X') — answer those directly in `response`."
     ),
     triggers={
         "en": [
@@ -205,12 +202,10 @@ register(Action(
 register(Action(
     name="youtube_search",
     description=(
-        "Open YouTube search results for a query. Use when the user says "
-        "YouTube by name or asks to play / watch / find a video of "
-        "something. Extract the actual subject into params.query — "
-        "without 'YouTube', 'video', 'watch', or 'play' words. Examples: "
-        "'play X on youtube' → query='X'; 'find video of X on youtube' "
-        "→ query='X'; 'youtube tutorial for X' → query='X tutorial'."
+        "Open YouTube search results. Extract the subject into "
+        "params.query (drop 'YouTube' / 'video' / 'watch' / 'play'). "
+        "USE when the user names YouTube or asks for a video. "
+        "SKIP when the user wants Spotify (use spotify_play)."
     ),
     triggers={
         "en": [
@@ -239,15 +234,11 @@ register(Action(
 register(Action(
     name="wikipedia_search",
     description=(
-        "Open Wikipedia in the user's browser for a topic. Use ONLY when "
-        "the user explicitly names Wikipedia or asks to LOOK SOMETHING "
-        "UP on it — 'wikipedia X', 'look up X on Wikipedia', 'open the "
-        "Wikipedia article for X'. Do NOT use for general 'what is X', "
-        "'co to jest X', 'tell me about X', 'kim był X' — those are "
-        "conversational and should be answered directly via the response "
-        "field. Only dispatch when the user wants the article OPENED in "
-        "a browser. Picks the Wikipedia language matching the system "
-        "locale. Extract the subject into params.query."
+        "Open Wikipedia in the browser. Extract the subject into "
+        "params.query. Locale-aware (EN / PL / etc.). "
+        "USE only when the user names Wikipedia or asks to look "
+        "something up there. SKIP for 'what is X' / 'tell me about X' "
+        "— those are conversational, answer in `response`."
     ),
     triggers={
         "en": [

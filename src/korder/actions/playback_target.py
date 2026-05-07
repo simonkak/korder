@@ -227,15 +227,13 @@ _TARGET_PARAM = {
 register(Action(
     name="pause_player",
     description=(
-        "Pause a SPECIFIC NAMED media player or browser tab via MPRIS. "
-        "Use ONLY when the user explicitly names what they want paused — "
-        "'Pause Spotify', 'Pause Firefox', 'Pause Firefox How I Chose a "
-        "Linux Distro'. The target name is REQUIRED — without one, this "
-        "action does NOT apply. For a bare pause / stop verb with no "
-        "named player, use play_pause (toggle) or stop_playback (stop) "
-        "instead. Never pick this action just because the input mentions "
-        "audio or media — the user must be telling Korder which player "
-        "to act on by name."
+        "Pause a SPECIFIC NAMED media player or tab via MPRIS. The "
+        "target name is REQUIRED. Call list_active_mpris_players "
+        "first; pick a literal short_name (or use a track/tab title "
+        "from the result for fuzzy match). "
+        "USE for 'pause Spotify' / 'pause Firefox' / equivalents. "
+        "SKIP for bare 'pause' / 'stop' verbs (those route to "
+        "play_pause / stop_playback)."
     ),
     triggers={
         "en": [
@@ -263,15 +261,12 @@ register(Action(
 register(Action(
     name="resume_player",
     description=(
-        "Resume playback on a SPECIFIC NAMED media player or browser "
-        "tab via MPRIS. Use ONLY when the user explicitly names what they "
-        "want resumed — 'Play Spotify', 'Resume Firefox', 'Play Firefox "
-        "How I Chose a Linux Distro'. The target name is REQUIRED — "
-        "without one, this action does NOT apply. For a bare play / "
-        "resume verb with no named player, use play_pause (toggle) "
-        "instead. Never pick this action just because the input has "
-        "'play' or 'resume' verbs — the user must be telling Korder "
-        "which player to start by name."
+        "Resume playback on a SPECIFIC NAMED media player or tab via "
+        "MPRIS. The target name is REQUIRED. Call "
+        "list_active_mpris_players first; pick a literal short_name "
+        "(or a track/tab title) for the target. "
+        "USE for 'resume Spotify' / 'play Firefox' / equivalents. "
+        "SKIP for bare 'play' / 'resume' (those route to play_pause)."
     ),
     triggers={
         "en": [

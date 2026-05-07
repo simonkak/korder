@@ -55,14 +55,12 @@ def _do_focus(target: str) -> None:
 register(Action(
     name="focus_window",
     description=(
-        "Switch keyboard / window focus to a SPECIFIC application or "
-        "window. Use when the user names what they want focused — "
-        "'focus Kate', 'focus Firefox', 'switch to Konsole', 'przełącz "
-        "na Spotify'. Extract the named app or title fragment into "
-        "params.target. Matches against window title and application "
-        "class via fuzzy token overlap inside KWin, so partial names "
-        "and multi-word fragments both work ('focus Firefox How I "
-        "Chose a Linux Distro' picks the matching tab among multiple)."
+        "Switch keyboard / window focus to a SPECIFIC app or window. "
+        "Call list_open_windows first; put a literal resourceClass or "
+        "caption fragment into params.target. KWin fuzzy-matches "
+        "tokens inside, so partial names and multi-word fragments "
+        "both work. "
+        "USE when the user named what to focus."
     ),
     triggers={
         "en": [
@@ -149,13 +147,11 @@ def _minimize_window_op(args: dict) -> tuple:
 register(Action(
     name="close_window",
     description=(
-        "Close a window. With NO target → closes the currently active "
-        "window ('close this window', 'zamknij okno'). With a target "
-        "name in params.target → closes the named window even if it "
-        "isn't focused ('close Firefox', 'zamknij Firefoxa'). When the "
-        "user names a specific app, call list_open_windows first and "
-        "fill target with a literal name from the result. Distinct "
-        "from shutdown / cancel / exit_write_mode."
+        "Close a window. Empty target → closes the active one. Named "
+        "target → closes that window even if unfocused. When the user "
+        "named one, call list_open_windows first and fill "
+        "params.target with a literal name. Distinct from shutdown / "
+        "cancel / exit_write_mode."
     ),
     triggers={
         "en": ["close window", "close this window"],
@@ -180,13 +176,10 @@ register(Action(
 register(Action(
     name="minimize_window",
     description=(
-        "Minimize a window. With NO target → minimizes the currently "
-        "active window ('minimize', 'zminimalizuj'). With a target "
-        "name in params.target → minimizes the named window even if "
-        "it isn't focused ('minimize Firefox', 'zminimalizuj Firefoxa', "
-        "'Zminimalizuj okno Firefoxa'). When the user names a "
-        "specific app, call list_open_windows first and fill target "
-        "with a literal name from the result."
+        "Minimize a window. Empty target → minimizes the active one. "
+        "Named target → minimizes that window even if unfocused. "
+        "When the user named one, call list_open_windows first and "
+        "fill params.target with a literal name."
     ),
     triggers={
         "en": ["minimize", "minimize window"],

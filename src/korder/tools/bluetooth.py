@@ -32,15 +32,12 @@ def _list_paired_bluetooth_devices() -> list[dict]:
 register_tool(Tool(
     name="list_paired_bluetooth_devices",
     description=(
-        "Enumerate Bluetooth devices the user has previously paired. "
-        "Returns a list of {name, mac, connected} entries with the "
-        "LITERAL device names BlueZ advertises. Call this before "
-        "filling device_name params for bluetooth_connect / "
-        "bluetooth_disconnect so you can quote one of these names "
-        "verbatim instead of guessing or translating. The 'connected' "
-        "flag tells you whether the link is currently active — useful "
-        "for picking which device to disconnect when the user is "
-        "vague."
+        "List paired BT devices: [{name, mac, connected}, …]. "
+        "USE before bluetooth_connect / bluetooth_disconnect when the "
+        "user named a device — pick a literal name. The 'connected' "
+        "flag picks which to disconnect when the user is vague. "
+        "SKIP for 'disconnect bluetooth' with no name (the action "
+        "drops every active link on its own)."
     ),
     executor=_list_paired_bluetooth_devices,
 ))

@@ -230,21 +230,13 @@ def _switch_op(args: dict) -> tuple | None:
 register(Action(
     name="audio_output_switch",
     description=(
-        "Switch the system audio output to a different sink — speakers, "
-        "headphones, HDMI, a Bluetooth device, etc. Use for any "
-        "imperative meaning 'route audio elsewhere' (e.g. 'play "
-        "through headphones', 'switch audio to Denon', 'output to "
-        "HDMI', or the equivalent in any other language). Call "
-        "list_audio_sinks first to see the canonical sink names "
-        "available on the user's machine, then put one of those "
-        "literal names into params.sink_name. Distinct from "
-        "bluetooth_connect: that LINKS a paired BT device (radio "
-        "handshake); this picks an output AMONG ALREADY-AVAILABLE "
-        "sinks (which may include a connected BT device, HDMI, USB "
-        "DAC, built-in speakers, etc.). When the user wants to "
-        "establish a fresh BT link, use bluetooth_connect; when "
-        "they just want to redirect audio between sinks that already "
-        "exist, use this."
+        "Switch system audio output to a different sink. Call "
+        "list_audio_sinks first; put a literal sink name into "
+        "params.sink_name. "
+        "USE for 'play through X' / 'switch audio to X' (any "
+        "language). SKIP for fresh BT-pairing requests — that's "
+        "bluetooth_connect (LINKS a paired device); this only "
+        "redirects among already-available sinks."
     ),
     triggers={
         "en": [

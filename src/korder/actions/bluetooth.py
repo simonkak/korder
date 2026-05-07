@@ -215,23 +215,13 @@ def _disconnect_op(args: dict) -> tuple | None:
 register(Action(
     name="bluetooth_connect",
     description=(
-        "Connect to a paired Bluetooth device by name. Use for any "
-        "imperative meaning 'link my BT device' — 'connect Denon via "
-        "bluetooth', 'connect to my soundbar', 'connect headphones', "
-        "'podłącz Denon przez bluetooth', 'połącz się z głośnikiem', "
-        "'połącz słuchawki'. The phrase usually mentions the word "
-        "'bluetooth' or the audio context ('headphones', 'speaker', "
-        "'soundbar', 'słuchawki', 'głośnik') — extract the device "
-        "NAME or BRAND the user spoke into params.device_name. The "
-        "name is the discriminator the user expects to identify their "
-        "device by ('Denon', 'Sony', 'PXC', 'soundbar') — strip out "
-        "the verb (connect / podłącz / połącz), 'bluetooth', and "
-        "filler words like 'to' / 'my' / 'do' / 'z' / 'mojego'. "
-        "Korder fuzzy-matches the result against paired devices so "
-        "approximate names work (e.g. 'Denon' matches 'Denon "
-        "DHT-S517'). Audio routing is handled by PipeWire — the "
-        "default sink moves to the BT device automatically once "
-        "connected, no further action needed."
+        "Connect to a paired Bluetooth device. Call "
+        "list_paired_bluetooth_devices first; put a literal name (or "
+        "just the brand: 'Denon' matches 'Denon DHT-S517') into "
+        "params.device_name. PipeWire auto-routes audio after connect. "
+        "USE for 'connect via bluetooth' / equivalents. "
+        "SKIP for redirecting audio between already-available sinks — "
+        "that's audio_output_switch."
     ),
     triggers={
         "en": [
@@ -272,12 +262,11 @@ register(Action(
 register(Action(
     name="bluetooth_disconnect",
     description=(
-        "Disconnect a Bluetooth device. Use for 'disconnect bluetooth', "
-        "'disconnect Denon', 'rozłącz bluetooth', 'rozłącz Denon'. If "
-        "the user names a specific device, extract it into "
-        "params.device_name; if they just say 'disconnect bluetooth' "
-        "with no name, leave device_name empty and Korder will drop "
-        "every active BT link."
+        "Disconnect a Bluetooth device. If the user named one, fill "
+        "params.device_name (literal name from "
+        "list_paired_bluetooth_devices). Empty device_name drops "
+        "every active BT link. "
+        "USE for 'disconnect bluetooth' / equivalents."
     ),
     triggers={
         "en": [

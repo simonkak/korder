@@ -271,15 +271,11 @@ def _app_launcher_op(args: dict) -> tuple | None:
 register(Action(
     name="app_launcher",
     description=(
-        "Open / launch a desktop application by name. Use for ANY "
-        "imperative meaning 'start this app for me' — 'open Firefox', "
-        "'launch Konsole', 'start Krita', 'otwórz Spotify', 'uruchom "
-        "Kalkulator'. Extract the app name into params.app_name. "
-        "Distinct from focus_window: this action LAUNCHES a fresh "
-        "instance (or activates an already-running one through the "
-        "system's normal launch path), while focus_window just shifts "
-        "keyboard focus to a window that's already open. Prefer this "
-        "for 'open' / 'launch' / 'start' / 'otwórz' / 'uruchom' verbs."
+        "Launch a desktop application by name. Extract the app name "
+        "into params.app_name. "
+        "USE for 'open / launch / start X' verbs (any language). "
+        "SKIP when the app is already open and the user just wants "
+        "focus — that's focus_window."
     ),
     triggers={
         "en": ["open", "launch", "start"],

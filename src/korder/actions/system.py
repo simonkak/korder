@@ -183,12 +183,12 @@ def _do_suspend() -> None:
 register(_confirmable_action(
     name="shutdown",
     description=(
-        "Power off the computer. Routes through `systemctl poweroff`. "
-        "Use ONLY when the user explicitly asks to shut down / power "
-        "off / turn off the computer. Do NOT fire on phrases like 'I'll "
-        "shut down later' or 'shut down the meeting' — those are "
-        "dictation, not commands. Distinct from reboot (restart) and "
-        "sleep (suspend). REQUIRES the confirm parameter (see params)."
+        "Power off the computer (`systemctl poweroff`). REQUIRES "
+        "params.confirm. "
+        "USE when the user asks to shut down / power off the "
+        "computer. SKIP for dictation like 'shut down the meeting' / "
+        "'I'll shut down later'. Distinct from reboot (restart) and "
+        "sleep (suspend)."
     ),
     triggers={
         "en": [
@@ -212,11 +212,11 @@ register(_confirmable_action(
 register(_confirmable_action(
     name="reboot",
     description=(
-        "Restart the computer. Routes through `systemctl reboot`. Use "
-        "ONLY when the user explicitly asks to restart / reboot the "
-        "computer. Do NOT fire on dictation like 'reboot the meeting'. "
-        "Distinct from shutdown (full power-off) and sleep (suspend). "
-        "REQUIRES the confirm parameter."
+        "Restart the computer (`systemctl reboot`). REQUIRES "
+        "params.confirm. "
+        "USE when the user asks to restart / reboot the computer. "
+        "SKIP for dictation. Distinct from shutdown (full power-off) "
+        "and sleep (suspend)."
     ),
     triggers={
         "en": [
@@ -240,10 +240,11 @@ register(_confirmable_action(
 register(_confirmable_action(
     name="sleep",
     description=(
-        "Suspend the computer to RAM. Routes through `systemctl "
-        "suspend`. Use when the user asks to put the computer to "
-        "sleep / suspend it. Distinct from shutdown (full power-off) "
-        "and reboot (restart). REQUIRES the confirm parameter."
+        "Suspend the computer to RAM (`systemctl suspend`). REQUIRES "
+        "params.confirm. "
+        "USE when the user asks to put the computer to sleep / "
+        "suspend it. Distinct from shutdown (full power-off) and "
+        "reboot (restart)."
     ),
     triggers={
         "en": [
@@ -267,20 +268,14 @@ register(_confirmable_action(
 register(Action(
     name="cancel_session",
     description=(
-        "End the current dictation/recording session. Drops any pending "
-        "text AND any other actions in the same utterance — nothing "
-        "gets injected, the OSD hides, the mic closes. Two flavors of "
-        "intent map to this: (a) ABORT — 'cancel that', 'nevermind', "
-        "'forget it', 'nieważne'; and (b) GRACEFUL END — 'that's all', "
-        "'we're done', 'I'm done', 'thanks, that's it', 'koniec', "
-        "'zakończ', 'to wszystko', 'to tyle', 'wystarczy'. Both close "
-        "the session the same way. Use ONLY when the user's whole "
-        "utterance is a meta-end signal — closing remark addressed to "
-        "the assistant, not dictated content. Do NOT fire when these "
-        "phrases appear inside content (e.g. 'I want to cancel my "
-        "subscription' is dictation, not a meta-cancel). When in "
-        "doubt, treat it as text — a misfire here drops the whole "
-        "utterance and is more disruptive than typing the word."
+        "End the dictation session. Drops pending text and any "
+        "queued actions; mic closes. Covers two intents: ABORT "
+        "('cancel that', 'forget it') and GRACEFUL END ('that's "
+        "all', 'we're done', 'koniec'). "
+        "USE only when the WHOLE utterance is a meta-signal addressed "
+        "to the assistant. SKIP when these phrases appear inside "
+        "dictated content ('I want to cancel my subscription' is "
+        "dictation). When in doubt, treat as text."
     ),
     triggers={
         "en": [

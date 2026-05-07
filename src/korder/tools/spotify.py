@@ -46,17 +46,14 @@ def _search_spotify(*, query: str = "", kind: str = "") -> list[dict]:
 register_tool(Tool(
     name="search_spotify",
     description=(
-        "Search Spotify for tracks, albums, artists, or playlists "
-        "matching a query. Returns up to 5 top results as "
-        "{uri, name, kind, artist?}. Call BEFORE filling spotify_play "
-        "params when the user's query is AMBIGUOUS — multiple tracks "
-        "share a name, the user gestured at something they listened "
-        "to recently, the prior topic only partially disambiguates. "
-        "After seeing results, dispatch with spotify_play{uri: ...} "
-        "to play your chosen specific URI without a second search. "
-        "Skip this tool for clear unambiguous queries (a unique "
-        "artist name like 'Linkin Park'); spotify_play's internal "
-        "search handles those without an extra round-trip."
+        "Search Spotify, return up to 5 [{uri, name, kind, artist?}, "
+        "…]. USE only for AMBIGUOUS queries — common track titles "
+        "with multiple artists, contextual references that need "
+        "prior-topic disambiguation. After calling, dispatch with "
+        "spotify_play{uri: …}. "
+        "SKIP for clear queries (a unique artist or song name) — "
+        "spotify_play's internal search handles those without the "
+        "extra round-trip."
     ),
     executor=_search_spotify,
     args_schema={
