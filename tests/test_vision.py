@@ -23,10 +23,13 @@ def test_describe_window_action_registered():
     assert "target" in action.parameters
 
 
-def test_describe_window_declares_discovery_tool():
-    """list_open_windows is the canonical-name source for `target`."""
+def test_describe_window_does_not_declare_tools():
+    """No tools= on describe_window. The action self-resolves the
+    target window via _resolve_window_uuid; force-on-skip would
+    otherwise nudge the LLM into a polite-decline pattern instead
+    of straight dispatch."""
     action = get_action("describe_window")
-    assert "list_open_windows" in action.tools
+    assert action.tools == []
 
 
 def test_describe_window_op_with_no_target_returns_callable():
@@ -127,7 +130,8 @@ def test_read_screen_text_action_registered():
     action = get_action("read_screen_text")
     assert action is not None
     assert "target" in action.parameters
-    assert "list_open_windows" in action.tools
+    # No tools= declared — action self-resolves the window.
+    assert action.tools == []
 
 
 def test_read_screen_text_speaks_the_ocr_text_aloud():

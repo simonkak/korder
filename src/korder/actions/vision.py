@@ -614,14 +614,22 @@ register(Action(
         ],
     },
     op_factory=_describe_window_op,
-    tools=["list_open_windows"],
+    # No tools=[]: the action's executor does its own window lookup
+    # via _resolve_window_uuid (kwin_bridge → fuzzy-match), so the
+    # LLM doesn't need to round-trip through list_open_windows
+    # before dispatching. Field log: forcing list_open_windows on
+    # iter 1 was nudging Gemma into a polite-decline pattern on
+    # iter 2 ('I can describe the window — what would you like to
+    # know?') instead of just dispatching. Letting the action
+    # self-resolve is the simpler call.
     parameters={
         "target": {
             "type": "string",
             "description": (
-                "Optional app name or window-title fragment. Pick a "
-                "literal value from list_open_windows results. Empty "
-                "captures whatever is currently active."
+                "Optional app name or window-title fragment. Empty "
+                "captures whatever is currently active. Polish "
+                "inflections like 'Firefoxa' work via the KWin "
+                "matcher's substring fallback."
             ),
         },
     },
@@ -772,13 +780,15 @@ register(Action(
         ],
     },
     op_factory=_read_screen_text_op,
-    tools=["list_open_windows"],
+    # No tools=[] — same rationale as describe_window. The action
+    # self-resolves via _resolve_window_uuid; forcing the tool was
+    # nudging the LLM into a clarification-asking pattern instead of
+    # straight dispatch.
     parameters={
         "target": {
             "type": "string",
             "description": (
-                "Optional app name or window-title fragment. Pick a "
-                "literal value from list_open_windows results. Empty "
+                "Optional app name or window-title fragment. Empty "
                 "reads whatever is currently active."
             ),
         },
