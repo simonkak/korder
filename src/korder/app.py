@@ -197,13 +197,24 @@ def _run_app() -> int:
     # path at its own bundled tree — which does NOT include KF6 plugins
     # (e.g. kf6/kwindowsystem/* needed for the OSD's blur hint). Those
     # plugins live alongside the system Qt at /usr/lib(64)/qt6/plugins.
-    # Add the system path before creating QApplication so plugin discovery
-    # picks them up. Loading KF6 plugins built against system Qt 6.x into a
-    # PySide6-bundled Qt 6.x is ABI-safe as long as the major.minor match.
+    #
+    # We must *append* the system path, never prepend: addLibraryPath()
+    # prepends, which would make plugin discovery prefer the system tree
+    # for EVERY plugin — including the platform plugin (xcb/wayland). The
+    # system platform plugin links libQt6XcbQpa against Qt's private API,
+    # which is symbol-versioned per *patch* release (QtPrivate_6_11_1 vs
+    # _6_11_0). When the system Qt patch drifts ahead of the bundled one
+    # (e.g. system 6.11.1 vs PySide6 6.11.0) loading the system platform
+    # plugin into the bundled core fails with an undefined-symbol error
+    # and the app cannot start at all. Keeping the bundled tree first means
+    # the platform plugin always loads against its matching core, while the
+    # appended system path still lets KF6-only plugins resolve.
     from PySide6.QtCore import QCoreApplication as _QCoreApplication
+    _lib_paths = _QCoreApplication.libraryPaths()
     for _p in ("/usr/lib/qt6/plugins", "/usr/lib64/qt6/plugins"):
-        if os.path.isdir(_p):
-            _QCoreApplication.addLibraryPath(_p)
+        if os.path.isdir(_p) and _p not in _lib_paths:
+            _lib_paths.append(_p)
+    _QCoreApplication.setLibraryPaths(_lib_paths)
 
     app = QApplication(sys.argv)
     app.setApplicationName("Korder")
